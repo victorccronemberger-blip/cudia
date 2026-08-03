@@ -65,6 +65,20 @@ case ":$PATH:" in
     ;;
 esac
 
+# 4. provider API keys — persistent and update-proof
+KEYS_FILE="$HOME/.cudia-keys.sh"
+if [ -f "$KEYS_FILE" ]; then
+  echo "==> keys file found: $KEYS_FILE"
+elif [ -f "$INSTALL_DIR/keys.example" ]; then
+  cp "$INSTALL_DIR/keys.example" "$KEYS_FILE"
+  chmod 600 "$KEYS_FILE"
+  echo "==> created $KEYS_FILE — FILL IN YOUR API KEYS there"
+fi
+if ! grep -q "cudia-keys" "$HOME/.zshrc" 2>/dev/null; then
+  echo 'if [ -f "$HOME/.cudia-keys.sh" ]; then source "$HOME/.cudia-keys.sh"; fi' >> "$HOME/.zshrc"
+  echo "==> ~/.zshrc now sources $KEYS_FILE (takes effect in new shells)"
+fi
+
 echo
 echo "Done. Usage:"
 echo "  cudia                      # opencode TUI with the cudia harness"

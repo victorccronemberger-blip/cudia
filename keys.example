@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# cudia provider keys — copy this to ~/.cudia-keys.sh and fill in your keys.
+#
+# Why this file: the harness config (opencode.json) reads API keys ONLY from
+# env vars ("env" field per provider). A manual `export` dies with the shell;
+# this file is sourced from ~/.zshrc (install.sh wires it), so keys survive
+# git pulls, reinstalls, and reboots. To switch a provider later, edit this
+# file OR use /connect inside the opencode TUI (writes ~/.local/share/opencode/auth.json,
+# which also persists).
+#
+# Usage: cp keys.example ~/.cudia-keys.sh && nano ~/.cudia-keys.sh
+
+# NVIDIA NIM (https://integrate.api.nvidia.com/v1)
+export NVIDIA_API_KEY="nvapi-..."
+export NVIDIA_NIM_API_KEY=""        # alias accepted by the nvidia provider
+
+# DeepSeek (https://api.deepseek.com/v1)
+export DEEPSEEK_API_KEY="sk-..."
+
+# InferX (https://model.inferx.net/endpoints/v1)
+export INFERX_API_KEY=""
+
+# Z.ai / GLM (https://api.z.ai/api/paas/v4)
+export ZAI_API_KEY=""               # any of: ZAI_API_KEY, Z_AI_API_KEY, GLM_API_KEY, ZHIPUAI_API_KEY
+export GLM_API_KEY=""
+
+# Alibaba Qwen (https://dashscope-intl.aliyuncs.com/compatible-mode/v1)
+export DASHSCOPE_API_KEY=""
+export QWEN_API_KEY=""
+
+# Moonshot Kimi (https://api.moonshot.ai/v1)
+export MOONSHOT_API_KEY=""
+export KIMI_API_KEY=""
+
+# TokenRouter (https://api.tokenrouter.com/v1)
+export TOKENROUTER_API_KEY=""
