@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # cudia launcher — starts opencode with the cudia harness config loaded.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the real script path even when invoked through a symlink
+# (BASH_SOURCE[0] holds the symlink path, so cd'ing to its dirname would
+#  land in ~/.local/bin instead of the repo).
+SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+HERE="$(cd "$(dirname "$SCRIPT")" && pwd)"
 cd "$HERE"
 
 if command -v opencode >/dev/null 2>&1; then
