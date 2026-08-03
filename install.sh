@@ -40,6 +40,18 @@ else
 fi
 chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
 
+# 2b. node/npm (needed by opencode to auto-install provider SDKs and plugins)
+if ! command -v npm >/dev/null 2>&1; then
+  echo "!! npm not found. opencode needs it to install provider SDKs (@ai-sdk/deepseek, etc.)."
+  echo "   Install with: sudo apt update && sudo apt install -y nodejs npm"
+fi
+
+# 2c. pre-install .opencode deps if present (normally opencode does this on first run)
+if [ -f "$INSTALL_DIR/.opencode/package.json" ] && command -v npm >/dev/null 2>&1; then
+  echo "==> pre-installing .opencode dependencies..."
+  (cd "$INSTALL_DIR/.opencode" && npm install --no-audit --no-fund) || true
+fi
+
 # 3. launcher
 mkdir -p "$BIN_DIR"
 ln -sfn "$INSTALL_DIR/run.sh" "$BIN_DIR/cudia"
