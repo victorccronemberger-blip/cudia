@@ -11,6 +11,7 @@ INSTALL_DIR="${CUDIA_DIR:-$HOME/cudia}"
 
 echo "==> updating harness repo..."
 git -C "$INSTALL_DIR" pull --ff-only
+chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
 
 echo "==> updating opencode CLI..."
 curl -fsSL https://opencode.ai/install | bash
