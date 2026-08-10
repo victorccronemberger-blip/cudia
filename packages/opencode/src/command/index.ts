@@ -46,6 +46,7 @@ export function hints(template: string) {
 export const Default = {
   INIT: "init",
   REVIEW: "review",
+  GOAL: "goal",
 } as const
 
 export interface Interface {
@@ -85,6 +86,13 @@ const layer = Layer.effect(
         },
         subtask: true,
         hints: hints(PROMPT_REVIEW),
+      }
+      commands[Default.GOAL] = {
+        name: Default.GOAL,
+        description: "run an autonomous goal until verified completion or a blocker",
+        source: "command",
+        template: "",
+        hints: ["--max-iterations"],
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {

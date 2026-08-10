@@ -14,6 +14,8 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_VERIFIER from "./prompt/verifier.txt"
+import PROMPT_GOAL_PLANNER from "./prompt/goal-planner.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@opencode-ai/core/global"
@@ -215,6 +217,45 @@ const layer = Layer.effect(
             options: {},
             mode: "subagent",
             native: true,
+          },
+          verifier: {
+            name: "verifier",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                grep: "allow",
+                glob: "allow",
+                list: "allow",
+                bash: "allow",
+                read: "allow",
+                webfetch: "allow",
+              }),
+              user,
+            ),
+            description:
+              "Verification agent for autonomous goal loops. Evaluates completion criteria against real evidence.",
+            prompt: PROMPT_VERIFIER,
+            options: {},
+            mode: "subagent",
+            native: true,
+            hidden: true,
+          },
+          "goal-planner": {
+            name: "goal-planner",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+              }),
+              user,
+            ),
+            description: "Planning agent for autonomous goal loops. Produces criteria and steps without repository work.",
+            prompt: PROMPT_GOAL_PLANNER,
+            options: {},
+            mode: "subagent",
+            native: true,
+            hidden: true,
           },
           compaction: {
             name: "compaction",

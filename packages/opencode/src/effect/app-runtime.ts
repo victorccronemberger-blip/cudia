@@ -30,6 +30,7 @@ import { SessionRevert } from "@/session/revert"
 import { SessionSummary } from "@/session/summary"
 import { SessionPrompt } from "@/session/prompt"
 import { Instruction } from "@/session/instruction"
+import { Goal } from "@/goal"
 import { LLM } from "@/session/llm"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
@@ -76,6 +77,7 @@ export const AppLayer = AppNodeBuilderV1.build(
     Question.node,
     Permission.node,
     Todo.node,
+    Goal.node,
     Session.node,
     SessionProjector.node,
     SessionStatus.node,

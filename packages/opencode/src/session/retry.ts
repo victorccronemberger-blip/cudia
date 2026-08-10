@@ -129,9 +129,16 @@ export function retryable(error: Err, provider: string) {
     if (
       lower.includes("rate increased too quickly") ||
       lower.includes("rate limit") ||
-      lower.includes("too many requests")
+      lower.includes("too many requests") ||
+      lower.includes("resourceexhausted") ||
+      lower.includes("worker local total request limit reached")
     ) {
-      return { message: msg }
+      return {
+        message:
+          lower.includes("resourceexhausted") || lower.includes("worker local total request limit reached")
+            ? "NVIDIA worker pool is full; retrying"
+            : msg,
+      }
     }
   }
 

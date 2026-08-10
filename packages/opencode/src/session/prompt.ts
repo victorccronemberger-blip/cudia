@@ -2,6 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { TextPartInput } from "@opencode-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
@@ -40,6 +41,7 @@ import { ShellID } from "@/tool/shell/id"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
+import { Goal } from "@/goal"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
@@ -139,6 +141,7 @@ const layer = Layer.effect(
     const llm = yield* LLM.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const goal = yield* Goal.Service
     const database = yield* Database.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
@@ -1054,6 +1057,13 @@ const layer = Layer.effect(
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
+      const update = input.parts
+        .filter((part): part is TextPartInput => part.type === "text" && !part.synthetic)
+        .map((part) => part.text)
+        .join("\n")
+        .trim()
+      if (update && !update.startsWith("[GOAL"))
+        yield* goal.observe(input.sessionID, update).pipe(Effect.catch(Effect.die))
       const message = yield* createUserMessage(input)
       yield* sessions.touch(input.sessionID)
 
@@ -1353,7 +1363,75 @@ const layer = Layer.effect(
       return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
 
+    const respondGoal = Effect.fn("SessionPrompt.respondGoal")(function* (input: {
+      sessionID: SessionID
+      messageID?: MessageID
+      agent?: string
+      model?: string
+      text: string
+    }) {
+      const user = yield* createUserMessage({
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        agent: input.agent,
+        model: input.model ? Provider.parseModel(input.model) : undefined,
+        noReply: true,
+        parts: [
+          {
+            type: "text",
+            text: `[GOAL CONTROL]\n${input.text}`,
+            synthetic: true,
+            ignored: true,
+          },
+        ],
+      })
+      if (user.info.role !== "user") return yield* Effect.die("Goal control response requires a user message")
+      const ctx = yield* InstanceState.context
+      const now = Date.now()
+      const info: SessionV1.Assistant = {
+        id: MessageID.ascending(),
+        parentID: user.info.id,
+        role: "assistant",
+        mode: user.info.agent,
+        agent: user.info.agent,
+        variant: user.info.model.variant,
+        path: { cwd: ctx.directory, root: ctx.worktree },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: user.info.model.modelID,
+        providerID: user.info.model.providerID,
+        time: { created: now, completed: now },
+        sessionID: input.sessionID,
+        finish: "stop",
+      }
+      const part: SessionV1.TextPart = {
+        id: PartID.ascending(),
+        messageID: info.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: input.text,
+        synthetic: true,
+        time: { start: now, end: now },
+      }
+      yield* sessions.updateMessage(info)
+      yield* sessions.updatePart(part)
+      yield* sessions.touch(input.sessionID)
+      return { info, parts: [part] }
+    })
+
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
+      if (input.command === "goal") {
+        const responses = { count: 0 }
+        const respond = (text: string) =>
+          respondGoal({
+            sessionID: input.sessionID,
+            messageID: responses.count++ === 0 ? input.messageID : undefined,
+            agent: input.agent,
+            model: input.model,
+            text,
+          })
+        return yield* goal.command(input, prompt, respond).pipe(Effect.catch(Effect.die))
+      }
       yield* Effect.logInfo("command", {
         "session.id": input.sessionID,
         command: input.command,
@@ -1625,6 +1703,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    Goal.node,
   ],
 })
 

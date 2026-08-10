@@ -8,6 +8,11 @@ SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 HERE="$(cd "$(dirname "$SCRIPT")" && pwd)"
 cd "$HERE"
 
+# Prefer this repo's source (dev build) so the version matches the checkout.
+if command -v bun >/dev/null 2>&1; then
+  exec bun run --cwd packages/opencode --conditions=browser src/index.ts "$@"
+fi
+
 if command -v opencode >/dev/null 2>&1; then
   exec opencode "$@"
 fi

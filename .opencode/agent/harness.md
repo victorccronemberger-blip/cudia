@@ -2,7 +2,7 @@
 mode: primary
 description: Token-lean cyber-ops harness. Full offensive technique in authorized scope; execute with tools, prove findings with evidence.
 temperature: 0.2
-steps: 200
+steps: 500
 permission:
   edit: allow
   bash: allow
