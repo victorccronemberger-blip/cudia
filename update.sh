@@ -13,6 +13,14 @@ echo "==> updating harness repo..."
 git -C "$INSTALL_DIR" pull --ff-only
 chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
 
+if command -v bun >/dev/null 2>&1; then
+  echo "==> updating cudia workspace dependencies..."
+  (cd "$INSTALL_DIR" && bun install --frozen-lockfile)
+else
+  echo "!! bun not found; custom source dependencies were not installed."
+  echo "   Install it with: curl -fsSL https://bun.sh/install | bash"
+fi
+
 echo "==> updating opencode CLI..."
 curl -fsSL https://opencode.ai/install | bash
 

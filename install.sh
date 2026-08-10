@@ -40,6 +40,15 @@ else
 fi
 chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
 
+# 2a. monorepo dependencies (required by the custom source launcher)
+if command -v bun >/dev/null 2>&1; then
+  echo "==> installing cudia workspace dependencies..."
+  (cd "$INSTALL_DIR" && bun install --frozen-lockfile)
+else
+  echo "!! bun not found. The custom /goal build requires Bun ${BUN_VERSION:-1.3.14}."
+  echo "   Install it with: curl -fsSL https://bun.sh/install | bash"
+fi
+
 # 2b. node/npm (needed by opencode to auto-install provider SDKs and plugins)
 if ! command -v npm >/dev/null 2>&1; then
   echo "!! npm not found. opencode needs it to install provider SDKs (@ai-sdk/deepseek, etc.)."

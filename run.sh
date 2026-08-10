@@ -8,8 +8,12 @@ SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 HERE="$(cd "$(dirname "$SCRIPT")" && pwd)"
 cd "$HERE"
 
-# Prefer this repo's source (dev build) so the version matches the checkout.
+# Prefer this repo's source so custom harness features match the checkout.
 if command -v bun >/dev/null 2>&1; then
+  if [ ! -e "packages/opencode/node_modules/@opencode-ai/tui/package.json" ]; then
+    echo "==> installing cudia workspace dependencies..." >&2
+    bun install --frozen-lockfile
+  fi
   exec bun run --cwd packages/opencode --conditions=browser src/index.ts "$@"
 fi
 
