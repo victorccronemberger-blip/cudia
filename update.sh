@@ -16,6 +16,8 @@ chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
 if command -v bun >/dev/null 2>&1; then
   echo "==> updating cudia workspace dependencies..."
   (cd "$INSTALL_DIR" && bun install --frozen-lockfile)
+  echo "==> rebuilding cudia local binary..."
+  (cd "$INSTALL_DIR/packages/opencode" && bun run script/build.ts --single --skip-install --skip-embed-web-ui)
 else
   echo "!! bun not found; custom source dependencies were not installed."
   echo "   Install it with: curl -fsSL https://bun.sh/install | bash"
