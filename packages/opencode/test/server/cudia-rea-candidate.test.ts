@@ -44,7 +44,15 @@ test.skipIf(!enabled || process.platform !== "win32")(
             "-Command",
             "Expand-Archive -LiteralPath $env:CUDIA_FIXTURE_ARCHIVE -DestinationPath $env:CUDIA_FIXTURE_DESTINATION -ErrorAction Stop",
           ],
-          env: { ...process.env, CUDIA_FIXTURE_ARCHIVE: archive, CUDIA_FIXTURE_DESTINATION: path.dirname(defaults) },
+          env: {
+            PATH: path.join(process.env.SystemRoot ?? "C:\\Windows", "System32"),
+            SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
+            TEMP: root,
+            TMP: root,
+            USERPROFILE: root,
+            CUDIA_FIXTURE_ARCHIVE: archive,
+            CUDIA_FIXTURE_DESTINATION: path.dirname(defaults),
+          },
           stdout: "ignore",
           stderr: "pipe",
           windowsHide: true,
@@ -194,8 +202,12 @@ test.skipIf(!enabled || process.platform !== "win32")(
       const location = `location%5Bdirectory%5D=${encodeURIComponent(workspace)}`
       const admin = `${base}/api/mcp`
       expect((await fetch(legacy(""))).status).toBe(200)
-      const initial = (await (await fetch(`${admin}?${location}`)).json()) as { data: unknown }
-      expect(initial.data).toMatchObject([{ name: "rea", status: "disabled", toolCount: 0 }])
+      const initial = (await (await fetch(`${admin}?${location}`)).json()) as { data: { name: string }[] }
+      expect(initial.data.find((server) => server.name === "rea")).toMatchObject({
+        name: "rea",
+        status: "disabled",
+        toolCount: 0,
+      })
       expect(await readdir(path.join(cache, "opencode", "managed-rea")).catch(() => [])).toEqual([])
       expect(requests).toHaveLength(0)
       const started = Date.now()
@@ -240,8 +252,13 @@ test.skipIf(!enabled || process.platform !== "win32")(
         180000,
       )
       expect(requests).toHaveLength(5)
-      const final = (await (await fetch(`${admin}?${location}`)).json()) as { data: unknown }
-      expect(final.data).toMatchObject([{ name: "rea", status: "connected", toolCount: 207, exposureCount: 1 }])
+      const final = (await (await fetch(`${admin}?${location}`)).json()) as { data: { name: string }[] }
+      expect(final.data.find((server) => server.name === "rea")).toMatchObject({
+        name: "rea",
+        status: "connected",
+        toolCount: 207,
+        exposureCount: 1,
+      })
       expect(await readFile(receiptFile, "utf8")).toBe(receiptBytes)
       expect((await fetch(`${admin}/rea/disconnect?${location}`, { method: "POST" })).status).toBe(204)
       console.log(

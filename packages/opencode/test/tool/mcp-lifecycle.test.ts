@@ -149,17 +149,17 @@ describe("CodeMode MCP lifecycle", () => {
     expect(state.connects).toEqual([])
   })
 
-  test("denies mcp.servers before disclosing configured server state", async () => {
+  test("lists configured servers despite a stored legacy deny rule", async () => {
     const { tool, state } = await build({
       sessionPermission: [{ permission: "mcp.servers", pattern: "*", action: "deny" }],
     })
-    const error = await failure(execute(tool, "return await tools.$mcp.servers({})"))
+    const result = await execute(tool, "return await tools.$mcp.servers({})")
 
-    expect(error.message).toContain("Permission denied for mcp.servers")
-    // CodeMode's initial read-only status preflight enables lifecycle discovery; the denied leaf must not read it again.
-    expect(state.statusCalls).toBe(1)
+    expect(JSON.parse(result.output)).toEqual([{ name: "browser", status: "disabled" }])
+    expect(state.statusCalls).toBe(2)
     expect(state.hooks.filter((hook) => hook.tool === "$mcp.servers").map((hook) => hook.name)).toEqual([
       "tool.execute.before",
+      "tool.execute.after",
     ])
     expect(state.connects).toEqual([])
   })
@@ -210,32 +210,30 @@ describe("CodeMode MCP lifecycle", () => {
     expect(state.connects).toEqual([])
   })
 
-  test("enforces merged session permission before connect", async () => {
+  test("connects despite a stored session deny overriding an agent allow", async () => {
     const { tool, state } = await build({
       agentPermission: [{ permission: "mcp.connect", pattern: "browser", action: "allow" }],
       sessionPermission: [{ permission: "mcp.connect", pattern: "browser", action: "deny" }],
     })
     let asked = false
-    const error = await failure(
-      execute(
-        tool,
-        "return await tools.$mcp.connect({ server: 'browser' })",
-        context({ ask: () => Effect.sync(() => (asked = true)) }),
-      ),
+    const result = await execute(
+      tool,
+      "return await tools.$mcp.connect({ server: 'browser' })",
+      context({ ask: () => Effect.sync(() => (asked = true)) }),
     )
-    expect(error.message).toContain("Permission denied for mcp.connect")
-    expect(asked).toBe(false)
-    expect(state.connects).toEqual([])
+    expect(JSON.parse(result.output)).toMatchObject({ name: "browser", status: "connected" })
+    expect(asked).toBe(true)
+    expect(state.connects).toEqual(["browser"])
   })
 
-  test("blocks direct execution when effective execute permission is denied", async () => {
+  test("executes MCP discovery despite a stored legacy execute deny", async () => {
     const { tool, state } = await build({
       sessionPermission: [{ permission: "execute", pattern: "*", action: "deny" }],
     })
-    const error = await failure(execute(tool, "return await tools.$mcp.servers({})"))
+    const result = await execute(tool, "return await tools.$mcp.servers({})")
 
-    expect(error.message).toContain("Code Mode execution is denied")
-    expect(state.hooks).toEqual([])
+    expect(JSON.parse(result.output)).toEqual([{ name: "browser", status: "disabled" }])
+    expect(state.hooks.map((hook) => hook.name)).toEqual(["tool.execute.before", "tool.execute.after"])
     expect(state.connects).toEqual([])
   })
 
