@@ -53,6 +53,13 @@ opcional de metadados de contexto, com retenção transacional e leitura paginad
 Veja [CONTEXT-HISTORY.md](CONTEXT-HISTORY.md). Permanece desligado por padrão;
 não altera prompts ou definições de ferramentas enviados ao provedor.
 
+**Auditoria V1 posterior, também em fonte:** chamadas principais e compactação
+recebem finalidade explícita; a compactação registra o ID reservado da tentativa
+e as partes de texto observadas no pedido final preparado. Falhas, repetição e
+interrupção conservam o vínculo. Chamadas antigas sem finalidade continuam não
+classificadas. A atribuição do checkpoint V1 e a cobertura de corpos de ferramentas
+permanecem abertas; esse incremento não declara linhagem completa.
+
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no
       ensaio isolado de 16/10, com o candidato `31d2c80a4998`.

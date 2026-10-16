@@ -1629,6 +1629,149 @@ describe("session.llm.stream", () => {
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 
+  for (const native of [false, true]) {
+    it.instance(
+      `attributes V1 compaction at the final ${native ? "native" : "AI SDK"} boundary without changing provider bodies`,
+      () =>
+        Effect.gen(function* () {
+          const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make("gpt-5.2"))
+          const sessionID = SessionID.make("session-compaction-attribution")
+          const agent = { name: "compaction", mode: "primary", options: {}, permission: [] } satisfies Agent.Info
+          const input: LLM.StreamInput = {
+            sessionID,
+            model: resolved,
+            agent,
+            user: {
+              id: MessageID.make("msg_attribution_parent"),
+              sessionID,
+              role: "user",
+              time: { created: Date.now() },
+              agent: agent.name,
+              model: { providerID: ProviderV2.ID.openai, modelID: resolved.id },
+            },
+            system: ["Synthetic attribution instruction"],
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: "Summary input Ω\uD800" },
+                  { type: "text", text: "Second part 🌍" },
+                ],
+              },
+            ],
+            tools: {},
+          }
+          const chunks = [
+            { type: "response.created", response: { id: "resp-attribution" } },
+            {
+              type: "response.output_item.added",
+              output_index: 0,
+              item: { type: "message", id: "item-attribution", status: "in_progress", role: "assistant", content: [] },
+            },
+            {
+              type: "response.content_part.added",
+              item_id: "item-attribution",
+              output_index: 0,
+              content_index: 0,
+              part: { type: "output_text", text: "", annotations: [] },
+            },
+            { type: "response.output_text.delta", item_id: "item-attribution", delta: "Summary", logprobs: null },
+            {
+              type: "response.completed",
+              response: {
+                incomplete_details: null,
+                usage: {
+                  input_tokens: 1,
+                  input_tokens_details: null,
+                  output_tokens: 1,
+                  output_tokens_details: null,
+                },
+              },
+            },
+          ]
+          for (const purpose of ["compaction", "main", undefined] as const) {
+            const captures: ContextAudit.Input[] = []
+            const bodies: unknown[] = []
+            for (const enabled of [false, true]) {
+              const request = waitRequest("/responses", createEventResponse(chunks, true))
+              yield* drainWith(
+                llmLayerWithExecutor({
+                  contextMode: "lean",
+                  flags: { experimentalNativeLlm: native },
+                  audit: Layer.succeed(
+                    ContextAudit.Service,
+                    ContextAudit.Service.of({
+                      enabled,
+                      latest: () => Effect.succeed(undefined),
+                      record: (capture) =>
+                        Effect.sync(() => {
+                          if (!enabled) throw new Error("Audit-off must not observe attribution")
+                          captures.push(capture)
+                        }),
+                    }),
+                  ),
+                }),
+                {
+                  ...input,
+                  messages: structuredClone(input.messages),
+                  purpose,
+                  compactionMessageID: "msg_reserved_attempt",
+                },
+              )
+              bodies.push((yield* Effect.promise(() => request)).body)
+            }
+            expect(bodies[1]).toEqual(bodies[0])
+            expect(JSON.stringify(bodies)).not.toContain("msg_reserved_attempt")
+            expect(captures).toHaveLength(1)
+            const capture = captures[0]!
+            expect(capture.runtime).toBe(native ? "v1-native" : "v1-ai-sdk")
+            expect(capture.purpose).toBe(purpose)
+            expect(capture.compactionMessageID).toBe(purpose === "compaction" ? "msg_reserved_attempt" : undefined)
+            if (purpose !== "compaction") {
+              expect(capture.messageSources).toBeUndefined()
+              continue
+            }
+            expect(capture.messageSources?.map((part) => part.text)).toEqual([
+              "Summary input Ω\uFFFD",
+              "Second part 🌍",
+            ])
+            for (const part of capture.messageSources ?? []) {
+              const message = capture.messages[part.messageIndex] as {
+                role: string
+                content: Array<{ type: string; text: string }>
+              }
+              expect(part.source).toBe("compaction-prompt")
+              expect(message.role).toBe(part.role)
+              expect(message.content[part.partIndex]).toMatchObject({ type: "text", text: part.text })
+            }
+          }
+          const excluded: ContextAudit.Input[] = []
+          const smallRequest = waitRequest("/responses", createEventResponse(chunks, true))
+          yield* drainWith(
+            llmLayerWithExecutor({
+              flags: { experimentalNativeLlm: native },
+              audit: Layer.succeed(
+                ContextAudit.Service,
+                ContextAudit.Service.of({
+                  enabled: true,
+                  latest: () => Effect.succeed(undefined),
+                  record: (capture) =>
+                    Effect.sync(() => {
+                      excluded.push(capture)
+                    }),
+                }),
+              ),
+            }),
+            { ...input, messages: structuredClone(input.messages), small: true, purpose: "compaction" },
+          )
+          yield* Effect.promise(() => smallRequest)
+          expect(excluded).toEqual([])
+        }),
+      { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+      30_000,
+    )
+  }
+
   it.instance(
     "streams OpenAI through native runtime when opted in",
     () =>

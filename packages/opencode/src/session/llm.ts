@@ -45,6 +45,9 @@ export type StreamInput = {
   retries?: number
   toolChoice?: "auto" | "required" | "none"
   contextTrace?: ContextTrace.Collector
+  /** Observation only: callers identify the operation; never sent to providers. */
+  purpose?: ContextAudit.Input["purpose"]
+  compactionMessageID?: string
 }
 
 export type StreamRequest = StreamInput & {
@@ -199,6 +202,10 @@ const live: Layer.Layer<
               ? (request) =>
                   audit.record({
                     runtime: "v1-native",
+                    ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
+                    ...(input.purpose === "compaction" && input.compactionMessageID !== undefined
+                      ? { compactionMessageID: input.compactionMessageID }
+                      : {}),
                     sessionID: input.sessionID,
                     agent: input.agent.name,
                     model: { provider: request.model.provider, id: request.model.id },
@@ -213,6 +220,27 @@ const live: Layer.Layer<
                       ),
                     ],
                     messages: request.messages,
+                    ...(input.purpose === "compaction"
+                      ? {
+                          messageSources: request.messages.flatMap((message, messageIndex) =>
+                            message.role === "user"
+                              ? message.content.flatMap((part, partIndex) =>
+                                  part.type === "text"
+                                    ? [
+                                        {
+                                          source: "compaction-prompt",
+                                          role: message.role,
+                                          messageIndex,
+                                          partIndex,
+                                          text: part.text,
+                                        },
+                                      ]
+                                    : [],
+                                )
+                              : [],
+                          ),
+                        }
+                      : {}),
                     tools: request.tools,
                     ...(contextTrace ? { trace: contextTrace.capture() } : {}),
                   })
@@ -333,6 +361,10 @@ const live: Layer.Layer<
                       await bridge.promise(
                         audit.record({
                           runtime: "v1-ai-sdk",
+                          ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
+                          ...(input.purpose === "compaction" && input.compactionMessageID !== undefined
+                            ? { compactionMessageID: input.compactionMessageID }
+                            : {}),
                           sessionID: input.sessionID,
                           agent: input.agent.name,
                           model: { provider: input.model.providerID, id: input.model.api.id },
@@ -347,6 +379,27 @@ const live: Layer.Layer<
                             ),
                           ],
                           messages: args.params.prompt,
+                          ...(input.purpose === "compaction"
+                            ? {
+                                messageSources: args.params.prompt.flatMap((message, messageIndex) =>
+                                  message.role === "user"
+                                    ? message.content.flatMap((part, partIndex) =>
+                                        part.type === "text"
+                                          ? [
+                                              {
+                                                source: "compaction-prompt",
+                                                role: message.role,
+                                                messageIndex,
+                                                partIndex,
+                                                text: part.text,
+                                              },
+                                            ]
+                                          : [],
+                                      )
+                                    : [],
+                                ),
+                              }
+                            : {}),
                           tools: (args.params.tools ?? []).map((tool) => ({
                             name: tool.name,
                             ...(tool.type === "function"

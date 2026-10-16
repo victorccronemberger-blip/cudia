@@ -236,8 +236,10 @@ carregado somente quando habilitado. Esse incremento ainda não integra o
 instalador Preview 12.
 
 Desde a Preview 12, `purpose` distingue chamadas `main` e
-`compaction` do V2. Ausência desse campo em capturas antigas ou no V1 significa
-finalidade não classificada. `messageSources` identifica o prompt de compactação
+`compaction` do V2. Nos fontes posteriores à Preview 12, os chamadores principais
+e de compactação do V1 também fornecem essa identificação explicitamente.
+Ausência desse campo continua significando finalidade não classificada; o nome
+do agente não determina a finalidade. `messageSources` identifica o prompt de compactação
 e o checkpoint da retomada como conteúdo de mensagem de usuário, separado das
 instruções de sistema. Seus índices de mensagem e parte são baseados em zero;
 os hashes e bytes descrevem o texto exato preparado, incluindo o wrapper do
@@ -247,9 +249,18 @@ existe quando a tentativa falha ou é cancelada, sem provar que o resumo foi sal
 São incluídas até 128 fontes de mensagens; `omittedMessageSources` informa o
 total omitido pelo teto de registros ou pelos 64 KiB de metadados compartilhados
 com manifests e trace. Esses limites não limitam as mensagens enviadas ao modelo.
-Somente a última captura é mantida; isto não constitui histórico durável ou
-linhagem completa dos resumos. `debug context` oculta todos os textos capturados
+Na Preview 12, somente a última captura é mantida. O histórico opcional dos fontes
+posteriores mantém metadados limitados e não estabelece linhagem completa dos
+resumos. `debug context` oculta todos os textos capturados
 até que `--content` seja solicitado, inclusive quando o arquivo contém texto.
+
+No V1, o prompt de compactação é observado depois das transformações, no ponto
+de captura de cada adaptador. Os índices descrevem as mensagens e partes dessa
+representação final preparada. `compactionMessageID` identifica a tentativa
+reservada, inclusive em falha, repetição ou interrupção. O checkpoint de retomada
+V1 ainda não tem atribuição por ID comprovada; chamadas auxiliares `small` e o
+workflow remoto conservam suas exclusões existentes. Essa ampliação é em fonte,
+fora do instalador Preview 12.
 
 A captura cobre V1 AI SDK, V1 nativo e o runner V2. Ela observa o contexto
 preparado antes do adaptador do provedor, não o tráfego final ou instruções

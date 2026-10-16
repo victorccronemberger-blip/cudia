@@ -52,8 +52,9 @@ bancos de outra aplicação ou versão incompatível são rejeitados.
 
 Isso é um registro limitado de capturas persistidas com sucesso, não um log
 completo de execução. IDs explícitos são preservados; lacunas podem significar
-retenção, auditoria desligada ou falha de persistência. Finalidade ausente no V1
-continua não classificada. O adaptador Node tem checagem de tipos; os testes de
+retenção, auditoria desligada ou falha de persistência. Finalidade ausente
+continua não classificada; os chamadores instrumentados do V1 e V2 fornecem
+finalidade explicitamente. O adaptador Node tem checagem de tipos; os testes de
 execução deste incremento foram feitos com Bun. Não foi acrescentado um teste de
 cancelamento com histórico habilitado; os testes existentes de cancelamento do
 runner não demonstram essa combinação específica.

@@ -1689,9 +1689,11 @@ describe("auxiliary compaction snapshots", () => {
       () => {
         const stub = llm()
         const calls: string[] = []
+        const observed: LLM.StreamInput[] = []
         let attempts = 0
         if (outcome === "retried")
-          stub.push(() => {
+          stub.push((input) => {
+            observed.push(input)
             attempts++
             return Stream.fail(
               new APICallError({
@@ -1705,6 +1707,7 @@ describe("auxiliary compaction snapshots", () => {
             )
           })
         stub.push((input) => {
+          observed.push(input)
           attempts++
           expect(input.tools).toEqual({})
           const stream =
@@ -1735,6 +1738,12 @@ describe("auxiliary compaction snapshots", () => {
             (message) => message.info.role === "assistant" && message.info.summary,
           )
           if (!summary || summary.info.role !== "assistant") throw new Error("Missing summary assistant")
+          expect(observed).toHaveLength(attempts)
+          for (const request of observed) {
+            expect(request.purpose).toBe("compaction")
+            expect(request.compactionMessageID).toBe(summary.info.id)
+            expect(request.user.id).toBe(parent.id)
+          }
           expect(summary.parts.some((part) => part.type === "step-start")).toBe(true)
           expect(summary.parts.some((part) => part.type === "patch" || part.type === "tool")).toBe(false)
           for (const part of summary.parts) {
@@ -1760,14 +1769,16 @@ describe("auxiliary compaction snapshots", () => {
     () => {
       const stub = llm()
       const calls: string[] = []
+      let observed: LLM.StreamInput | undefined
       return Effect.gen(function* () {
         const ready = yield* Deferred.make<void>()
-        stub.push(
-          Stream.concat(
+        stub.push((input) => {
+          observed = input
+          return Stream.concat(
             Stream.make(LLMEvent.stepStart({ index: 0 })),
             Stream.unwrap(Deferred.succeed(ready, undefined).pipe(Effect.as(Stream.never))),
-          ),
-        )
+          )
+        })
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
         const parent = yield* createUserMessage(session.id, "Summarize then interrupt")
@@ -1783,6 +1794,9 @@ describe("auxiliary compaction snapshots", () => {
         const summary = (yield* ssn.messages({ sessionID: session.id })).find(
           (message) => message.info.role === "assistant" && message.info.summary,
         )
+        expect(summary).toBeDefined()
+        expect(observed?.purpose).toBe("compaction")
+        expect(observed?.compactionMessageID).toBe(summary?.info.id)
         expect(summary?.parts.some((part) => part.type === "patch")).toBe(false)
         expect(calls).toEqual([])
       }).pipe(withCompaction({ llm: stub.llmLayer, snapshots: unexpectedSnapshots(calls) }))

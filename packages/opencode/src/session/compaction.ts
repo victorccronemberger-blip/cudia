@@ -426,6 +426,8 @@ const layer = Layer.effect(
         model,
       })
       const result = yield* processor.process({
+        purpose: "compaction",
+        compactionMessageID: msg.id,
         user: userMessage,
         agent,
         sessionID: input.sessionID,
