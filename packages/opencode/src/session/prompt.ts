@@ -61,6 +61,7 @@ import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
 import { HistorySource } from "./history-source"
+import { HistoryProjection } from "./history-projection"
 import { ContextTrace } from "@opencode-ai/core/harness/trace"
 
 // @ts-ignore
@@ -1290,12 +1291,13 @@ const layer = Layer.effect(
             )
 
             const historySnapshot = audit.enabled ? HistorySource.capture(msgs) : undefined
+            const historyProjection = historySnapshot ? HistoryProjection.create(historySnapshot) : undefined
             const prepared = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system(),
               sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
+              MessageV2.toModelMessagesEffect(msgs, model, { historyProjection }),
             ]).pipe(
               Effect.catchTag("InstructionSourceError", (error) =>
                 Effect.gen(function* () {
@@ -1342,6 +1344,7 @@ const layer = Layer.effect(
               toolChoice: format.type === "json_schema" ? "required" : undefined,
               ...(contextTrace ? { contextTrace } : {}),
               ...(historySnapshot ? { historySnapshot } : {}),
+              ...(historyProjection ? { historyProjection } : {}),
             })
 
             if (structured !== undefined) {

@@ -28,6 +28,7 @@ import { WorkflowSessions } from "./llm/workflow"
 import { HarnessPolicy } from "@opencode-ai/core/harness/policy"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
 import { ContextTrace } from "@opencode-ai/core/harness/trace"
+import type { HistoryProjection } from "./history-projection"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -49,6 +50,7 @@ export type StreamInput = {
   purpose?: ContextAudit.Input["purpose"]
   compactionMessageID?: string
   historySnapshot?: ContextAudit.Input["historySnapshot"]
+  historyProjection?: HistoryProjection.Collector
 }
 
 export type StreamRequest = StreamInput & {
@@ -203,7 +205,11 @@ const live: Layer.Layer<
               ? (request) =>
                   audit.record({
                     runtime: "v1-native",
-                    ...(input.historySnapshot === undefined ? {} : { historySnapshot: input.historySnapshot }),
+                    ...(input.historySnapshot === undefined
+                      ? {}
+                      : {
+                          historySnapshot: input.historyProjection?.capture(request.messages) ?? input.historySnapshot,
+                        }),
                     ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
                     ...(input.purpose === "compaction" && input.compactionMessageID !== undefined
                       ? { compactionMessageID: input.compactionMessageID }
@@ -363,7 +369,12 @@ const live: Layer.Layer<
                       await bridge.promise(
                         audit.record({
                           runtime: "v1-ai-sdk",
-                          ...(input.historySnapshot === undefined ? {} : { historySnapshot: input.historySnapshot }),
+                          ...(input.historySnapshot === undefined
+                            ? {}
+                            : {
+                                historySnapshot:
+                                  input.historyProjection?.capture(args.params.prompt) ?? input.historySnapshot,
+                              }),
                           ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
                           ...(input.purpose === "compaction" && input.compactionMessageID !== undefined
                             ? { compactionMessageID: input.compactionMessageID }

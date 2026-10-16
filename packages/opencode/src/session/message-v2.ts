@@ -36,6 +36,7 @@ import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
 import { ToolOutput } from "./tool-output"
+import type { HistoryProjection } from "./history-projection"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -126,7 +127,7 @@ function providerMeta(metadata: Record<string, any> | undefined) {
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; historyProjection?: HistoryProjection.Collector },
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
@@ -197,7 +198,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
     return { type: "json", value: output as never }
   }
 
-  for (const msg of input) {
+  for (const [messageIndex, msg] of input.entries()) {
     if (msg.parts.length === 0) continue
 
     if (msg.info.role === "user") {
@@ -279,7 +280,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         if (part.type !== "reasoning") return false
         return part.metadata?.anthropic?.signature != null
       })
-      for (const part of msg.parts) {
+      for (const [partIndex, part] of msg.parts.entries()) {
         if (part.type === "text") {
           const text = part.text === "" && hasSignedReasoning ? " " : part.text
           assistantMessage.parts.push({
@@ -318,14 +319,23 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
                   }
                 : outputText
 
-            assistantMessage.parts.push({
+            const converted = {
               type: ("tool-" + part.tool) as `tool-${string}`,
-              state: "output-available",
+              state: "output-available" as const,
               toolCallId: part.callID,
               input: part.state.input,
               output,
               ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
               ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
+            }
+            assistantMessage.parts.push(converted)
+            options?.historyProjection?.register({
+              messageIndex,
+              partIndex,
+              messageID: msg.info.id,
+              part,
+              input: converted.input,
+              output: converted.output,
             })
           }
           if (part.state.status === "error") {
@@ -407,7 +417,21 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
     }
   }
 
-  const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }]))
+  options?.historyProjection?.seal(result)
+  const tools = Object.fromEntries(
+    Array.from(toolNames).map((toolName) => [
+      toolName,
+      {
+        toModelOutput: options?.historyProjection
+          ? (call: { toolCallId: string; input: unknown; output: unknown }) => {
+              const rendered = toModelOutput(call)
+              options.historyProjection!.render(toolName, call, rendered)
+              return rendered
+            }
+          : toModelOutput,
+      },
+    ]),
+  )
 
   return yield* Effect.promise(() =>
     convertToModelMessages(
@@ -423,7 +447,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; historyProjection?: HistoryProjection.Collector },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options))
 }

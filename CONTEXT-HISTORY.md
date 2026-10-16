@@ -68,10 +68,11 @@ constituem uma nova consulta ao banco nem comprovam autoria de plugins.
 
 Seu identificador local acompanha a captura final sem entrar no pedido do
 provedor. `captureID` diferencia capturas que compartilham o mesmo snapshot, como
-em repetições. O campo `mapping: unmapped-after-conversion` explicita que o
-conversor e os adaptadores não preservam a relação com cada parte final. Não há
-atribuição por igualdade de texto, inclusive quando vários resumos têm conteúdo
-idêntico.
+em repetições. Relatórios anteriores e chamadas sem coletor conservam
+`mapping: unmapped-after-conversion`. Nas chamadas principais instrumentadas,
+`prepared` informa por fonte a posição observada ou a ausência desse vínculo;
+o coletor do SDK está descrito abaixo. Resumos V1 continuam sem mapeamento final.
+Não há atribuição por igualdade de texto, inclusive com conteúdo idêntico.
 
 São conservadas até 128 fontes; contagens e bytes incluem as demais, e
 `omittedSources` informa exclusões por quantidade ou orçamento. Seus metadados
@@ -216,6 +217,31 @@ sem coletor, textos/call IDs repetidos, mídia com texto, substituição nativa,
 cópias não observadas, invalidação sem recuperação por aliases antigos e os
 resultados de skill/recursos/guidance no runner. A regressão integrada passou com
 320 testes e 1.892 verificações em 28 arquivos; Core/OpenCode passaram nos tipos.
+
+## Partes preparadas pelo SDK no V1
+
+Nas chamadas principais V1, o conversor registra os resultados selecionados de
+skill/guidance MCP no callback real `toModelOutput` do SDK. O vínculo usa a
+identidade do objeto de entrada, observado no resultado canônico, e depois a
+identidade do objeto textual devolvido pelo renderer. O renderer mantém uma
+invocação e o mesmo resultado. IDs e texto conferem uma origem já localizada;
+não escolhem entre entradas repetidas.
+
+Antes da conversão, o coletor confere reutilização da entrada entre todos os
+resultados canônicos, inclusive ferramentas que não geram recibo. Entradas
+compartilhadas são ambíguas. O pedido final preparado depois de
+`ProviderTransform.message` é percorrido por identidade, acompanhando texto
+simples e texto aninhado em conteúdo com anexos, sem acrescentar campos ao SDK.
+Projeção reduzida, normalização que altere o texto, cópias externas e repetições
+do mesmo objeto não recebem mapeamento válido.
+
+A cobertura é do SDK V1 principal e dos loaders selecionados. Entradas primitivas
+ficam explicitamente sem suporte; resumos e a conversão nativa permanecem sem
+vínculo observado. A validação HTTP compara o corpo codificado byte a byte com a
+auditoria ligada/desligada em ambos os caminhos; isso não atribui identidade às
+partes depois da serialização nem estende a prova a todos os provedores.
+Passaram 112 testes e 447 verificações em seis arquivos, com um skip preexistente
+de API key no fluxo nativo gravado; o pacote também passou na checagem de tipos.
 
 ## Validação
 

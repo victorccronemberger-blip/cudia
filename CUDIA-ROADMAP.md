@@ -116,6 +116,18 @@ Relatórios anteriores continuam legíveis. Passaram 320 testes/1.892 verificaç
 em 28 arquivos, além dos tipos de Core/OpenCode. V1, compactação e o tráfego após
 os adaptadores continuam fora desse mapeamento. O instalador permanece Preview 12.
 
+**Partes preparadas V1 pelo SDK, em fonte:** resultados de skill/guidance MCP
+acompanham o callback real de conversão por identidade de entrada e de objeto
+textual, até a captura depois de `ProviderTransform.message`. Entradas compartilhadas,
+texto alterado, recortes e cópias não observadas ficam explicitamente sem vínculo.
+O callback conserva a saída original e não acrescenta instruções ou campos ao
+provedor. O teste HTTP compara também os bytes codificados com auditoria ligada
+e desligada. Resumos, conversão nativa e demais loaders permanecem fora dessa
+atribuição; o contrato não declara identidade no tráfego após serialização.
+A regressão passou com 112 testes e 447 verificações em seis arquivos, um skip
+preexistente de API key, além da checagem de tipos do pacote. Esse incremento
+continua fora do instalador Preview 12.
+
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no
       ensaio isolado de 16/10, com o candidato `31d2c80a4998`.
