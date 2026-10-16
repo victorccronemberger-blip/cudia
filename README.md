@@ -35,7 +35,9 @@ próprio, que o CUDIA não remove nem controla.
 
 O [site oficial](https://cyara.com.br) mostra os downloads verificados de cada
 canal. A Preview usa `cudia` no PATH e atualizações assinadas descobertas pelo
-domínio do CUDIA. A sequência 13 está publicada com instaladores normal/baseline
+domínio do CUDIA. A sequência 14 está ativa; o estado do REA e a limitação de preparação automática
+estão nas [evidências da Preview 14](provenance/preview-14/README.md). A sequência 13,
+descrita a seguir como histórico, foi publicada com instaladores normal/baseline
 e pacotes de atualização. Instalação, PATH, abertura em outra pasta e remoção
 passaram em duas VMs Windows Server 2025 novas, sem Node, Bun ou Git no PATH.
 No Windows desta máquina, a atualização real 12 → 13 e a resposta Grok passaram.

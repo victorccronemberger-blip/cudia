@@ -1,0 +1,61 @@
+{
+  "checkedAt": "2026-10-16T22:36:05.034Z",
+  "activePreview": {
+    "sequence": 14,
+    "releaseId": 415407317,
+    "version": "1.18.35+cudia.2c8d8027e05e.7800487fc17a",
+    "engineSha256": "9f204252a2afaa9f6afd6626f7ca4f15f1853250c0a0a449b2305863a9d05bce",
+    "physicalUpdate13To14": true,
+    "reaManagedFirstRunPassed": false
+  },
+  "candidatePreview": {
+    "sequence": 15,
+    "releaseId": 415423195,
+    "sourceCommit": "23420b6382cadc1ab7a2cfc811f950db65063be2",
+    "active": false,
+    "compiledNormal": {
+      "variant": "normal",
+      "sourceCommit": "23420b6382cadc1ab7a2cfc811f950db65063be2",
+      "exitCode": 0,
+      "passed": 5,
+      "failed": 0,
+      "assertions": 581,
+      "logSha256": "25b17e86501360efd46ccdc64c67d12b0d3e8e135c800cc0bd180c2348d23ddf",
+      "completedAt": "2026-10-16T22:15:11.074Z"
+    },
+    "compiledBaseline": {
+      "variant": "baseline",
+      "sourceCommit": "23420b6382cadc1ab7a2cfc811f950db65063be2",
+      "exitCode": 0,
+      "passed": 5,
+      "failed": 0,
+      "assertions": 581,
+      "logSha256": "94161cc14709f3c08fb40979c447dd8e365a3a7e0eed160eb888c72cbf7440cd",
+      "completedAt": "2026-10-16T22:15:11.429Z"
+    },
+    "unpackagedHostPassed": false
+  },
+  "localStandardMcp": {
+    "installedEngineSequence": 14,
+    "analysisPassed": true,
+    "provider": "synthetic-local-fixture",
+    "nodeVersion": "24.22.0",
+    "reaVersion": "6.5.0",
+    "files": 7713,
+    "packageBytes": 115008378,
+    "tools": 207,
+    "exposed": 1,
+    "disabledByDefault": true,
+    "outputSchemaProfile": "off",
+    "otherSettingsPreserved": true,
+    "assertions": 24,
+    "effectiveGlobalEntryVerified": true,
+    "onlyMcpReaChanged": true,
+    "backupPresent": true
+  },
+  "unresolved": [
+    "First managed REA preparation exceeded 240 seconds outside MSIX.",
+    "Automatic REA preparation on a fresh Windows PC is not qualified.",
+    "External reverse-engineering engines retain their own prerequisites."
+  ]
+}

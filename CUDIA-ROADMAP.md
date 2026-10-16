@@ -24,6 +24,18 @@ incrementos. Referências antigas a negações, escopo imposto e Arena somente l
 não representam a política atual. A auditoria não autoriza uma afirmação universal
 de que nenhuma dependência, integração ou prompt externo possa impor limites.
 
+## REA — estado em 16/10/2026
+
+- [x] Integrar REA 6.5.0 por MCP, skill e comando `/rea`, sob demanda.
+- [x] Preservar as 207 ferramentas, expondo ao modelo somente as selecionadas.
+- [x] Validar análise sintética pelo executável instalado com comando MCP padrão,
+      Node portátil e configuração local com backup.
+- [ ] Resolver a demora da primeira preparação gerenciada fora do MSIX e qualificar
+      o REA automático em um PC novo. A candidata 15 permanece inativa.
+
+A Preview 14 está ativa. A integração local foi validada; o preparo automático
+permanece incompleto. [Evidências](provenance/preview-14/README.md).
+
 ## Primeira entrega — escopo confirmado pelo operador em 16/10/2026
 
 Fechar OAuth ChatGPT/Grok, instalador Windows com `cudia` no PATH e atualizações.
@@ -2623,7 +2635,6 @@ contém condição de carregamento além do contrato de busca. A orientação di
 de servidores em `tool/code-mode.ts` requer auditoria de origem separada. Esses
 achados são leitura de código ativo, sem afirmar cobertura universal.
 
-
 ## Descrições neutras das ferramentas — incremento validado
 
 As descrições ativas inspecionadas agora apresentam os contratos das operações.
@@ -2698,7 +2709,6 @@ preparado ainda exigem cobertura adicional. QA visual, instalador profissional,
 publicação assinada e atualizações públicas continuam pendentes. A meta geral
 permanece ativa.
 
-
 ## Próxima correção de integração: GitLab Workflow
 
 A leitura do código ativo encontrou estado compartilhado que requer uma correção
@@ -2730,7 +2740,6 @@ operações reais da dependência para intercalar chamadas e conferir identidade
 prompt, executor e estado de aprovação. Um callback de aprovação sem estado é
 suficiente no host. Essa implementação permanece pendente; a correção de retomada
 da ferramenta task é independente e foi validada no incremento abaixo.
-
 
 ## Retomada de tarefas com identidade explícita — incremento validado
 
@@ -2793,14 +2802,12 @@ de produção. O builder do wizard já exige chaves de confiança e mantém
 validatedForPublication false. Provisionamento de chaves, publicação, QA interativa
 e Windows limpo continuam como trabalhos da entrega final.
 
-
 Verificação pública desta rodada: em 16/10/2026 às 05:05:51 UTC, consultas HEAD
 a https://cyara.com.br/updates/v1/stable.json e https://cyara.com.br/health retornaram
 404 com Content-Type text/html, sem redirecionamento. Isso verifica indisponibilidade
 nesses caminhos; não determina sozinho o estado da configuração ou do deploy na
 Hostinger. A ferramenta de leitura web não conseguiu abrir esses endereços; a
 observação HTTP foi obtida diretamente com Node.js 22, sem alterar o servidor.
-
 
 ### Distribuição testada com o motor deste incremento
 
@@ -2836,7 +2843,6 @@ motor; sua correção não exige recompilar esse executável. Versão e fingerpr
 O executor principal corrigiu essa expectativa e executou a validação;
 gpt-6-luna/high auditou somente a preparação de distribuição, sem publicar ou
 provisionar chaves. A meta geral permanece ativa.
-
 
 ### GitLab Workflow: isolamento, continuidade e aprovação legada — 16/10/2026
 
@@ -3039,8 +3045,8 @@ implementadas; um estado inválido produz erro visível e preserva os dados.
       binário: 56 pass, 1 skip e 10 fail em 67 testes/220 assertions. Dois casos
       reproduziram timeout de 5 segundos com os três arquivos Core originais de
       `9e1dfa9c3b829aa92dfe4eba6ee252fcfbec63cf`: `falls back to full summary when
-      even one recent turn exceeds preserve token budget` e `does not allow
-      tool calls while generating the summary`. Naquela rodada, os outros oito
+    even one recent turn exceeds preserve token budget` e `does not allow
+    tool calls while generating the summary`. Naquela rodada, os outros oito
       ficaram sem causa estabelecida. A correção de snapshots descrita no
       incremento seguinte fez os dez casos passarem sob os mesmos prazos.
 

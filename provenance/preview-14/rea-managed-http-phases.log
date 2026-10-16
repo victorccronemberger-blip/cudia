@@ -1,0 +1,10 @@
+{"phase":"locked","at":1792189290120,"cpu":{"user":6000000,"system":1359000}}
+{"phase":"download-start","at":1792189290191,"cpu":{"user":6078000,"system":1375000}}
+{"phase":"install-start","at":1792189293567,"cpu":{"user":10234000,"system":2187000}}
+{"phase":"install-complete","at":1792189311422,"cpu":{"user":28375000,"system":4734000}}
+{"phase":"inventory-start","at":1792189311503,"cpu":{"user":28453000,"system":4734000}}
+{"phase":"enumerated","at":1792189447488,"cpu":{"user":161843000,"system":31031000},"details":{"files":7713}}
+{"phase":"hashed","at":1792189464718,"cpu":{"user":179531000,"system":34500000},"details":{"processed":500,"budget":{"reserved":2836852,"read":2835648}}}
+{"phase":"hashed","at":1792189482054,"cpu":{"user":196937000,"system":37921000},"details":{"processed":1000,"budget":{"reserved":5529742,"read":5529742}}}
+{"phase":"hashed","at":1792189498297,"cpu":{"user":213390000,"system":41140000},"details":{"processed":1500,"budget":{"reserved":6915747,"read":6915747}}}
+{"phase":"hashed","at":1792189515009,"cpu":{"user":229734000,"system":44140000},"details":{"processed":2000,"budget":{"reserved":11132195,"read":11132195}}}

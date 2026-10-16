@@ -4,6 +4,14 @@ Integração sob demanda de [REA — Reverse Engineer Anything](https://github.c
 usando o pacote oficial `rea-agents@6.5.0`. A revisão examinada de `main` é
 `0d224742808e32106e2ee93340c6755ee5e0a0db`, que declara a mesma versão publicada.
 
+## Estado da entrega
+
+A Preview 14 inclui esta integração. Neste PC, o comando MCP padrão com Node e
+REA portáteis foi validado no executável instalado. A preparação automática
+pelo alias `cudia:rea` excedeu 240 segundos fora do MSIX e ainda não está
+qualificada em um PC novo. A candidata 15 permanece inativa.
+[Evidências e limitações](provenance/preview-14/README.md).
+
 ## Uso
 
 Na conversa do CUDIA, invoque `/rea` com seu objetivo, por exemplo:

@@ -1,0 +1,18 @@
+﻿bun test v1.3.14 (0d9b296a)
+bun.exe : 
+No C:\Users\victo\AppData\Local\Temp\cudia-engine-provenance-audit-wkUgq1\test-rea-standard-mcp-corrected-host.ps1:24 
+caractere:14
++ ... $taskOutput=& 'C:\Users\victo\AppData\Local\Temp\codex-cudia-bun-1.3. ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+..\..\..\installed-rea-standard-mcp.test.ts:
+installed standard MCP REA {"portableNode":true,"system32OnlyPath":true,"dormantBeforeConnect":true,"legacyConnected":true,"nativeTools":207,"exposed":1,"staticJavaScript":true,"verifiedBundleReceiptPreserved":true,"managedProvisioning":false,"elapsedMs":8429}
+(pass) REA prepares on explicit V1 connect and analyzes JavaScript through selected V2 tools without Node on PATH 
+[10896.52ms]
+
+ 1 pass
+ 0 fail
+ 24 expect() calls
+Ran 1 test across 1 file. [27.86s]
