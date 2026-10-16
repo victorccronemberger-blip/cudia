@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -45,11 +45,17 @@ test.skipIf(candidate === undefined)(
     const firstPlugin = path.join(temporary, "first-plugin.mjs")
     const secondPlugin = path.join(temporary, "second-plugin.mjs")
     const wrapperPlugin = path.join(temporary, "wrapper-plugin.mjs")
+    const stderrFile = path.join(temporary, "candidate-stderr.log")
+    const startedAt = Date.now()
+    const mark = (stage: string) =>
+      console.info("plugin-trace stage", JSON.stringify({ stage, elapsedMs: Date.now() - startedAt }))
     const captured: CapturedRequest[] = []
     let provider: ReturnType<typeof Bun.serve> | undefined
     let child: ReturnType<typeof Bun.spawn> | undefined
+    let testFailure: unknown
 
     try {
+      mark("fixture-start")
       await Promise.all(
         [workspace, config, data, cache, state].map((directory) => mkdir(directory, { recursive: true })),
       )
@@ -94,6 +100,7 @@ test.skipIf(candidate === undefined)(
         port: 0,
         async fetch(request) {
           if (new URL(request.url).pathname !== "/v1/chat/completions") return new Response(null, { status: 404 })
+          mark("provider-request")
           expect(request.headers.get("x-fixture-private")).toBe(HEADER_SECRET)
           captured.push((await request.json()) as CapturedRequest)
           return completion("V1_PLUGIN_TRACE_FIXTURE_OK")
@@ -160,12 +167,13 @@ test.skipIf(candidate === undefined)(
       })
       expect(await git.exited).toBe(0)
       const port = await availablePort()
+      mark("server-spawn")
       child = Bun.spawn({
         cmd: [candidate, "serve", "--hostname", "127.0.0.1", "--port", String(port)],
         cwd: workspace,
         env: environment,
         stdout: "ignore",
-        stderr: "ignore",
+        stderr: Bun.file(stderrFile),
         windowsHide: true,
       })
       const baseURL = `http://127.0.0.1:${port}`
@@ -176,6 +184,7 @@ test.skipIf(candidate === undefined)(
         child,
         "candidate server did not become healthy",
       )
+      mark("server-healthy")
 
       const headers = { "content-type": "application/json", "x-opencode-directory": workspace }
       const route = (pathname: string) => {
@@ -183,6 +192,7 @@ test.skipIf(candidate === undefined)(
         url.searchParams.set("directory", workspace)
         return url
       }
+      mark("session-create-start")
       const created = await fetch(route("/session"), {
         method: "POST",
         headers,
@@ -194,6 +204,8 @@ test.skipIf(candidate === undefined)(
       })
       expect(created.status).toBe(200)
       const sessionID = ((await created.json()) as { id: string }).id
+      mark("session-created")
+      mark("message-submit-start")
       const response = await fetch(route(`/session/${sessionID}/message`), {
         method: "POST",
         headers,
@@ -205,6 +217,7 @@ test.skipIf(candidate === undefined)(
         signal: AbortSignal.timeout(30_000),
       })
       expect(response.status).toBe(200)
+      mark("message-response")
       const result = (await response.json()) as {
         readonly info?: { readonly error?: unknown }
         readonly parts?: readonly { readonly type: string; readonly text?: string }[]
@@ -287,17 +300,27 @@ test.skipIf(candidate === undefined)(
         "compiled V1 plugin trace fixture",
         JSON.stringify({ records: records.length, duplicatePluginHooks: systems.length + messages.length }),
       )
+    } catch (error) {
+      testFailure = error
+      mark("test-failed")
+      throw error
     } finally {
+      mark("teardown-start")
       provider?.stop(true)
       if (child && child.exitCode === null) {
         child.kill()
         await child.exited
       }
+      if (child) mark(`server-exited-${child.exitCode}`)
+      const stderr = await readFile(stderrFile, "utf8").catch(() => "")
+      if (testFailure !== undefined || stderr.trim().length > 0)
+        console.info("candidate stderr tail", stderr.slice(-8000))
       const root = path.resolve(temporary)
       const temp = path.resolve(os.tmpdir())
       const prefix = temp.endsWith(path.sep) ? temp : `${temp}${path.sep}`
       if (!root.toLowerCase().startsWith(prefix.toLowerCase())) throw new Error("Refusing unsafe fixture cleanup")
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      mark("fixture-cleanup-complete")
     }
   },
   120_000,
