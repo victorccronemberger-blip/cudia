@@ -2897,3 +2897,19 @@ A Preview 11 está instalada e publicada. Detalhes e limites:
 [evidências](provenance/preview-11/README.md). O executor principal preparou,
 validou e publicou a distribuição; gpt-6-astra/high revisou os critérios e os
 resultados pela skill codex-advisor. A meta geral permanece ativa.
+
+## Incremento dos fontes — recuperação do estado do Goal
+
+- [x] Tratar somente arquivo inexistente como ausência de meta; propagar falhas
+      de leitura, JSON inválido, defeitos e interrupções.
+- [x] Validar o esquema existente e a identidade da sessão sem transformar os
+      dados nem descartar campos extras ou exigir campos opcionais históricos.
+- [x] Preservar os bytes de estados inválidos em consultas, retomada, pausa,
+      cancelamento, observação e tentativa de criar uma nova meta.
+- [x] Validar 43 testes do Goal, 404 assertions e o typecheck do pacote.
+      O controle negativo falhou nos dois cenários esperados com o código antigo.
+- [x] Concluir revisão independente com gpt-6-astra/high pela skill codex-advisor.
+
+Este incremento altera somente os fontes. A Preview 11 publicada e instalada
+permanece igual. Reparação automática e interface de recuperação não foram
+implementadas; um estado inválido produz erro visível e preserva os dados.

@@ -21,6 +21,12 @@ import { GoalPrompts } from "./prompts"
 
 const GoalStatus = Schema.Literals(["active", "completed", "blocked", "paused", "cancelled", "failed"])
 
+export class StateError extends Schema.TaggedErrorClass<StateError>()("Goal.StateError", {
+  sessionID: SessionID,
+  reason: Schema.Literals(["invalid_state", "session_mismatch"]),
+  message: Schema.String,
+}) {}
+
 const GoalStep = Schema.Struct({
   id: Schema.String,
   description: Schema.String,
@@ -229,9 +235,25 @@ const layer = Layer.effect(
     })
 
     const load = Effect.fn("Goal.load")(function* (sessionID: SessionID) {
-      return yield* storage
-        .read<GoalState>(storageKey(sessionID))
-        .pipe(Effect.catch(() => Effect.succeed(undefined as GoalState | undefined)))
+      const saved = yield* storage.read<GoalState>(storageKey(sessionID)).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("NotFoundError", () => Effect.succeed(Option.none())),
+      )
+      if (Option.isNone(saved)) return undefined
+      const goal = saved.value
+      if (!Schema.is(GoalState)(goal))
+        return yield* new StateError({
+          sessionID,
+          reason: "invalid_state",
+          message: "Saved goal state is invalid and was preserved.",
+        })
+      if (goal.sessionID !== sessionID)
+        return yield* new StateError({
+          sessionID,
+          reason: "session_mismatch",
+          message: "Saved goal state belongs to another session and was preserved.",
+        })
+      return goal
     })
 
     // --- Hash for repetition detection ---
