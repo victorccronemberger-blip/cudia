@@ -43,7 +43,8 @@ The public key ring is read from `trust.json` in this directory and can be suppl
 - `GET` and `HEAD /updates/v1/stable.json` and `/updates/v1/preview.json` validate the signed release before serving the original envelope bytes unchanged. The file is read at most 64 KiB plus one byte; a larger file is rejected. Responses are `no-store`.
 - `GET` and `HEAD /health` report process liveness only.
 - `GET` and `HEAD /ready` report readiness only when the stable manifest validates. This does not check the availability or contents of its remote artifacts.
-- `GET` and `HEAD /` return service status and the fixed manifest URLs.
+- `GET` and `HEAD /` serve the Portuguese Cudia download page. It shows stable and preview releases independently, reports runtime version and sequence from each currently valid signed manifest, and lists installer and update archive availability separately. The page has inline styling and no external assets or third-party requests. Release notes are limited to signed manifest facts; the schema does not carry free-form changelog text.
+- `GET` and `HEAD /download/windows?channel=preview&variant=normal&kind=archive` redirect (`307`) to the exact HTTPS artifact URL in that valid, unexpired signed manifest. `channel` is `stable` or `preview`, `variant` is `normal` or `baseline`, and `kind` is `installer` or `archive`. Defaults are preview, normal, and installer. Unknown/repeated parameters and unavailable signed artifacts are rejected. Redirect responses are `no-store`; the service does not proxy or fetch artifacts. The page describes an archive as an update for an existing installation and only offers an installer when the signed channel actually contains one. Preview is clearly labeled and is not presented as stable.
 
 Unknown paths return `404`; methods other than `GET` and `HEAD` on known paths return `405`. There is no file-serving route or server-side release mutation endpoint.
 
