@@ -30,21 +30,26 @@ Fechar OAuth ChatGPT/Grok, instalador Windows com `cudia` no PATH e atualizaçõ
 As demais melhorias avançadas ficam para uma versão posterior; não ampliam o
 critério de conclusão desta entrega.
 
-**Entrega disponível em 16/10/2026:** Preview sequência 12, motor
-`1.18.35+cudia.881809bd1c2a.e4bf58b2f4e8`, em https://cyara.com.br.
+**Entrega disponível em 16/10/2026:** Preview sequência 13, motor
+`1.18.35+cudia.832e3f3741f0.85c5350f484c`, em https://cyara.com.br.
 Os quatro downloads imutáveis foram verificados pelo publicador; o manifest
 assinado foi ativado por último. Instalação, CMD em outra pasta, catálogo frio,
 PATH e remoção passaram nas duas variantes em VMs Windows Server 2025 novas
-([CI, tentativa 1](https://github.com/victorccronemberger-blip/cudia/actions/runs/38934887928)).
-A instalação física desta máquina passou de 11 para 12, preservou a versão anterior,
-confirmou a consulta HTTPS e recebeu resposta Grok. Uma conferência posterior do
-executável instalado também confirmou resposta ChatGPT com `openai/gpt-6-luna`.
-A Preview 12 inclui recuperação de Goal sem
-substituir estado ilegível, auditoria opt-in de compactação/checkpoints e resumos
-auxiliares sem snapshots de arquivos. Preserva MCP sob demanda e limites nos
-cabeçalhos agregados do catálogo.
-Os 21 cenários compilados passaram por variante, com 1.717 verificações cada.
-[Evidências da entrega](provenance/preview-12/README.md). As candidatas 7 e 8 foram
+([CI, tentativa 1](https://github.com/victorccronemberger-blip/cudia/actions/runs/38958058086)).
+A instalação física desta máquina passou de 12 para 13, preservou a versão anterior,
+confirmou a consulta HTTPS, o CMD e recebeu resposta Grok. ChatGPT foi conferido
+na Preview 12 e não foi repetido neste motor.
+A Preview 13 distribui histórico opcional de metadados, recibos dos loaders
+selecionados, mapeamento observado dos resultados e imagens no adaptador nativo.
+Preserva recuperação de Goal, compactação, MCP sob demanda e catálogo limitado.
+A variante normal passou 21 cenários/1.717 verificações na mesma rodada. A baseline
+tem cobertura segmentada dos mesmos 21 cenários; duas rodadas completas tiveram
+timeouts em cenários diferentes. A causa permanece desconhecida, sem alteração
+dos prazos ou assertions. O novo teste de contexto/imagens passou com 27
+verificações por variante. [Evidências](provenance/preview-13/README.md).
+Os registros de incrementos abaixo descrevem sua validação histórica em fonte;
+esses incrementos já integram a Preview 13, embora os textos citem a Preview 12
+como distribuição então instalada. As candidatas 7 e 8 foram
 retiradas antes da ativação após os testes identificarem incompatibilidades de
 aliases Windows; a sequência 9 contém as correções. Os serviços padrão OpenCode
 foram retirados do fluxo padrão; APIs dos provedores selecionados permanecem.
@@ -192,12 +197,12 @@ conclusão da meta geral. O serviço usa a branch `codex/update-service`, Node 2
 raiz `deploy/updates`; a entrada foi corrigida para o carregador da Hostinger e
 12 testes do serviço passaram. `/health` e o manifest Preview retornam 200;
 `/ready` continua 503 porque ainda não há canal stable publicado. O manifest e os
-instaladores da sequência 12 são válidos até 15/11/2026 e precisam ser renovados
+instaladores da sequência 13 são válidos até 15/11/2026 e precisam ser renovados
 antes dessa data. A chave privada e uma cópia local conferida ficam fora do
 checkout/OneDrive; backup externo ainda não foi feito.
 
 Downloads: [site oficial](https://cyara.com.br). Atualização atual:
-[CUDIA Preview — sequência 12](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq12-e4bf58b2f4e8),
+[CUDIA Preview — sequência 13](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq13-85c5350f484cd),
 com instaladores e pacotes normal/baseline. As fontes atuais estão na branch
 `codex/mcp-on-demand`; o snapshot histórico da Preview 9 permanece na branch
 `codex/preview-source`, descrito em [SOURCE-PREVIEW-9.md](SOURCE-PREVIEW-9.md).

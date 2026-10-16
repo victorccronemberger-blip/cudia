@@ -1,5 +1,9 @@
 # MCP sob demanda — Preview 11
 
+Registro histórico do contrato introduzido nas Previews 10/11. A distribuição
+atual é a [Preview 13](provenance/preview-13/README.md), que preserva este
+comportamento e acrescenta auditoria dos loaders selecionados.
+
 Esta alteração parte do commit público 0ef7fed4dcd039b95818502011331c663ab82642.
 O motor da Preview 11 foi compilado do commit
 `2daad05e1bb326acf30b117f22a1c6e399e55794` e está disponível em https://cyara.com.br.

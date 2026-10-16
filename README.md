@@ -32,17 +32,20 @@ próprio, que o CUDIA não remove nem controla.
 
 O [site oficial](https://cyara.com.br) mostra os downloads verificados de cada
 canal. A Preview usa `cudia` no PATH e atualizações assinadas descobertas pelo
-domínio do CUDIA. A sequência 12 está publicada com instaladores normal/baseline
+domínio do CUDIA. A sequência 13 está publicada com instaladores normal/baseline
 e pacotes de atualização. Instalação, PATH, abertura em outra pasta e remoção
 passaram em duas VMs Windows Server 2025 novas, sem Node, Bun ou Git no PATH.
-No Windows desta máquina, a atualização real 11 → 12 e a resposta Grok passaram.
-A Preview 12 inclui recuperação de Goal sem substituir estado ilegível, auditoria
-opt-in de compactação/checkpoints e resumos auxiliares sem snapshots de arquivos.
+No Windows desta máquina, a atualização real 12 → 13 e a resposta Grok passaram.
+A Preview 13 inclui histórico SQLite opcional de metadados de contexto, origem
+dos loaders selecionados e preservação de imagens suportadas no adaptador nativo.
+Mantém recuperação de Goal, auditoria opt-in de compactação/checkpoints e resumos
+auxiliares sem snapshots de arquivos.
 Preserva MCP por chamada explícita, instruções remotas fora do sistema e limites
-nos cabeçalhos agregados do catálogo. Os 21 testes compilados passaram por variante,
-com 1.717 verificações em cada uma.
-[Evidências da entrega](provenance/preview-12/README.md). A conferência posterior
-do executável instalado também confirmou resposta ChatGPT com `openai/gpt-6-luna`.
+nos cabeçalhos agregados do catálogo. A variante normal passou 21 cenários na mesma
+rodada; a baseline tem cobertura segmentada dos mesmos cenários, com timeouts
+intermitentes ainda sem causa estabelecida. O teste adicional de histórico/imagens
+passou nas duas variantes. [Evidências da entrega](provenance/preview-13/README.md).
+ChatGPT foi conferido na Preview 12; não foi repetido nesta entrega.
 A tasklist está em
 [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md). Os comandos abaixo iniciam ou instalam um
 checkout de desenvolvimento.
@@ -65,8 +68,8 @@ permanecem pendentes.
 
 ### Checkout de desenvolvimento
 
-As fontes da Preview 12 estão na branch `codex/mcp-on-demand`; o motor foi
-compilado do commit `881809bd1c2a4c92823bdf4ae0668a04ed004e50`.
+As fontes da Preview 13 estão na branch `codex/mcp-on-demand`; o motor foi
+compilado do commit `832e3f3741f03c62de06962e2595726f6b63c13f`.
 [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md) descreve o contrato e sua validação.
 As fontes históricas da Preview 9 estão na branch `codex/preview-source`.
 [SOURCE-PREVIEW-9.md](SOURCE-PREVIEW-9.md) descreve os recibos, a correspondência
@@ -230,13 +233,12 @@ Esses comandos não chamam um modelo. Só o último relatório é mantido, com l
 de 512 KiB; o horário, a sessão e o runtime identificam a captura. Se uma gravação
 falhar, a execução continua e o comando pode mostrar a captura anterior.
 
-Os fontes posteriores à Preview 12 também oferecem um
+Desde a Preview 13, a distribuição também oferece um
 [histórico opcional de metadados](CONTEXT-HISTORY.md), desligado por padrão e
-carregado somente quando habilitado. Esse incremento ainda não integra o
-instalador Preview 12.
+carregado somente quando habilitado.
 
 Desde a Preview 12, `purpose` distingue chamadas `main` e
-`compaction` do V2. Nos fontes posteriores à Preview 12, os chamadores principais
+`compaction` do V2. Desde a Preview 13, os chamadores principais
 e de compactação do V1 também fornecem essa identificação explicitamente.
 Ausência desse campo continua significando finalidade não classificada; o nome
 do agente não determina a finalidade. `messageSources` identifica o prompt de compactação
@@ -249,8 +251,8 @@ existe quando a tentativa falha ou é cancelada, sem provar que o resumo foi sal
 São incluídas até 128 fontes de mensagens; `omittedMessageSources` informa o
 total omitido pelo teto de registros ou pelos 64 KiB de metadados compartilhados
 com manifests e trace. Esses limites não limitam as mensagens enviadas ao modelo.
-Na Preview 12, somente a última captura é mantida. O histórico opcional dos fontes
-posteriores mantém metadados limitados e não estabelece linhagem completa dos
+Na Preview 12, somente a última captura era mantida. O histórico opcional da
+Preview 13 mantém metadados limitados e não estabelece linhagem completa dos
 resumos. `debug context` oculta todos os textos capturados
 até que `--content` seja solicitado, inclusive quando o arquivo contém texto.
 
@@ -259,8 +261,8 @@ de captura de cada adaptador. Os índices descrevem as mensagens e partes dessa
 representação final preparada. `compactionMessageID` identifica a tentativa
 reservada, inclusive em falha, repetição ou interrupção. O checkpoint de retomada
 V1 ainda não tem atribuição por ID às partes finais comprovada; chamadas auxiliares `small` e o
-workflow remoto conservam suas exclusões existentes. Essa ampliação é em fonte,
-fora do instalador Preview 12.
+workflow remoto conservam suas exclusões existentes. Essa ampliação integra a
+Preview 13.
 
 Nos mesmos fontes, `historySnapshot` registra os resumos selecionados na entrada
 da conversão V1, depois dos hooks de mensagens. Conserva os IDs observados de
@@ -277,7 +279,9 @@ Os recibos locais descrevem o corpo carregado e o resultado inteiro separadament
 truncamentos e alterações por hooks ficam visíveis como divergência. Recibos e
 correlação ficam fora das mensagens e schemas do provedor.
 [Contrato e limites de origem](CONTEXT-HISTORY.md#origens-no-histórico-selecionado-v1).
-Essa cobertura é posterior à Preview 12 e ainda não inclui os loaders V2.
+Essa cobertura integra a Preview 13. No V2, os loaders de skills, guidance e
+recursos MCP também conservam recibos e posições observadas dos resultados;
+as lacunas de cobertura e conversão permanecem explícitas.
 
 A captura cobre V1 AI SDK, V1 nativo e o runner V2. Ela observa o contexto
 preparado antes do adaptador do provedor, não o tráfego final ou instruções

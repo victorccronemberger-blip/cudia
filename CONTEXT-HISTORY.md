@@ -1,7 +1,8 @@
 # Histórico opcional de contexto
 
-Incremento em fonte posterior à Preview 12. O instalador publicado continua na
-Preview 12; esta função será distribuída em um próximo lote validado.
+Distribuído na Preview 13. Os incrementos descritos abaixo foram desenvolvidos
+após a Preview 12 e promovidos juntos neste lote. Os limites de cada observação
+continuam válidos. [Evidências](provenance/preview-13/README.md).
 
 O histórico conserva metadados de capturas preparadas para chamadas do provedor.
 Não acrescenta instruções ao modelo, não muda permissões e não grava o texto de

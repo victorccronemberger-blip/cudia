@@ -1,0 +1,377 @@
+{
+  "schema": 1,
+  "product": "cudia",
+  "kind": "published-preview-evidence",
+  "channel": "preview",
+  "sequence": 13,
+  "version": "1.18.35+cudia.832e3f3741f0.85c5350f484c",
+  "sourceCommit": "832e3f3741f03c62de06962e2595726f6b63c13f",
+  "validationCommit": "7e754df72eb76bf11463ab43673440106bab0cf8",
+  "sourceBranch": "codex/mcp-on-demand",
+  "tag": "cudia-preview-20261016-seq13-85c5350f484cd",
+  "releaseId": 415325204,
+  "fingerprint": "85c5350f484cd5ac84c63919406adb36b1f84d6c",
+  "service": {
+    "previousCommit": "1f060ec8e8a9609853794396970aa64c29d4b398",
+    "commit": "d2ad944709306637c8140641c7541049b5600d4f",
+    "changedPaths": [
+      "deploy/updates/releases/preview.json"
+    ],
+    "manifestSha256": "4e6fa97998158299384536b24477fbe35556bcccbe181fe851f9d64626581a37",
+    "keyId": "cudia-release-20261016",
+    "issuedAt": "2026-10-16T19:48:33.970Z",
+    "expiresAt": "2026-11-15T19:48:33.970Z"
+  },
+  "artifacts": [
+    {
+      "kind": "archive",
+      "platform": "windows",
+      "arch": "x64",
+      "variant": "normal",
+      "url": "https://github.com/victorccronemberger-blip/cudia/releases/download/cudia-preview-20261016-seq13-85c5350f484cd/cudia-windows-x64-normal-seq13.zip",
+      "size": 53241847,
+      "sha256": "452abf0bccd8a01bfc960db58822c85bfc8f4e7743338fea8284eb4d099b8cde"
+    },
+    {
+      "kind": "installer",
+      "platform": "windows",
+      "arch": "x64",
+      "variant": "normal",
+      "url": "https://github.com/victorccronemberger-blip/cudia/releases/download/cudia-preview-20261016-seq13-85c5350f484cd/CUDIA-Preview-Setup-windows-x64-normal.exe",
+      "size": 57893516,
+      "sha256": "af497a92a15f89827fb4a41a28da62acb97a478503c373701ca58f3ac5216a14"
+    },
+    {
+      "kind": "archive",
+      "platform": "windows",
+      "arch": "x64",
+      "variant": "baseline",
+      "url": "https://github.com/victorccronemberger-blip/cudia/releases/download/cudia-preview-20261016-seq13-85c5350f484cd/cudia-windows-x64-baseline-seq13.zip",
+      "size": 53241854,
+      "sha256": "a432d1eed701503529f9c89fc735c6986844363cae1ad2288dcd858c869cb438"
+    },
+    {
+      "kind": "installer",
+      "platform": "windows",
+      "arch": "x64",
+      "variant": "baseline",
+      "url": "https://github.com/victorccronemberger-blip/cudia/releases/download/cudia-preview-20261016-seq13-85c5350f484cd/CUDIA-Preview-Setup-windows-x64-baseline.exe",
+      "size": 57893102,
+      "sha256": "acc4d4ef3ce941f9a80b5dcb7a0cc194f34a6c3b4d3a53bfadd42ec0721c2a7c"
+    }
+  ],
+  "engines": [
+    {
+      "variant": "normal",
+      "output": {
+        "size": 138466304,
+        "sha256": "4703f708831d984edb2bc28c80b9bb3329755a4f253f7259ec47aaf4dd9789dd"
+      },
+      "receiptSha256": "9d51ef7e1a3f7a15a0f59308e483d8a2dbeb183e9b374b1572405f078eb4ad17",
+      "inventory": {
+        "path": "engine-inputs.json",
+        "size": 2869222,
+        "sha256": "ef80661148dadb2833ef8612086bae02c8c986ce44d61fda1cbef060cc15cfd1"
+      },
+      "coverage": {
+        "repository": "git-listed paths in the declared source scope, checked before and after compilation",
+        "bundler": "discovered input set and file bytes checked before and after final compilation",
+        "generated": "explicit virtual files, model data and effective settings frozen for both passes",
+        "buildPlugins": "explicitly named entry files; transitive runtime reads are not fully inventoried",
+        "environment": "effective build settings only; unrestricted environment is not captured",
+        "targetRuntime": "managed by Bun; separate target runtime artifact is not inventoried",
+        "hermetic": false,
+        "reproducible": false,
+        "independentlyVerified": false
+      }
+    },
+    {
+      "variant": "baseline",
+      "output": {
+        "size": 138466304,
+        "sha256": "4703f708831d984edb2bc28c80b9bb3329755a4f253f7259ec47aaf4dd9789dd"
+      },
+      "receiptSha256": "3a9878023ea34ed9abe34e7ff1e9d9dae82864896043b942eda0373a8842c609",
+      "inventory": {
+        "path": "engine-inputs.json",
+        "size": 2869222,
+        "sha256": "ef80661148dadb2833ef8612086bae02c8c986ce44d61fda1cbef060cc15cfd1"
+      },
+      "coverage": {
+        "repository": "git-listed paths in the declared source scope, checked before and after compilation",
+        "bundler": "discovered input set and file bytes checked before and after final compilation",
+        "generated": "explicit virtual files, model data and effective settings frozen for both passes",
+        "buildPlugins": "explicitly named entry files; transitive runtime reads are not fully inventoried",
+        "environment": "effective build settings only; unrestricted environment is not captured",
+        "targetRuntime": "managed by Bun; separate target runtime artifact is not inventoried",
+        "hermetic": false,
+        "reproducible": false,
+        "independentlyVerified": false
+      }
+    }
+  ],
+  "validation": {
+    "compiled": {
+      "normal": {
+        "passedInFullRun": 21,
+        "failedInFullRun": 0,
+        "fullRunPassed": true,
+        "assertions": 1717,
+        "cleanupCompleted": true,
+        "logSha256": "89e49b88f747efd81c078a5956d4dbdf50ade1e55e870d3029088e51bd1c4506"
+      },
+      "baseline": {
+        "passedInFullRun": 20,
+        "failedInFullRun": 1,
+        "fullRunPassed": false,
+        "assertions": 1672,
+        "cleanupCompleted": true,
+        "logSha256": "3411a5c8069dc91e280b24b222f249e7add7c9ba0fda801b5aa59c4a77350bca",
+        "successfulScenarioCount": 21,
+        "segmented": true,
+        "scenarios": [
+          "compiled CUDIA candidate authorizes and renews MCP credentials once without replaying failed calls",
+          "compiled CUDIA candidate exposes session-scoped MCP tools only after explicit exposure",
+          "compiled CUDIA candidate pages native MCP output across compaction and restart",
+          "compiled CUDIA candidate recovers exact native reads and keeps search targets scoped",
+          "compiled CUDIA candidate serves the V2 manual compaction flow",
+          "compiled V1 editor tools remain available through gpt-5.2-fixture",
+          "compiled V1 editor tools remain available through qwen3.8-flash-fixture",
+          "compiled V1 exposes neutral tool contracts and executes shell, todo and glob",
+          "compiled V1 plugin trace observes hook changes and attributes duplicate plugin IDs",
+          "compiled V1 preserves unreadable goals and compacts without filesystem snapshots",
+          "compiled V1 reports missing task identities and continues the same child session",
+          "compiled V2 starts TypeScript LSP lazily and reports diagnostics after write, edit and patch",
+          "compiled candidate sends ambient instructions only after explicit CLI opt-in in V1 and V2",
+          "compiled catalog exposes web search across providers without backend flags",
+          "compiled distribution uses its bundled catalog and local UI without implicit OpenCode services",
+          "compiled engine loads immutable distribution defaults below user and project config without tool runtimes",
+          "compiled legacy instruction failures persist before provider calls and recover in the same session",
+          "compiled native context origins survive updates, restart, removal and compaction without entering the model prompt",
+          "compiled or source V1 connects configured stdio MCP only on request in both tool modes",
+          "compiled or source V1 keeps many connected MCP namespaces compact on the provider wire",
+          "packaged defaults keep an empty profile unconnected and preserve explicit project providers"
+        ],
+        "supplementalOriginalDepth": {
+          "cases": [
+            "compiled V1 plugin trace observes hook changes and attributes duplicate plugin IDs"
+          ],
+          "passed": 1,
+          "failed": 0,
+          "assertions": 46,
+          "logSha256": "bc06a30158e1c2c9184b7a8cf8f3135ca8a21523e1487c9ca2e826b6ab76c286",
+          "cleanupCompleted": true
+        },
+        "stability": "Full-suite completion is intermittent; two full runs each timed out in a different scenario. Cause unresolved."
+      }
+    },
+    "freshWindows": {
+      "runId": 38958058086,
+      "attempt": 1,
+      "commit": "eb698593c894a9e937524167b3c365dbaaf5c1bf",
+      "jobs": [
+        {
+          "variant": "normal",
+          "jobId": 117165827482,
+          "logSha256": "e14bbd7ccaef3d1bcc065a6b4085faf8799b71616a6d652b0160c34ec62985ee",
+          "installerSha256": "af497a92a15f89827fb4a41a28da62acb97a478503c373701ca58f3ac5216a14",
+          "engineSha256": "4703f708831d984edb2bc28c80b9bb3329755a4f253f7259ec47aaf4dd9789dd",
+          "completed": true
+        },
+        {
+          "variant": "baseline",
+          "jobId": 117165826944,
+          "logSha256": "8871765b70f5265c00a8da5f18d5d2b1f0433d1e5317b10a03ba65ceaf11f4e9",
+          "installerSha256": "acc4d4ef3ce941f9a80b5dcb7a0cc194f34a6c3b4d3a53bfadd42ec0721c2a7c",
+          "engineSha256": "4703f708831d984edb2bc28c80b9bb3329755a4f253f7259ec47aaf4dd9789dd",
+          "completed": true
+        }
+      ]
+    },
+    "installed": {
+      "from": 12,
+      "to": 13,
+      "version": "1.18.35+cudia.832e3f3741f0.85c5350f484c",
+      "physicalPathVerified": true,
+      "engineSha256": "4703f708831d984edb2bc28c80b9bb3329755a4f253f7259ec47aaf4dd9789dd",
+      "cmdLaunchVerified": true,
+      "defaultAmbientInstructions": {
+        "automatic": false,
+        "source": "default"
+      },
+      "bootstrapPreserved": true,
+      "priorVersionPreserved": true,
+      "updateCurrent": true,
+      "liveProviders": [
+        {
+          "provider": "xai",
+          "model": "xai/grok-build-0.1",
+          "passed": true
+        }
+      ],
+      "scope": "Existing Grok account responded. ChatGPT, fresh authorization and forced renewal were not retested for this engine."
+    },
+    "signedLocalTransition": {
+      "passed": true,
+      "transport": "signed-local-bundle",
+      "networkUpdateVerified": false,
+      "records": [
+        {
+          "variant": "normal",
+          "from": 12,
+          "to": 13,
+          "version": "1.18.35+cudia.832e3f3741f0.85c5350f484c",
+          "selectedReleaseId": "seq-13-452abf0bccd8a01bfc960db58822c85bfc8f4e7743338fea8284eb4d099b8cde",
+          "engineSha256": "4703f708831d984edb2bc28c80b9bb3329755a4f253f7259ec47aaf4dd9789dd",
+          "bootstrapUnchanged": true,
+          "userStatePreserved": true,
+          "previousEngineRetained": true
+        },
+        {
+          "variant": "baseline",
+          "from": 12,
+          "to": 13,
+          "version": "1.18.35+cudia.832e3f3741f0.85c5350f484c",
+          "selectedReleaseId": "seq-13-a432d1eed701503529f9c89fc735c6986844363cae1ad2288dcd858c869cb438",
+          "engineSha256": "4703f708831d984edb2bc28c80b9bb3329755a4f253f7259ec47aaf4dd9789dd",
+          "bootstrapUnchanged": true,
+          "userStatePreserved": true,
+          "previousEngineRetained": true
+        }
+      ]
+    },
+    "publisherTests": 15,
+    "testCorrection": "The context-history fixture and plugin-fixture timing/stderr diagnostics were added after the frozen runtime source. Only those tests differ in validationCommit; all functional assertions and deadlines were preserved. Engine bytes were unchanged.",
+    "compiledAddedCoverage": {
+      "normal": {
+        "passed": 1,
+        "assertions": 27,
+        "cleanupCompleted": true,
+        "logSha256": "221e1e22e52f232139540fe899b930c9c96ae24c8bc14994068f7ad5fe82f7ac"
+      },
+      "baseline": {
+        "passed": 1,
+        "assertions": 27,
+        "cleanupCompleted": true,
+        "logSha256": "9a3bb6c6823363dd0f5c00c123acd9ad710d13091d83cc1b1b5569505d4bfc15"
+      }
+    },
+    "coreRegression": {
+      "passed": 158,
+      "assertions": 958,
+      "logSha256": "7a27467f2a418ecaf585b8323a3e47d045a6180facef7d3c25e400413e2622df"
+    },
+    "baselineRetry": {
+      "firstRun": {
+        "passed": 20,
+        "failed": 1,
+        "logSha256": "607b2ee2370da38c6afa077bafc38ac11eb7be84b035048d4f4374166d2f5aa9",
+        "cleanupCompleted": true
+      },
+      "firstFailure": "LSP scenario exceeded its unchanged 120000ms deadline; cause not established.",
+      "isolatedLsp": {
+        "passed": 1,
+        "failed": 0,
+        "assertions": 100,
+        "logSha256": "fcaf4eec5c156577603dad3782506d1347ea44b111d202e86f696164449d6066",
+        "cleanupCompleted": true
+      },
+      "secondFullRun": {
+        "passedInFullRun": 20,
+        "failedInFullRun": 1,
+        "fullRunPassed": false,
+        "assertions": 1672,
+        "cleanupCompleted": true,
+        "logSha256": "3411a5c8069dc91e280b24b222f249e7add7c9ba0fda801b5aa59c4a77350bca",
+        "successfulScenarioCount": 21,
+        "segmented": true,
+        "scenarios": [
+          "compiled CUDIA candidate authorizes and renews MCP credentials once without replaying failed calls",
+          "compiled CUDIA candidate exposes session-scoped MCP tools only after explicit exposure",
+          "compiled CUDIA candidate pages native MCP output across compaction and restart",
+          "compiled CUDIA candidate recovers exact native reads and keeps search targets scoped",
+          "compiled CUDIA candidate serves the V2 manual compaction flow",
+          "compiled V1 editor tools remain available through gpt-5.2-fixture",
+          "compiled V1 editor tools remain available through qwen3.8-flash-fixture",
+          "compiled V1 exposes neutral tool contracts and executes shell, todo and glob",
+          "compiled V1 plugin trace observes hook changes and attributes duplicate plugin IDs",
+          "compiled V1 preserves unreadable goals and compacts without filesystem snapshots",
+          "compiled V1 reports missing task identities and continues the same child session",
+          "compiled V2 starts TypeScript LSP lazily and reports diagnostics after write, edit and patch",
+          "compiled candidate sends ambient instructions only after explicit CLI opt-in in V1 and V2",
+          "compiled catalog exposes web search across providers without backend flags",
+          "compiled distribution uses its bundled catalog and local UI without implicit OpenCode services",
+          "compiled engine loads immutable distribution defaults below user and project config without tool runtimes",
+          "compiled legacy instruction failures persist before provider calls and recover in the same session",
+          "compiled native context origins survive updates, restart, removal and compaction without entering the model prompt",
+          "compiled or source V1 connects configured stdio MCP only on request in both tool modes",
+          "compiled or source V1 keeps many connected MCP namespaces compact on the provider wire",
+          "packaged defaults keep an empty profile unconnected and preserve explicit project providers"
+        ],
+        "supplementalOriginalDepth": {
+          "cases": [
+            "compiled V1 plugin trace observes hook changes and attributes duplicate plugin IDs"
+          ],
+          "passed": 1,
+          "failed": 0,
+          "assertions": 46,
+          "logSha256": "bc06a30158e1c2c9184b7a8cf8f3135ca8a21523e1487c9ca2e826b6ab76c286",
+          "cleanupCompleted": true
+        },
+        "stability": "Full-suite completion is intermittent; two full runs each timed out in a different scenario. Cause unresolved."
+      },
+      "focusedPlugin": {
+        "long": {
+          "cases": [
+            "compiled V1 plugin trace observes hook changes and attributes duplicate plugin IDs"
+          ],
+          "passed": 1,
+          "failed": 0,
+          "assertions": 46,
+          "logSha256": "bc06a30158e1c2c9184b7a8cf8f3135ca8a21523e1487c9ca2e826b6ab76c286",
+          "cleanupCompleted": true
+        },
+        "short": {
+          "cases": [
+            "compiled V1 plugin trace observes hook changes and attributes duplicate plugin IDs"
+          ],
+          "passed": 1,
+          "failed": 0,
+          "assertions": 46,
+          "logSha256": "afa48324bf97e6bc1de1f35bd8289059b72f80b794e272bf5a4a4315ba9dbd2b",
+          "cleanupCompleted": true
+        }
+      },
+      "interpretation": "Both long and short focused runs passed; path causality is unproved. Coverage is segmented; full-suite stability is unproved.",
+      "deadlinesChanged": false
+    }
+  },
+  "client": {
+    "reusedFromSequence": 12,
+    "bytesPreserved": true,
+    "files": {
+      "cudia.exe": {
+        "size": 5384704,
+        "sha256": "e6422d69d0d44171d0ea222785e133c5e1f582270f0eb4b806f5e80e735d9bb1"
+      },
+      "launcher.exe": {
+        "size": 8343552,
+        "sha256": "f5f8fb008d8d602778991bc974f8fc56841816934ecb64608661fb021c6e96f8"
+      },
+      "client-build.json": {
+        "size": 9802,
+        "sha256": "d6edd0423028970e502fa1973e057703822c0b689993907e37f5ffc5b0fca363"
+      },
+      "trust-info.json": {
+        "size": 148,
+        "sha256": "2a58c9040caba70bc52351bbe0e55c4f74695c5ba3273fc1b3182b824ca571a8"
+      }
+    }
+  },
+  "limitations": [
+    "Preview: Windows Server VM coverage does not establish interactive standard-user Windows 10/11 coverage.",
+    "No publisher Authenticode certificate configured.",
+    "Observed build inventory, without hermetic or independent reproducibility claims.",
+    "ChatGPT, fresh account authorization and forced renewal were not retested for this engine."
+  ]
+}
