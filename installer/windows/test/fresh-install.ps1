@@ -27,7 +27,7 @@ $taskProfile = Join-Path $taskDirectory 'perfil vazio'
 [IO.Directory]::CreateDirectory($taskProfile) | Out-Null
 $taskSetup = Join-Path $taskDirectory 'CUDIA-Setup.exe'
 $taskRegistration = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\CudiaPreview'
-$taskResult = [ordered]@{ completed = $false; variant = $Variant; version = $taskCandidate.version; stage = 'preflight'; windows = [Environment]::OSVersion.VersionString; lockProbe = $null; installerSha256 = $null; engineSha256 = $null; physicalBootstrap = $null; persistentPathCount = $null; commandVersion = $null; contextMode = $null; coldCatalogPassed = $false; removalVerified = $false; error = $null }
+$taskResult = [ordered]@{ completed = $false; variant = $Variant; version = $taskCandidate.version; stage = 'preflight'; windows = [Environment]::OSVersion.VersionString; temporaryDirectory = [IO.Path]::GetTempPath(); cacheDirectory = [Environment]::GetFolderPath('LocalApplicationData'); lockProbe = $null; installerSha256 = $null; engineSha256 = $null; physicalBootstrap = $null; persistentPathCount = $null; commandVersion = $null; contextMode = $null; coldCatalogPassed = $false; removalVerified = $false; error = $null }
 function Save-TaskReport { $taskResult | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $taskReports 'result.json') -Encoding utf8 }
 function Get-RegistrySnapshot([string]$Subkey) {
     $taskKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($Subkey, $false)
