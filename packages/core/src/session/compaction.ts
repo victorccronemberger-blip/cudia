@@ -8,6 +8,7 @@ import { SessionEvent } from "./event"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 import { Token } from "../util/token"
+import type { ContextAudit } from "../harness/audit"
 
 const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 8_000
@@ -79,6 +80,7 @@ type Settings = {
 }
 
 type Dependencies = {
+  readonly audit: ContextAudit.Interface
   readonly events: EventV2.Interface
   readonly llm: {
     readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
@@ -233,30 +235,42 @@ export const make = (dependencies: Dependencies) => {
     const chunks: string[] = []
     let failed = false
     let finished = false
-    const summarized = yield* dependencies.llm
-      .stream(
-        LLM.request({
-          model: input.model,
-          http: input.request.http,
-          messages: [Message.user(summaryPrompt)],
-          tools: [],
-          generation: { maxTokens: summaryOutput },
-        }),
-      )
-      .pipe(
-        Stream.runForEach((event) => {
-          if (LLMEvent.is.providerError(event)) failed = true
-          if (LLMEvent.is.toolCall(event)) failed = true
-          if (LLMEvent.is.finish(event)) {
-            finished = event.reason === "stop"
-            if (!finished) failed = true
-          }
-          if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
-          return Effect.void
-        }),
-        Effect.as(true),
-        Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
-      )
+    const request = LLM.request({
+      model: input.model,
+      http: input.request.http,
+      messages: [Message.user(summaryPrompt)],
+      tools: [],
+      generation: { maxTokens: summaryOutput },
+    })
+    if (dependencies.audit.enabled)
+      yield* dependencies.audit.record({
+        runtime: "v2",
+        purpose: "compaction",
+        compactionMessageID: messageID,
+        sessionID: input.sessionID,
+        agent: "compaction",
+        model: { provider: input.model.provider, id: input.model.id },
+        instructions: [],
+        messages: request.messages,
+        messageSources: [
+          { source: "compaction-prompt", role: "user", messageIndex: 0, partIndex: 0, text: summaryPrompt },
+        ],
+        tools: request.tools,
+      })
+    const summarized = yield* dependencies.llm.stream(request).pipe(
+      Stream.runForEach((event) => {
+        if (LLMEvent.is.providerError(event)) failed = true
+        if (LLMEvent.is.toolCall(event)) failed = true
+        if (LLMEvent.is.finish(event)) {
+          finished = event.reason === "stop"
+          if (!finished) failed = true
+        }
+        if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
+        return Effect.void
+      }),
+      Effect.as(true),
+      Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
+    )
     const summary = chunks.join("")
     if (!summarized || failed || !finished || !summary.trim())
       return yield* new Error({

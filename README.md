@@ -216,15 +216,33 @@ na atualização HTTPS desta máquina de 5 para 6.
 O modo de auditoria é desligado por padrão. Antes de iniciar uma tarefa, defina
 `CUDIA_CONTEXT_AUDIT=summary` para guardar contagens, tamanhos em bytes, hashes,
 papéis das mensagens e nomes das ferramentas. `CUDIA_CONTEXT_AUDIT=content`
-também permite guardar o texto das instruções, limitado a 64 KiB. Esse texto
-pode incluir instruções privadas do projeto; o histórico da conversa, headers e
-opções arbitrárias dos provedores não são gravados pelo auditor.
+também permite guardar o texto das instruções. Nos fontes posteriores à Preview
+11, também pode guardar o prompt de compactação e o checkpoint selecionado do V2,
+que incluem histórico serializado da conversa. Todos esses textos compartilham
+64 KiB; um bloco que não cabe fica omitido por inteiro. Headers e opções
+arbitrárias dos provedores não são gravados pelo auditor.
 
 Use `debug context` para ler os metadados da última captura salva com sucesso, ou
 `debug context --content` para exibir o texto que foi capturado explicitamente.
 Esses comandos não chamam um modelo. Só o último relatório é mantido, com limite
 de 512 KiB; o horário, a sessão e o runtime identificam a captura. Se uma gravação
 falhar, a execução continua e o comando pode mostrar a captura anterior.
+
+Nos fontes posteriores à Preview 11, `purpose` distingue chamadas `main` e
+`compaction` do V2. Ausência desse campo em capturas antigas ou no V1 significa
+finalidade não classificada. `messageSources` identifica o prompt de compactação
+e o checkpoint da retomada como conteúdo de mensagem de usuário, separado das
+instruções de sistema. Seus índices de mensagem e parte são baseados em zero;
+os hashes e bytes descrevem o texto exato preparado, incluindo o wrapper do
+checkpoint. `messageID` identifica o checkpoint persistido. `compactionMessageID`
+reserva o ID do possível resumo antes de chamar o provedor: a captura também
+existe quando a tentativa falha ou é cancelada, sem provar que o resumo foi salvo.
+São incluídas até 128 fontes de mensagens; `omittedMessageSources` informa o
+total omitido pelo teto de registros ou pelos 64 KiB de metadados compartilhados
+com manifests e trace. Esses limites não limitam as mensagens enviadas ao modelo.
+Somente a última captura é mantida; isto não constitui histórico durável ou
+linhagem completa dos resumos. `debug context` oculta todos os textos capturados
+até que `--content` seja solicitado, inclusive quando o arquivo contém texto.
 
 A captura cobre V1 AI SDK, V1 nativo e o runner V2. Ela observa o contexto
 preparado antes do adaptador do provedor, não o tráfego final ou instruções
@@ -251,8 +269,8 @@ desconhecida. Os hashes descrevem uma codificação tipada da projeção observa
 não os bytes enviados ao provedor. A inspeção não é um sandbox para código de
 plugins ou traps de Proxy.
 
-São mantidos até 64 registros por chamada. O rastreamento e os manifests
-compartilham o orçamento de 64 KiB de metadados; omissões aparecem em `omitted`
+São mantidos até 64 registros por chamada. O rastreamento, os manifests e a
+atribuição de mensagens compartilham 64 KiB de metadados; omissões do trace aparecem em `omitted`
 e, quando causadas pelo orçamento do relatório, `traceOmission`. Com a auditoria
 desligada, o fluxo não coleta snapshots nem calcula esses hashes. O histórico
 de transformações permanece fora do prompt do modelo.
@@ -267,11 +285,11 @@ realmente incluídos. Esses manifests não entram no prompt do modelo.
 `originState` distingue `valid`, `missing`, `invalid` e `omitted`. A validação
 confere a estrutura e o vínculo com o texto, sem autenticar a origem declarada.
 Sessões antigas sem manifest ficam como origem desconhecida, sem inferência a
-partir dos arquivos atuais. O orçamento agregado dos manifests e do rastreamento no relatório é
+partir dos arquivos atuais. O orçamento agregado dos manifests, fontes de mensagens e rastreamento no relatório é
 64 KiB; excesso fica explicitamente omitido. `debug context` também lê capturas
 antigas da versão 1, identificando sua origem como ausente. Mesmo `summary` pode conter caminhos
 privados e identificadores de origem. Hashes dos manifests usam o texto codificado
-como JSON UTF-8, com offsets UTF-16; hashes gerais de instruções continuam usando
+como JSON UTF-8, com offsets UTF-16; hashes gerais de instruções e fontes de mensagens usam
 UTF-8 direto. Os hashes das origens descrevem a entrada observada, que pode
 diferir de sua formatação. O rastreamento cobre as projeções instrumentadas das
 chamadas principais V1; hooks de definições/resultados de ferramentas, chamadas

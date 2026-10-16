@@ -19,7 +19,7 @@ export const ContextCommand = effectCmd({
       .option("content", {
         type: "boolean",
         default: false,
-        describe: "show instruction text only if capture was explicitly enabled with CUDIA_CONTEXT_AUDIT=content",
+        describe: "show captured instruction and message-source text only when content capture was explicitly enabled",
       }),
   handler: Effect.fn("Cli.debug.context")(function* (args) {
     if (args.status) {
@@ -42,7 +42,7 @@ export const ContextCommand = effectCmd({
     })
     if (args.content && !report.contentIncluded)
       return yield* fail(
-        "This capture contains metadata only. Start a new task with CUDIA_CONTEXT_AUDIT=content to capture instruction text explicitly.",
+        "This capture contains metadata only. Start a new task with CUDIA_CONTEXT_AUDIT=content to capture instruction and message-source text explicitly.",
       )
     process.stdout.write(
       JSON.stringify(
@@ -54,6 +54,14 @@ export const ContextCommand = effectCmd({
             ...(report.version === 1 ? { originState: "missing" } : {}),
             ...(args.content && content !== undefined ? { content } : {}),
           })),
+          ...(report.messageSources === undefined
+            ? {}
+            : {
+                messageSources: report.messageSources.map(({ content, ...metadata }) => ({
+                  ...metadata,
+                  ...(args.content && content !== undefined ? { content } : {}),
+                })),
+              }),
         },
         null,
         2,

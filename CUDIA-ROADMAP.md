@@ -2913,3 +2913,32 @@ resultados pela skill codex-advisor. A meta geral permanece ativa.
 Este incremento altera somente os fontes. A Preview 11 publicada e instalada
 permanece igual. Reparação automática e interface de recuperação não foram
 implementadas; um estado inválido produz erro visível e preserva os dados.
+
+## Incremento dos fontes — visibilidade da compactação e do checkpoint V2
+
+- [x] Capturar a requisição preparada de compactação quando a auditoria está
+      ativada; identificar finalidade e ID reservado do possível resumo.
+- [x] Identificar o checkpoint realmente enviado na retomada, inclusive após
+      replay, com papel de usuário, IDs, posições, bytes e hash do texto exato.
+- [x] Separar fontes de mensagens das instruções de sistema no relatório e
+      preservar os pedidos ao provedor sem inserir metadados da auditoria.
+- [x] Compartilhar 64 KiB de conteúdo com as instruções e 64 KiB de metadados
+      com manifests/trace; informar fontes omitidas e limitar a 128 registros.
+- [x] Exibir textos capturados pela CLI somente com `--content` explícito.
+- [x] Validar 126 testes Core/529 assertions, o teste de CLI real/9 assertions
+      e os typechecks Core/opencode. Revisão independente: gpt-6-astra/high.
+- [ ] Diagnosticar as falhas da regressão ampliada V1 antes de qualificar outro
+      binário: 56 pass, 1 skip e 10 fail em 67 testes/220 assertions. Dois casos
+      reproduziram timeout de 5 segundos com os três arquivos Core originais de
+      `9e1dfa9c3b829aa92dfe4eba6ee252fcfbec63cf`: `falls back to full summary when
+      even one recent turn exceeds preserve token budget` e `does not allow
+      tool calls while generating the summary`. Os outros oito casos continuam
+      sem causa estabelecida; não foram classificados como preexistentes.
+
+Este incremento é somente dos fontes; a Preview 11 permanece instalada e
+publicada sem alteração. A captura antecede o provedor e pode corresponder a
+uma tentativa sem resumo concluído. Somente o último relatório é mantido; a
+linhagem durável dos resumos e os demais itens da meta continuam pendentes.
+O modo `content` optativo pode guardar histórico serializado da conversa nos
+blocos de compactação/checkpoint. Falhas tipadas de persistência da auditoria
+mantêm o tratamento existente de aviso e continuidade da execução.

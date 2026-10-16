@@ -112,7 +112,7 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
-    const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
+    const compaction = SessionCompaction.make({ events, llm, audit, config: yield* config.entries() })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
@@ -290,9 +290,13 @@ const layer = Layer.effect(
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
-      if (audit.enabled)
+      if (audit.enabled) {
+        const compactionIDs = new Set<string>(
+          context.flatMap((message) => (message.type === "compaction" ? [message.id] : [])),
+        )
         yield* audit.record({
           runtime: "v2",
+          purpose: "main",
           sessionID: session.id,
           agent: agent.id,
           model: { provider: model.provider, id: model.id },
@@ -344,8 +348,27 @@ const layer = Layer.effect(
             ),
           ],
           messages: request.messages,
+          messageSources: request.messages.flatMap((message, messageIndex) =>
+            message.id !== undefined && compactionIDs.has(message.id)
+              ? message.content.flatMap((part, partIndex) =>
+                  part.type === "text"
+                    ? [
+                        {
+                          source: "conversation-checkpoint",
+                          role: message.role,
+                          messageID: message.id,
+                          messageIndex,
+                          partIndex,
+                          text: part.text,
+                        },
+                      ]
+                    : [],
+                )
+              : [],
+          ),
           tools: request.tools,
         })
+      }
       const providerStream = llm.stream(request).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {

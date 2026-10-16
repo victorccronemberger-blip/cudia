@@ -352,6 +352,12 @@ describe("ContextAudit", () => {
           const offLayer = auditLayer(tmp.path, { CUDIA_CONTEXT_AUDIT: "off" })
           const off = yield* disabled.pipe(Effect.provide(offLayer))
           yield* off.record(sample)
+          yield* off.record({
+            ...sample,
+            get messageSources(): ContextAudit.Input["messageSources"] {
+              throw new Error("Disabled auditing must not inspect message sources")
+            },
+          })
           expect(off.enabled).toBe(false)
           expect(yield* off.latest()).toBeUndefined()
           expect(

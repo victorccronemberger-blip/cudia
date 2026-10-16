@@ -21,6 +21,9 @@ export type Input = {
   readonly sessionID: string
   readonly agent: string
   readonly model: { readonly provider: string; readonly id: string }
+  readonly purpose?: "main" | "compaction"
+  /** Reserved result-message ID for this attempt; capture does not establish successful completion. */
+  readonly compactionMessageID?: string
   readonly trace?: ContextTrace.Capture
   readonly instructions: ReadonlyArray<{
     readonly source: string
@@ -30,6 +33,14 @@ export type Input = {
     readonly baselineSeq?: number
   }>
   readonly messages: ReadonlyArray<{ readonly role: string }>
+  readonly messageSources?: ReadonlyArray<{
+    readonly source: string
+    readonly role: string
+    readonly messageIndex: number
+    readonly partIndex: number
+    readonly messageID?: string
+    readonly text: string
+  }>
   readonly tools: ReadonlyArray<{
     readonly name: string
     readonly description?: string
@@ -45,6 +56,8 @@ export const Report = Schema.Struct({
   sessionID: Schema.String,
   agent: Schema.String,
   model: Schema.Struct({ provider: Schema.String, id: Schema.String }),
+  purpose: Schema.optional(Schema.Literals(["main", "compaction"])),
+  compactionMessageID: Schema.optional(Schema.String),
   contextMode: Schema.Literals(["standard", "lean"]),
   contentIncluded: Schema.Boolean,
   trace: Schema.optional(ContextTrace.CaptureSchema),
@@ -67,6 +80,24 @@ export const Report = Schema.Struct({
   instructionBytes: Schema.Number,
   messageCount: Schema.Number,
   messageRoles: Schema.Record(Schema.String, Schema.Number),
+  messageSources: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        source: Schema.String,
+        role: Schema.String,
+        messageIndex: Schema.Number,
+        partIndex: Schema.Number,
+        messageID: Schema.optional(Schema.String),
+        bytes: Schema.Number,
+        sha256: Schema.String,
+        content: Schema.optional(Schema.String),
+        contentOmitted: Schema.optional(Schema.Boolean),
+      }),
+    ),
+  ),
+  messageSourceCount: Schema.optional(Schema.Number),
+  messageSourceBytes: Schema.optional(Schema.Number),
+  omittedMessageSources: Schema.optional(Schema.Number),
   toolCount: Schema.Number,
   toolDefinitionBytes: Schema.Number,
   tools: Schema.Array(Schema.Struct({ name: Schema.String, bytes: Schema.Number })),
@@ -125,12 +156,37 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
       ...(policy.auditMode === "content" && !include ? { contentOmitted: true } : {}),
     }
   })
+  const messageSources: NonNullable<Report["messageSources"]>[number][] = []
+  for (const item of input.messageSources?.slice(0, 128) ?? []) {
+    const bytes = Buffer.byteLength(item.text, "utf8")
+    const metadata = {
+      source: item.source.slice(0, 160),
+      role: item.role,
+      messageIndex: item.messageIndex,
+      partIndex: item.partIndex,
+      ...(item.messageID === undefined ? {} : { messageID: item.messageID }),
+      bytes,
+      sha256: createHash("sha256").update(item.text).digest("hex"),
+      ...(policy.auditMode === "content" ? { contentOmitted: true } : {}),
+    }
+    // Message attribution shares the metadata allowance and raw content shares the instruction allowance.
+    const metadataBytes = Buffer.byteLength(JSON.stringify(metadata), "utf8")
+    if (metadataBytes > remainingManifestBytes) continue
+    remainingManifestBytes -= metadataBytes
+    const include = policy.auditMode === "content" && bytes <= remaining
+    if (include) remaining -= bytes
+    const { contentOmitted, ...entry } = metadata
+    messageSources.push({
+      ...entry,
+      ...(include ? { content: item.text } : contentOmitted ? { contentOmitted } : {}),
+    })
+  }
   // Count the actual normalized definitions, without persisting descriptions or schemas.
   const tools = input.tools.map((tool) => ({
     name: tool.name,
     bytes: Buffer.byteLength(JSON.stringify(tool), "utf8"),
   }))
-  // Trace observations and instruction manifests share one metadata allowance.
+  // Trace observations, message attribution, and instruction manifests share one metadata allowance.
   const trace = input.trace ? boundedTrace(input.trace, remainingManifestBytes) : undefined
   return {
     version: 2,
@@ -140,6 +196,8 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
     sessionID: input.sessionID,
     agent: input.agent,
     model: input.model,
+    ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
+    ...(input.compactionMessageID === undefined ? {} : { compactionMessageID: input.compactionMessageID }),
     contextMode: policy.contextMode,
     contentIncluded: policy.auditMode === "content",
     ...(trace?.value ? { trace: trace.value } : {}),
@@ -152,6 +210,16 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
       counts[message.role] = (counts[message.role] ?? 0) + 1
       return counts
     }, {}),
+    ...(input.messageSources === undefined
+      ? {}
+      : {
+          messageSources,
+          messageSourceCount: input.messageSources.length,
+          messageSourceBytes: input.messageSources.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8"), 0),
+          ...(input.messageSources.length > messageSources.length
+            ? { omittedMessageSources: input.messageSources.length - messageSources.length }
+            : {}),
+        }),
     toolCount: tools.length,
     toolDefinitionBytes: tools.reduce((sum, item) => sum + item.bytes, 0),
     tools: tools.slice(0, 256).map((tool) => ({ ...tool, name: tool.name.slice(0, 256) })),

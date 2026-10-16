@@ -1,4 +1,5 @@
 import { describe, expect } from "bun:test"
+import { createHash } from "node:crypto"
 import {
   LLMClient,
   LLMError,
@@ -63,10 +64,13 @@ import { testEffect } from "./lib/effect"
 
 const requests: LLMRequest[] = []
 const audits: ContextAudit.Input[] = []
+let auditEnabled = true
 const audit = Layer.succeed(
   ContextAudit.Service,
   ContextAudit.Service.of({
-    enabled: true,
+    get enabled() {
+      return auditEnabled
+    },
     latest: () => Effect.succeed(undefined),
     record: (input) =>
       Effect.sync(() => {
@@ -337,6 +341,7 @@ const insertSession = (id: SessionV2.ID) =>
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   audits.length = 0
+  auditEnabled = true
   response = []
   systemBaseline = "Initial context"
   systemRemoved = false
@@ -1419,6 +1424,112 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("attributes the exact compaction prompt and replayed checkpoint without adding provider content", () =>
+    Effect.gen(function* () {
+      const session = yield* setupOverflowRecovery
+      audits.length = 0
+      response = fragmentFixture("text", "audit-summary", ["Summary with Unicode: ação 🌍"]).completeEvents
+      yield* session.compact({ sessionID, prompt: Prompt.make({ text: "Keep synthetic evidence" }) })
+      expect(requests).toHaveLength(1)
+      expect(audits).toHaveLength(1)
+      const captured = audits[0]!
+      const prompt = userTexts(requests[0]!)[0]!
+      expect(captured).toMatchObject({
+        runtime: "v2",
+        purpose: "compaction",
+        sessionID,
+        agent: "compaction",
+        instructions: [],
+      })
+      expect(captured.messages).toEqual(requests[0]!.messages)
+      expect(captured.tools).toEqual([])
+      expect(captured.messageSources).toEqual([
+        { source: "compaction-prompt", role: "user", messageIndex: 0, partIndex: 0, text: prompt },
+      ])
+      const checkpoint = (yield* session.context(sessionID)).find((message) => message.type === "compaction")!
+      expect(captured.compactionMessageID).toBe(checkpoint.id)
+      const report = ContextAudit.report(
+        captured,
+        { contextMode: "standard", auditMode: "summary" },
+        "2026-10-16T00:00:00Z",
+      )
+      expect(report.messageSources?.[0]).toMatchObject({
+        role: "user",
+        bytes: Buffer.byteLength(prompt, "utf8"),
+        sha256: createHash("sha256").update(prompt).digest("hex"),
+      })
+      expect(JSON.stringify(report)).not.toContain("Earlier question")
+      expect(JSON.stringify(report)).not.toContain("Keep synthetic evidence")
+      expect(report.messageSources?.[0]).not.toHaveProperty("content")
+      expect(
+        ContextAudit.report(captured, { contextMode: "standard", auditMode: "content" }, "now").messageSources?.[0]
+          ?.content,
+      ).toBe(prompt)
+
+      yield* replaySessionProjection(sessionID)
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Continue after replay" }), resume: false })
+      response = fragmentFixture("text", "audit-continued", ["Continued"]).completeEvents
+      yield* session.resume(sessionID)
+      expect(requests).toHaveLength(2)
+      expect(audits).toHaveLength(2)
+      const resumed = audits[1]!
+      const messageIndex = requests[1]!.messages.findIndex((message) => message.id === checkpoint.id)
+      const part = requests[1]!.messages[messageIndex]!.content[0]!
+      if (part.type !== "text") throw new Error("Checkpoint was not emitted as text")
+      expect(resumed.compactionMessageID).toBeUndefined()
+      expect(resumed.messageSources).toEqual([
+        {
+          source: "conversation-checkpoint",
+          role: "user",
+          messageID: checkpoint.id,
+          messageIndex,
+          partIndex: 0,
+          text: part.text,
+        },
+      ])
+      const resumedReport = ContextAudit.report(resumed, { contextMode: "standard", auditMode: "summary" }, "now")
+      expect(resumedReport.purpose).toBe("main")
+      expect(resumedReport.messageSources?.[0]?.sha256).toBe(createHash("sha256").update(part.text).digest("hex"))
+      expect(part.text).toContain("Summary with Unicode: ação 🌍")
+      expect(part.text).toContain("[Assistant]: Earlier answer")
+      for (const request of requests) {
+        expect(JSON.stringify(request)).not.toContain("messageSources")
+        expect(JSON.stringify(request)).not.toContain("compactionMessageID")
+      }
+    }),
+  )
+
+  it.effect("disabling audit leaves compaction requests and results identical without recording", () =>
+    Effect.gen(function* () {
+      const session = yield* setupOverflowRecovery
+      const before = yield* session.context(sessionID)
+      audits.length = 0
+      response = fragmentFixture("text", "disabled-audit-summary", ["Same summary"]).completeEvents
+      streamGate = yield* Deferred.make<void>()
+      streamStarted = yield* Deferred.make<void>()
+      const attempt = yield* session.compact({ sessionID }).pipe(Effect.forkChild)
+      yield* Deferred.await(streamStarted)
+      expect(audits).toHaveLength(1)
+      expect(audits[0]?.purpose).toBe("compaction")
+      yield* session.interrupt(sessionID)
+      expect(yield* Fiber.await(attempt)).toMatchObject({ _tag: "Failure" })
+      expect(yield* session.context(sessionID)).toEqual(before)
+      const enabledRequest = requests[0]!
+      audits.length = 0
+      auditEnabled = false
+      streamGate = undefined
+      streamStarted = undefined
+      yield* session.compact({ sessionID })
+      expect(audits).toHaveLength(0)
+      expect(requests).toHaveLength(2)
+      expect(requests[1]).toEqual(enabledRequest)
+      expect((yield* session.context(sessionID)).find((message) => message.type === "compaction")).toMatchObject({
+        summary: "Same summary",
+        recent: "[Assistant]: Earlier answer",
+      })
+    }),
+  )
+
   it.effect("waits for tool settlement and preserves the step allowance across manual compaction", () =>
     Effect.gen(function* () {
       const session = yield* setupOverflowRecovery
@@ -1537,6 +1648,7 @@ describe("SessionRunnerLLM", () => {
           LLMEvent.finish({ reason: "length" }),
         ],
         fragmentFixture("text", "eof-summary", ["Unconfirmed summary"]).partialEvents,
+        [LLMEvent.toolCall({ id: "summary-tool", name: "echo", input: {} }), LLMEvent.finish({ reason: "stop" })],
       ]) {
         response = events
         expect(yield* session.compact({ sessionID }).pipe(Effect.flip)).toMatchObject({
@@ -1544,6 +1656,8 @@ describe("SessionRunnerLLM", () => {
           reason: "provider",
         })
         expect(yield* session.context(sessionID)).toEqual(before)
+        expect(audits.at(-1)?.purpose).toBe("compaction")
+        expect(before.map((message) => message.id)).not.toContain(audits.at(-1)?.compactionMessageID)
       }
       streamFailure = providerUnavailable()
       expect(yield* session.compact({ sessionID }).pipe(Effect.flip)).toMatchObject({
