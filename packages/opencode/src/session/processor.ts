@@ -99,7 +99,9 @@ const layer = Layer.effect(
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
       // may execute tools internally before emitting start-step events,
       // so capturing inside the event handler can be too late.
-      const initialSnapshot = yield* snapshot.track()
+      // Auxiliary compaction summarizes conversation without harness tools or a filesystem diff.
+      const captureSnapshots = input.assistantMessage.summary !== true
+      const initialSnapshot = captureSnapshots ? yield* snapshot.track() : undefined
       const ctx: ProcessorContext = {
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
@@ -422,7 +424,7 @@ const layer = Layer.effect(
             throw new Error(value.message)
 
           case "step-start":
-            if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
+            if (captureSnapshots && !ctx.snapshot) ctx.snapshot = yield* snapshot.track()
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: ctx.assistantMessage.id,
@@ -433,7 +435,7 @@ const layer = Layer.effect(
             return
 
           case "step-finish": {
-            const completedSnapshot = yield* snapshot.track()
+            const completedSnapshot = captureSnapshots ? yield* snapshot.track() : undefined
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             // Anthropic reports thinking blocks it removed before the model saw the
             // prompt. Prefix mismatches mean opencode changed history behind a signed

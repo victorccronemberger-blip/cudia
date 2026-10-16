@@ -334,6 +334,13 @@ pendente, evidências, arquivos e IDs de tarefas. Operações de resultado incer
 continuam marcadas como incertas. Essas instruções só entram na chamada de
 compactação, fora do system prompt fixo do executor.
 
+Nos fontes posteriores à Preview 11, mensagens auxiliares marcadas internamente
+como resumo não capturam snapshots de arquivos. A compactação mantém seus
+registros de etapa, consumo, erros, tentativas e interrupções. As execuções
+normais continuam capturando o estado antes de iniciar o provedor e suas
+ferramentas. Plugins ainda podem alterar arquivos por efeitos próprios; a
+compactação não acompanha incidentalmente essas alterações com um diff.
+
 O CUDIA mantém uma cauda recente de aproximadamente 8.000 tokens, ajustada ao
 orçamento disponível. A poda adicional de resultados antigos de ferramentas
 permanece desabilitada por padrão. No V1, resultados omitidos ou abreviados no

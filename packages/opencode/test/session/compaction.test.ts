@@ -17,6 +17,7 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
+import { Snapshot } from "@/snapshot"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -24,7 +25,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { Provider } from "@/provider/provider"
 import * as SessionProcessorModule from "../../src/session/processor"
 import { ProviderTest } from "../fake/provider"
-import { testEffect } from "../lib/effect"
+import { awaitWithTimeout, testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { TestConfig } from "../fixture/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -250,10 +251,18 @@ type CompactionProcessOptions = {
   plugin?: Layer.Layer<Plugin.Service>
   provider?: ReturnType<typeof wide>
   config?: Layer.Layer<Config.Service>
+  snapshots?: Layer.Layer<Snapshot.Service>
 }
 
 function withCompaction(options?: CompactionProcessOptions) {
   return Effect.provide(compactionProcessLayer(options))
+}
+
+function unexpectedSnapshots(calls: string[]) {
+  return Layer.mock(Snapshot.Service, {
+    track: () => Effect.sync(() => calls.push("track")).pipe(Effect.andThen(Effect.die("Unexpected summary snapshot"))),
+    patch: () => Effect.sync(() => calls.push("patch")).pipe(Effect.andThen(Effect.die("Unexpected summary patch"))),
+  })
 }
 
 function compactionProcessLayer(options?: CompactionProcessOptions) {
@@ -261,6 +270,7 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     [Provider.node, (options?.provider ?? wide()).layer],
     [RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })],
     [SessionSummary.node, summary],
+    ...(options?.snapshots ? ([[Snapshot.node, options.snapshots]] as const) : []),
   ]
   if (!options?.llm) {
     return AppNodeBuilder.build(compactionTestNode, [
@@ -1669,6 +1679,115 @@ describe("session.compaction.process", () => {
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(keep.id)
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 500 }) })),
+  )
+})
+
+describe("auxiliary compaction snapshots", () => {
+  for (const outcome of ["completed", "retried", "failed", "unexpected tool output"] as const) {
+    itCompaction.instance(
+      `${outcome} summary avoids filesystem snapshots and preserves step records`,
+      () => {
+        const stub = llm()
+        const calls: string[] = []
+        let attempts = 0
+        if (outcome === "retried")
+          stub.push(() => {
+            attempts++
+            return Stream.fail(
+              new APICallError({
+                message: "synthetic retry",
+                url: "https://example.test/v1",
+                requestBodyValues: {},
+                statusCode: 503,
+                responseHeaders: { "retry-after-ms": "1" },
+                isRetryable: true,
+              }),
+            )
+          })
+        stub.push((input) => {
+          attempts++
+          expect(input.tools).toEqual({})
+          const stream =
+            outcome === "failed"
+              ? Stream.fail(new Error("synthetic summary failure"))
+              : outcome === "unexpected tool output"
+                ? Stream.make(
+                    LLMEvent.toolCall({ id: "unexpected-summary-tool", name: "_noop", input: {} }),
+                    LLMEvent.stepFinish({ index: 0, reason: "tool-calls", usage: basicUsage() }),
+                    LLMEvent.finish({ reason: "tool-calls", usage: basicUsage() }),
+                  )
+                : reply("snapshot-free summary")(input)
+          return Stream.concat(Stream.make(LLMEvent.stepStart({ index: 0 })), stream)
+        })
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          const parent = yield* createUserMessage(session.id, "Summarize this synthetic conversation")
+          const result = yield* SessionCompaction.use.process({
+            parentID: parent.id,
+            messages: yield* ssn.messages({ sessionID: session.id }),
+            sessionID: session.id,
+            auto: false,
+          })
+          expect(result).toBe(outcome === "failed" || outcome === "unexpected tool output" ? "stop" : "continue")
+          expect(attempts).toBe(outcome === "retried" ? 2 : 1)
+          const summary = (yield* ssn.messages({ sessionID: session.id })).find(
+            (message) => message.info.role === "assistant" && message.info.summary,
+          )
+          if (!summary || summary.info.role !== "assistant") throw new Error("Missing summary assistant")
+          expect(summary.parts.some((part) => part.type === "step-start")).toBe(true)
+          expect(summary.parts.some((part) => part.type === "patch" || part.type === "tool")).toBe(false)
+          for (const part of summary.parts) {
+            if (part.type === "step-start" || part.type === "step-finish") expect(part.snapshot).toBeUndefined()
+          }
+          if (outcome === "failed" || outcome === "unexpected tool output") expect(summary.info.error).toBeDefined()
+          else {
+            expect(summary.info.tokens.output).toBe(1)
+            expect(summary.parts.some((part) => part.type === "step-finish")).toBe(true)
+            expect(summary.parts.some((part) => part.type === "text" && part.text === "snapshot-free summary")).toBe(
+              true,
+            )
+          }
+          expect(calls).toEqual([])
+        }).pipe(withCompaction({ llm: stub.llmLayer, snapshots: unexpectedSnapshots(calls) }))
+      },
+      { git: true },
+    )
+  }
+
+  itCompaction.instance(
+    "interrupted summary settles without reading or patching filesystem snapshots",
+    () => {
+      const stub = llm()
+      const calls: string[] = []
+      return Effect.gen(function* () {
+        const ready = yield* Deferred.make<void>()
+        stub.push(
+          Stream.concat(
+            Stream.make(LLMEvent.stepStart({ index: 0 })),
+            Stream.unwrap(Deferred.succeed(ready, undefined).pipe(Effect.as(Stream.never))),
+          ),
+        )
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const parent = yield* createUserMessage(session.id, "Summarize then interrupt")
+        const messages = yield* ssn.messages({ sessionID: session.id })
+        const fiber = yield* SessionCompaction.use
+          .process({ parentID: parent.id, messages, sessionID: session.id, auto: false })
+          .pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(ready), "Summary stream did not start", "5 seconds")
+        yield* Fiber.interrupt(fiber)
+        const exit = yield* Fiber.await(fiber)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+        const summary = (yield* ssn.messages({ sessionID: session.id })).find(
+          (message) => message.info.role === "assistant" && message.info.summary,
+        )
+        expect(summary?.parts.some((part) => part.type === "patch")).toBe(false)
+        expect(calls).toEqual([])
+      }).pipe(withCompaction({ llm: stub.llmLayer, snapshots: unexpectedSnapshots(calls) }))
+    },
+    { git: true },
   )
 })
 

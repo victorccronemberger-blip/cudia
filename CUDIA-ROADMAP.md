@@ -2927,13 +2927,14 @@ implementadas; um estado inválido produz erro visível e preserva os dados.
 - [x] Exibir textos capturados pela CLI somente com `--content` explícito.
 - [x] Validar 126 testes Core/529 assertions, o teste de CLI real/9 assertions
       e os typechecks Core/opencode. Revisão independente: gpt-6-astra/high.
-- [ ] Diagnosticar as falhas da regressão ampliada V1 antes de qualificar outro
+- [x] Diagnosticar as falhas da regressão ampliada V1 antes de qualificar outro
       binário: 56 pass, 1 skip e 10 fail em 67 testes/220 assertions. Dois casos
       reproduziram timeout de 5 segundos com os três arquivos Core originais de
       `9e1dfa9c3b829aa92dfe4eba6ee252fcfbec63cf`: `falls back to full summary when
       even one recent turn exceeds preserve token budget` e `does not allow
-      tool calls while generating the summary`. Os outros oito casos continuam
-      sem causa estabelecida; não foram classificados como preexistentes.
+      tool calls while generating the summary`. Naquela rodada, os outros oito
+      ficaram sem causa estabelecida. A correção de snapshots descrita no
+      incremento seguinte fez os dez casos passarem sob os mesmos prazos.
 
 Este incremento é somente dos fontes; a Preview 11 permanece instalada e
 publicada sem alteração. A captura antecede o provedor e pode corresponder a
@@ -2942,3 +2943,33 @@ linhagem durável dos resumos e os demais itens da meta continuam pendentes.
 O modo `content` optativo pode guardar histórico serializado da conversa nos
 blocos de compactação/checkpoint. Falhas tipadas de persistência da auditoria
 mantêm o tratamento existente de aviso e continuidade da execução.
+
+## Incremento dos fontes — compactação V1 sem snapshots de arquivos
+
+- [x] Identificar trabalho desnecessário no processador compartilhado: uma
+      compactação fazia snapshots iniciais, de etapa e de conclusão, além de
+      calcular patches de arquivos durante a limpeza.
+- [x] Omitir esse trabalho somente quando a mensagem tem `summary: true`,
+      mantendo o snapshot inicial das execuções normais antes do stream.
+- [x] Validar conclusão, retry, falha, saída de ferramenta inesperada e
+      interrupção com um serviço de snapshots que falha se for chamado.
+      Registros de etapa e consumo permanecem, sem IDs de snapshot artificiais.
+- [x] Validar a regressão ampliada no prazo original: 71 pass, 1 skip existente,
+      0 fail e 267 assertions em 72 testes/3 arquivos, incluindo os dez casos
+      que falharam antes. O limite de 250 ms do teste de cancelamento foi mantido.
+- [x] Validar 17 testes do processador normal/80 assertions e o teste real de
+      ferramenta com arquivo criado e diff não vazio/4 assertions. Este teste
+      de integração terminou em 20,3 segundos com prazo explícito de 30 segundos;
+      nenhum prazo foi alterado nos arquivos de teste.
+- [x] Confirmar controle negativo: o processador anterior falha com
+      `Unexpected summary snapshot` no novo teste de conclusão.
+- [x] Concluir revisão independente com gpt-6-astra/high pela skill codex-advisor.
+
+Na medição local do mesmo caso representativo, as chamadas Git passaram de
+35 para 13, sem comandos de snapshot após a correção; o teste passou de 7,4
+para 2,6 segundos. São observações locais, sem garantia geral de desempenho.
+Plugins ainda podem alterar arquivos durante seus hooks; esses efeitos deixam
+de ser acompanhados incidentalmente pelos snapshots da compactação. A captura
+dos turnos normais continua validada. Este incremento é somente dos fontes:
+a Preview 11 não foi recompilada ou substituída. A qualificação de um novo
+binário e os demais itens da meta permanecem pendentes.
