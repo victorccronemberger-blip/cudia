@@ -200,6 +200,7 @@ const live: Layer.Layer<
           providerOptions: prepared.params.options,
           headers: prepared.headers,
           abort: input.abort,
+          historyProjection: audit.enabled && !input.small ? input.historyProjection : undefined,
           onRequest:
             audit.enabled && !input.small
               ? (request) =>

@@ -128,6 +128,16 @@ A regressão passou com 112 testes e 447 verificações em seis arquivos, um ski
 preexistente de API key, além da checagem de tipos do pacote. Esse incremento
 continua fora do instalador Preview 12.
 
+**Cópias nativas V1, em fonte:** texto simples de skill/guidance acompanha a
+conversão do resultado e as cópias de `Message.make`, `LLM.request` e
+`LLMRequest.update`, com invalidação persistente em caso de divergência.
+Duplicações continuam ambíguas. Conteúdo com anexos que o adaptador transforma
+em JSON permanece sem posição textual atribuída. O ensaio de resumos mostrou
+perda de identidade mesmo pelo callback público de dados do SDK; essa tentativa
+não foi incorporada, e os resumos seguem explicitamente sem mapeamento final.
+Passaram 115 testes/468 verificações em seis arquivos, com um skip preexistente de
+API key, além dos tipos do pacote. O instalador permanece na Preview 12.
+
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no
       ensaio isolado de 16/10, com o candidato `31d2c80a4998`.

@@ -235,13 +235,35 @@ simples e texto aninhado em conteúdo com anexos, sem acrescentar campos ao SDK.
 Projeção reduzida, normalização que altere o texto, cópias externas e repetições
 do mesmo objeto não recebem mapeamento válido.
 
-A cobertura é do SDK V1 principal e dos loaders selecionados. Entradas primitivas
-ficam explicitamente sem suporte; resumos e a conversão nativa permanecem sem
-vínculo observado. A validação HTTP compara o corpo codificado byte a byte com a
+A cobertura dessa etapa é do SDK V1 principal e dos loaders selecionados. Entradas
+primitivas ficam explicitamente sem suporte; resumos permanecem sem vínculo
+observado. A validação HTTP compara o corpo codificado byte a byte com a
 auditoria ligada/desligada em ambos os caminhos; isso não atribui identidade às
 partes depois da serialização nem estende a prova a todos os provedores.
 Passaram 112 testes e 447 verificações em seis arquivos, com um skip preexistente
 de API key no fluxo nativo gravado; o pacote também passou na checagem de tipos.
+
+## Cópias do adaptador nativo V1
+
+O adaptador nativo também acompanha texto simples de skill/guidance já observado
+pelo renderer do SDK. A associação começa na identidade desse objeto e passa
+pelas cópias imediatamente observadas de `Message.make`, `LLM.request` e
+`LLMRequest.update`. Cada passagem confere quantidade, papel, tipo, nome e ID;
+uma divergência invalida a fonte, inclusive seus aliases anteriores. O pedido
+preparado é percorrido por identidade e conserva as ocorrências repetidas como
+ambíguas. A interface do adaptador contém somente essas observações e é local
+à chamada, sem dependência de serviços de sessão.
+
+Essa etapa cobre resultados textuais. A conversão nativa atual de conteúdo com
+anexos para JSON permanece igual e recebe `unsupported-result`, sem atribuir uma
+posição textual. Resumos continuam sem vínculo final: um ensaio real confirmou
+que até o objeto retornado por `convertDataPart` é copiado na preparação do SDK.
+Esse caminho experimental não foi incorporado ao conversor. Os índices de
+origem permanecem explícitos no snapshot, sem reconstrução por texto.
+Na regressão dessa etapa passaram 115 testes e 468 verificações em seis arquivos,
+com um skip preexistente de API key; a checagem de tipos também passou. O teste
+HTTP nativo confere a posição após `LLMRequest.update` e conserva igualdade byte
+a byte com a auditoria desligada.
 
 ## Validação
 

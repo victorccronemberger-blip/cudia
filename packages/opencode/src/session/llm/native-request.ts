@@ -12,6 +12,7 @@ import {
 import type { ModelMessage } from "ai"
 import type { Provider } from "@/provider/provider"
 import { isRecord } from "@/util/record"
+import type { HistoryProjection } from "../history-projection"
 
 type ToolInput = {
   readonly description?: string
@@ -32,6 +33,7 @@ export type RequestInput = {
   readonly maxOutputTokens?: number
   readonly providerOptions?: LLMRequest["providerOptions"]
   readonly headers?: Record<string, string>
+  readonly historyProjection?: HistoryProjection.Native
 }
 
 const providerMetadata = (value: unknown): ProviderMetadata | undefined => {
@@ -64,10 +66,10 @@ const mediaPart = (part: Record<string, unknown>) => {
   }
 }
 
-const toolResult = (part: Record<string, unknown>) => {
+const toolResult = (part: Record<string, unknown>, projection?: HistoryProjection.Native) => {
   const output = isRecord(part.output) ? part.output : { type: "json", value: part.output }
   const type = output.type === "text" ? "text" : output.type === "error-text" ? "error" : "json"
-  return ToolResultPart.make({
+  const result = ToolResultPart.make({
     id: typeof part.toolCallId === "string" ? part.toolCallId : "",
     name: typeof part.toolName === "string" ? part.toolName : "",
     result: "value" in output ? output.value : output,
@@ -75,9 +77,11 @@ const toolResult = (part: Record<string, unknown>) => {
     providerExecuted: typeof part.providerExecuted === "boolean" ? part.providerExecuted : undefined,
     providerMetadata: partProviderMetadata(part),
   })
+  projection?.nativeResult(part.output, result)
+  return result
 }
 
-const contentPart = (part: unknown) => {
+const contentPart = (part: unknown, projection?: HistoryProjection.Native) => {
   if (!isRecord(part)) throw new Error("Native LLM request adapter only supports object content parts")
   if (part.type === "text") return textPart(part)
   if (part.type === "file") return mediaPart(part)
@@ -95,24 +99,27 @@ const contentPart = (part: unknown) => {
       providerExecuted: typeof part.providerExecuted === "boolean" ? part.providerExecuted : undefined,
       providerMetadata: partProviderMetadata(part),
     })
-  if (part.type === "tool-result") return toolResult(part)
+  if (part.type === "tool-result") return toolResult(part, projection)
   throw new Error(`Native LLM request adapter does not support ${String(part.type)} content parts`)
 }
 
-const content = (value: ModelMessage["content"]) =>
-  typeof value === "string" ? [{ type: "text" as const, text: value }] : value.map(contentPart)
+const content = (value: ModelMessage["content"], projection?: HistoryProjection.Native) =>
+  typeof value === "string"
+    ? [{ type: "text" as const, text: value }]
+    : value.map((part) => contentPart(part, projection))
 
-const messages = (input: readonly ModelMessage[]) => {
+const messages = (input: readonly ModelMessage[], projection?: HistoryProjection.Native) => {
   const system = input.flatMap((message) => (message.role === "system" ? [SystemPart.make(message.content)] : []))
   const messages = input.flatMap((message) => {
     if (message.role === "system") return []
-    return [
-      Message.make({
-        role: message.role,
-        content: content(message.content),
-        native: isRecord(message.providerOptions) ? { providerOptions: message.providerOptions } : undefined,
-      }),
-    ]
+    const original = {
+      role: message.role,
+      content: content(message.content, projection),
+      native: isRecord(message.providerOptions) ? { providerOptions: message.providerOptions } : undefined,
+    }
+    const converted = Message.make(original)
+    projection?.nativeCopied([original], [converted])
+    return [converted]
   })
   return { system, messages }
 }
@@ -179,10 +186,10 @@ export const model = (input: Provider.Model | RequestInput, headers?: Record<str
 }
 
 export const request = (input: RequestInput) => {
-  const converted = messages(input.messages)
+  const converted = messages(input.messages, input.historyProjection)
   // This is the only native adapter boundary that should construct canonical
   // @opencode-ai/llm request objects from opencode's session/AI SDK-shaped data.
-  return LLM.request({
+  const request = LLM.request({
     model: model(input, input.headers),
     system: [...(input.system ?? []).map(SystemPart.make), ...converted.system],
     messages: converted.messages,
@@ -191,6 +198,8 @@ export const request = (input: RequestInput) => {
     generation: generation(input),
     providerOptions: input.providerOptions,
   })
+  input.historyProjection?.nativeCopied(converted.messages, request.messages)
+  return request
 }
 
 export * as LLMNative from "./native-request"

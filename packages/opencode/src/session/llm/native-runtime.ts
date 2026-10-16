@@ -18,6 +18,7 @@ import {
 } from "@opencode-ai/llm"
 import type { LLMClientShape } from "@opencode-ai/llm/route"
 import { LLMNative } from "./native-request"
+import type { HistoryProjection } from "../history-projection"
 
 export type RuntimeStatus =
   | { readonly type: "supported"; readonly apiKey: string; readonly baseURL?: string }
@@ -42,6 +43,7 @@ type StreamInput = {
   readonly headers: Record<string, string>
   readonly abort: AbortSignal
   readonly onRequest?: (request: LLMRequest) => Effect.Effect<void>
+  readonly historyProjection?: HistoryProjection.Native
 }
 
 export function status(input: Pick<StreamInput, "model" | "provider" | "auth">): RuntimeStatus {
@@ -100,6 +102,7 @@ export function stream(input: StreamInput): StreamResult {
     maxOutputTokens: input.maxOutputTokens,
     providerOptions: ProviderTransform.providerOptions(input.model, input.providerOptions ?? {}),
     headers: { ...providerHeaders(input.provider.options.headers), ...input.headers },
+    historyProjection: input.historyProjection,
   })
   const stream = Stream.scoped(
     Stream.unwrap(
@@ -107,6 +110,7 @@ export function stream(input: StreamInput): StreamResult {
         const settlements = yield* FiberSet.make<void>()
         const results = yield* Queue.unbounded<LLMEvent, Cause.Done>()
         const prepared = LLMRequest.update(request, { tools: [...request.tools, ...toDefinitions(tools)] })
+        input.historyProjection?.nativeCopied(request.messages, prepared.messages)
         if (input.onRequest) yield* input.onRequest(prepared)
         const provider = input.llmClient.stream(prepared).pipe(
           Stream.flatMap((event) =>

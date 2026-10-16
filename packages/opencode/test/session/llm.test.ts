@@ -1787,21 +1787,26 @@ describe("session.llm.stream", () => {
           const capture = captures[0]!
           const source = capture.historySnapshot?.sources[0]
           expect(source?.tool?.observation).toMatchObject({ state: "matched", origin: "fixture/SKILL.md" })
-          if (native) {
-            expect(source?.prepared).toEqual({ state: "unmapped", reason: "not-observed" })
-            return
-          }
           expect(source?.prepared).toMatchObject({ state: "mapped", role: "tool", resultType: "text" })
-          if (source?.prepared?.state !== "mapped") throw new Error("Expected mapped AI SDK result")
+          if (source?.prepared?.state !== "mapped") throw new Error("Expected mapped result")
           const message = capture.messages[source.prepared.messageIndex]
           if (!message || !("content" in message) || !Array.isArray(message.content))
             throw new Error("Expected message content")
-          expect(message.content[source.prepared.partIndex]).toMatchObject({
-            type: "tool-result",
-            toolCallId: "call_loader_projection",
-            toolName: "skill",
-            output: { type: "text", value: text },
-          })
+          expect(message.content[source.prepared.partIndex]).toMatchObject(
+            native
+              ? {
+                  type: "tool-result",
+                  id: "call_loader_projection",
+                  name: "skill",
+                  result: { type: "text", value: text },
+                }
+              : {
+                  type: "tool-result",
+                  toolCallId: "call_loader_projection",
+                  toolName: "skill",
+                  output: { type: "text", value: text },
+                },
+          )
         }),
       { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
     )

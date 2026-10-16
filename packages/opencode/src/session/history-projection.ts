@@ -2,10 +2,19 @@ import type { UIMessage } from "ai"
 import type { ContextAudit } from "@opencode-ai/core/harness/audit"
 import type { PreparedSource } from "@opencode-ai/core/harness/prepared-source"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { Message, ToolResultPart } from "@opencode-ai/llm"
 
 type Snapshot = NonNullable<ContextAudit.Input["historySnapshot"]>
 type Candidate = { readonly output: unknown; rendered: boolean }
-export type Collector = {
+/** Narrow observation contract for the owned native adapter; no Session services. */
+export type Native = {
+  readonly nativeResult: (output: unknown, result: ToolResultPart) => void
+  readonly nativeCopied: (
+    before: ReadonlyArray<{ readonly role: string; readonly content: ReadonlyArray<unknown> }>,
+    after: ReadonlyArray<Message>,
+  ) => void
+}
+export type Collector = Native & {
   readonly register: (input: {
     readonly messageIndex: number
     readonly partIndex: number
@@ -42,12 +51,21 @@ export function create(snapshot: Snapshot): Collector {
   const targets = new Map<string, number[]>()
   const inputs = new WeakMap<object, number[]>()
   const leaves = new WeakMap<object, number[]>()
+  const nativeParts = new WeakMap<object, number[]>()
   const outcomes = new Map<number, Candidate | PreparedSource.Mapping>()
   for (const [index, source] of sources.entries()) {
     const key = `${source.messageIndex}:${source.partIndex}`
     targets.set(key, [...(targets.get(key) ?? []), index])
   }
   let sealed = false
+  const invalidate = (parts: ReadonlyArray<unknown>) => {
+    for (const part of parts) {
+      if (!object(part)) continue
+      for (const index of nativeParts.get(part) ?? []) {
+        outcomes.set(index, { state: "unmapped", reason: "copy-boundary-changed" })
+      }
+    }
+  }
   return {
     register(input) {
       for (const index of targets.get(`${input.messageIndex}:${input.partIndex}`) ?? []) {
@@ -132,6 +150,69 @@ export function create(snapshot: Snapshot): Collector {
         leaves.set(leaf, [...(leaves.get(leaf) ?? []), index])
       }
     },
+    nativeResult(output, result) {
+      const value = data(output, "value")
+      const parts =
+        data(output, "type") === "text"
+          ? [output]
+          : data(output, "type") === "content" && Array.isArray(value)
+            ? value
+            : []
+      for (const part of parts) {
+        if (!object(part)) continue
+        for (const index of leaves.get(part) ?? []) {
+          const candidate = outcomes.get(index)
+          if (!candidate || "state" in candidate) continue
+          if (data(output, "type") !== "text" || result.result.type !== "text") {
+            outcomes.set(index, { state: "unmapped", reason: "unsupported-result" })
+            continue
+          }
+          const source = sources[index]!
+          if (
+            result.id !== source.tool?.callID ||
+            result.name !== source.tool?.name ||
+            result.result.value !== source.text
+          ) {
+            outcomes.set(index, { state: "unmapped", reason: "prepared-value-changed" })
+            continue
+          }
+          nativeParts.set(result, [...(nativeParts.get(result) ?? []), index])
+        }
+      }
+    },
+    nativeCopied(before, after) {
+      if (sources.length === 0) return
+      if (before.length !== after.length) {
+        for (const message of before) invalidate(message.content)
+        for (const message of after) invalidate(message.content)
+        return
+      }
+      for (const [messageIndex, original] of before.entries()) {
+        const copied = after[messageIndex]!
+        if (original.role !== copied.role || original.content.length !== copied.content.length) {
+          invalidate(original.content)
+          invalidate(copied.content)
+          continue
+        }
+        for (const [partIndex, part] of original.content.entries()) {
+          if (!object(part)) continue
+          const indices = nativeParts.get(part)
+          if (!indices) continue
+          const next = copied.content[partIndex]!
+          if (
+            data(part, "type") !== "tool-result" ||
+            next.type !== "tool-result" ||
+            data(part, "id") !== next.id ||
+            data(part, "name") !== next.name ||
+            data(data(part, "result"), "type") !== next.result.type
+          ) {
+            invalidate([part, next])
+            continue
+          }
+          nativeParts.set(next, [...new Set([...(nativeParts.get(next) ?? []), ...indices])])
+        }
+      }
+    },
     capture(messages) {
       const locations = new Map<number, PreparedSource.Mapping>()
       for (const [messageIndex, message] of (sources.length > 0 ? messages : []).entries()) {
@@ -139,6 +220,26 @@ export function create(snapshot: Snapshot): Collector {
         if (!Array.isArray(content)) continue
         for (const [partIndex, part] of content.entries()) {
           if (data(part, "type") !== "tool-result") continue
+          for (const index of object(part) ? (nativeParts.get(part) ?? []) : []) {
+            if (locations.has(index)) {
+              locations.set(index, { state: "unmapped", reason: "ambiguous-occurrence" })
+              continue
+            }
+            const source = sources[index]!
+            const role = data(message, "role")
+            const result = data(part, "result")
+            if (
+              data(result, "type") !== "text" ||
+              data(result, "value") !== source.text ||
+              data(part, "id") !== source.tool?.callID ||
+              data(part, "name") !== source.tool?.name ||
+              (role !== "assistant" && role !== "tool")
+            ) {
+              locations.set(index, { state: "unmapped", reason: "prepared-value-changed" })
+              continue
+            }
+            locations.set(index, { state: "mapped", messageIndex, partIndex, role, resultType: "text" })
+          }
           const output = data(part, "output")
           const resultType = data(output, "type")
           const value = data(output, "value")

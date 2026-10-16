@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { LLMRequest } from "@opencode-ai/llm"
+import type { ModelMessage } from "ai"
 import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { HistoryProjection } from "../../src/session/history-projection"
 import { HistorySource } from "../../src/session/history-source"
@@ -9,6 +11,7 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import type { Provider } from "../../src/provider/provider"
 import { ProviderTransform } from "../../src/provider/transform"
+import { LLMNative } from "../../src/session/llm/native-request"
 
 const sessionID = SessionID.make("ses_history_projection")
 const providerID = ProviderV2.ID.make("fixture")
@@ -364,5 +367,135 @@ describe("V1 history projection", () => {
       state: "unmapped",
       reason: "unsupported-result",
     })
+  })
+
+  test("tracks native request copies through system filtering, update, and ambiguous final aliases", async () => {
+    const output = "native loaded skill text"
+    const stored = loader({
+      messageID: "msg_native",
+      partID: "prt_native",
+      callID: "call_native",
+      input: { name: "native" },
+      output,
+      receipt: skillReceipt("native/SKILL.md", output),
+    })
+    const collector = HistoryProjection.create(HistorySource.capture([stored]))
+    const prepared = await MessageV2.toModelMessages([stored], model, { historyProjection: collector })
+    const nativeInput: ModelMessage[] = [
+      { role: "system", content: "system before" },
+      ...prepared.slice(0, 1),
+      { role: "system", content: "system between" },
+      ...prepared.slice(1),
+    ]
+    const request = LLMNative.request({ model, messages: nativeInput, historyProjection: collector })
+    const baseline = LLMNative.request({ model, messages: nativeInput })
+
+    expect(request.system).toEqual(baseline.system)
+    expect(request.messages).toEqual(baseline.messages)
+    expect(request.messages.map((message) => message.role)).toEqual(["assistant", "tool"])
+    expect(collector.capture(request.messages).sources[0]?.prepared).toEqual({
+      state: "mapped",
+      messageIndex: 1,
+      partIndex: 0,
+      role: "tool",
+      resultType: "text",
+    })
+    const updated = LLMRequest.update(request, { system: [...request.system] })
+    expect(collector.capture(updated.messages).sources[0]?.prepared).toEqual({
+      state: "unmapped",
+      reason: "not-observed",
+    })
+    collector.nativeCopied(request.messages, updated.messages)
+    expect(collector.capture(updated.messages).sources[0]?.prepared).toEqual({
+      state: "mapped",
+      messageIndex: 1,
+      partIndex: 0,
+      role: "tool",
+      resultType: "text",
+    })
+    expect(JSON.stringify(request)).not.toContain("contextSource")
+    expect(JSON.stringify(request)).not.toContain("native/SKILL.md")
+    expect(collector.capture([...request.messages, request.messages[1]!]).sources[0]?.prepared).toEqual({
+      state: "unmapped",
+      reason: "ambiguous-occurrence",
+    })
+    expect(collector.capture(structuredClone(request.messages)).sources[0]?.prepared).toEqual({
+      state: "unmapped",
+      reason: "not-observed",
+    })
+  })
+
+  test("keeps native copy-boundary failures sticky and reports a changed result value", async () => {
+    const output = "native result before adapter mutation"
+    const stored = loader({
+      messageID: "msg_native_changed",
+      partID: "prt_native_changed",
+      callID: "call_native_changed",
+      input: { name: "native-changed" },
+      output,
+      receipt: skillReceipt("native-changed/SKILL.md", output),
+    })
+    const collector = HistoryProjection.create(HistorySource.capture([stored]))
+    const prepared = await MessageV2.toModelMessages([stored], model, { historyProjection: collector })
+    const toolMessage = prepared.find((message) => message.role === "tool")
+    if (!toolMessage) throw new Error("Expected tool result message")
+    const resultParts = toolMessage.content as unknown as Array<{
+      type: string
+      output: { type: string; value: unknown }
+    }>
+    const resultPart = resultParts.find((part) => part.type === "tool-result")
+    if (!resultPart) throw new Error("Expected tool result part")
+    Object.defineProperty(resultPart.output, "value", { value: "native result changed" })
+    const request = LLMNative.request({ model, messages: prepared, historyProjection: collector })
+    expect(collector.capture(request.messages).sources[0]?.prepared).toEqual({
+      state: "unmapped",
+      reason: "prepared-value-changed",
+    })
+
+    for (const boundary of ["arity", "role", "id", "name", "result-kind"] as const) {
+      const rejectedCollector = HistoryProjection.create(HistorySource.capture([stored]))
+      const rejectedPrepared = await MessageV2.toModelMessages([stored], model, {
+        historyProjection: rejectedCollector,
+      })
+      const rejected = LLMNative.request({ model, messages: rejectedPrepared, historyProjection: rejectedCollector })
+      const changed = LLMRequest.update(rejected, { tools: [...rejected.tools] })
+      const toolMessage = changed.messages[1]!
+      const toolPart = toolMessage.content[0]!
+      if (boundary === "role") Object.defineProperty(toolMessage, "role", { value: "assistant" })
+      if (boundary === "id") Object.defineProperty(toolPart, "id", { value: "different-call" })
+      if (boundary === "name") Object.defineProperty(toolPart, "name", { value: "different-tool" })
+      if (boundary === "result-kind") Object.defineProperty(toolPart, "result", { value: { type: "json", value: {} } })
+      rejectedCollector.nativeCopied(rejected.messages, boundary === "arity" ? [] : changed.messages)
+      const later = LLMRequest.update(rejected, { tools: [...rejected.tools] })
+      rejectedCollector.nativeCopied(rejected.messages, later.messages)
+      expect(rejectedCollector.capture(later.messages).sources[0]?.prepared).toEqual({
+        state: "unmapped",
+        reason: "copy-boundary-changed",
+      })
+    }
+  })
+
+  test("does not claim nested content that the native adapter renders as JSON", async () => {
+    const output = "native nested text"
+    const stored = loader({
+      messageID: "msg_native_nested",
+      partID: "prt_native_nested",
+      callID: "call_native_nested",
+      input: { name: "native-nested" },
+      output,
+      receipt: skillReceipt("native-nested/SKILL.md", output),
+      attachments: [{ mime: "image/png", filename: "nested.png", url: "data:image/png;base64,aGVsbG8=" }],
+    })
+    const collector = HistoryProjection.create(HistorySource.capture([stored]))
+    const prepared = await MessageV2.toModelMessages([stored], model, { historyProjection: collector })
+    const request = LLMNative.request({ model, messages: prepared, historyProjection: collector })
+    const baseline = LLMNative.request({ model, messages: prepared })
+    expect(request.messages).toEqual(baseline.messages)
+    expect(collector.capture(request.messages).sources[0]?.prepared).toEqual({
+      state: "unmapped",
+      reason: "unsupported-result",
+    })
+    expect(JSON.stringify(request)).toContain(output)
+    expect(JSON.stringify(request)).not.toContain("native-nested/SKILL.md")
   })
 })
