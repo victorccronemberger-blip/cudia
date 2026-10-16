@@ -20,14 +20,14 @@ if (-not $taskReports.StartsWith($taskRunner, [StringComparison]::OrdinalIgnoreC
 [IO.Directory]::CreateDirectory($taskReports) | Out-Null
 $taskDirectory = Join-Path $taskReports ('fresh-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($taskDirectory) | Out-Null
-$taskRoot = Join-Path $taskDirectory 'CUDIA instalação'
-$taskWorkspace = Join-Path $taskDirectory 'outro projeto ü'
+$taskRoot = Join-Path $taskDirectory ('CUDIA instala' + [char]0xE7 + [char]0xE3 + 'o')
+$taskWorkspace = Join-Path $taskDirectory ('outro projeto ' + [char]0xFC)
 $taskProfile = Join-Path $taskDirectory 'perfil vazio'
 [IO.Directory]::CreateDirectory($taskWorkspace) | Out-Null
 [IO.Directory]::CreateDirectory($taskProfile) | Out-Null
 $taskSetup = Join-Path $taskDirectory 'CUDIA-Setup.exe'
 $taskRegistration = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\CudiaPreview'
-$taskResult = [ordered]@{ completed = $false; variant = $Variant; version = $taskCandidate.version; stage = 'preflight'; windows = [Environment]::OSVersion.VersionString; installerSha256 = $null; engineSha256 = $null; physicalBootstrap = $null; persistentPathCount = $null; commandVersion = $null; contextMode = $null; coldCatalogPassed = $false; removalVerified = $false; error = $null }
+$taskResult = [ordered]@{ completed = $false; variant = $Variant; version = $taskCandidate.version; stage = 'preflight'; windows = [Environment]::OSVersion.VersionString; lockProbe = $null; installerSha256 = $null; engineSha256 = $null; physicalBootstrap = $null; persistentPathCount = $null; commandVersion = $null; contextMode = $null; coldCatalogPassed = $false; removalVerified = $false; error = $null }
 function Save-TaskReport { $taskResult | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $taskReports 'result.json') -Encoding utf8 }
 function Get-RegistrySnapshot([string]$Subkey) {
     $taskKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($Subkey, $false)
@@ -63,6 +63,15 @@ try {
     $taskBeforeEnvironment = Get-RegistrySnapshot 'Environment'
     $taskBeforeNames = Get-UninstallNames
     $taskBeforeMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $taskSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $taskPolicy = 'O:' + $taskSid + 'D:P(A;;GA;;;SY)(A;;GA;;;' + $taskSid + ')'
+    $taskSecurity = New-Object Security.AccessControl.MutexSecurity
+    $taskSecurity.SetSecurityDescriptorSddlForm($taskPolicy)
+    $taskCreated = $false
+    $taskProbe = [Threading.Mutex]::new($false, ('Global\Cudia-CI-PolicyProbe-' + [guid]::NewGuid().ToString('N')), [ref]$taskCreated, $taskSecurity)
+    try {
+        $taskResult.lockProbe = [ordered]@{ requested = $taskPolicy; actual = $taskProbe.GetAccessControl().GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Access) }
+    } finally { $taskProbe.Dispose() }
     $taskResult.stage = 'downloading'
     Save-TaskReport
     Add-Type -AssemblyName System.Net.Http
