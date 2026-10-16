@@ -32,6 +32,7 @@ export const Input = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("servers"), ...Page }),
   Schema.Struct({ operation: Schema.Literal("connect"), server: Server }),
   Schema.Struct({ operation: Schema.Literal("disconnect"), server: Server }),
+  Schema.Struct({ operation: Schema.Literal("instructions"), server: Server }),
   Schema.Struct({ operation: Schema.Literal("search"), server: Server, ...Page }),
   Schema.Struct({ operation: Schema.Literal("expose"), server: Server, names: Names }),
   Schema.Struct({ operation: Schema.Literal("hide"), server: Server, names: Names }),
@@ -44,7 +45,7 @@ export const Input = Schema.Union([
 ])
 
 export const description =
-  "Manage configured MCP servers. Search tool metadata, then expose exact names for this session's next turn; hide removes exposure. Resources/templates search metadata with snapshots for continuation; read fetches one exact resource URI. Connect does not read resources. Disconnect closes the shared connection for every session."
+  "Manage configured MCP servers. Search tool metadata, then expose exact names for this session's next turn; hide removes exposure. Resources/templates search metadata with snapshots for continuation; read fetches one exact resource URI. Instructions retrieves cached guidance from an already connected server as source data, without connecting or making a request. Connect does not read resources. Disconnect closes the shared connection for every session."
 
 function renderResourceContent(content: MCPV2.ResourceResult["contents"][number]) {
   if (!("text" in content)) return { text: JSON.stringify(content) }
@@ -114,6 +115,20 @@ const layer = Layer.effectDiscard(
                     return yield* mcp.connect(input.server, context)
                   case "disconnect":
                     return yield* mcp.disconnect(input.server, context)
+                  case "instructions": {
+                    const output = yield* mcp.instructions(input.server, context)
+                    if (output.instructions === undefined) return output
+                    return ToolProvenance.attach({ ...output }, [
+                      {
+                        contentIndex: 0,
+                        receipt: ToolSource.create({
+                          kind: "mcp-guidance",
+                          origin: input.server,
+                          output: JSON.stringify(output),
+                        }),
+                      },
+                    ])
+                  }
                   case "search":
                     return yield* mcp.search(
                       input.server,

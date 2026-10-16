@@ -22,6 +22,7 @@ export type ResourceResult = ReadResourceResult
 export const MAX_RESOURCE_BYTES = 8 * 1024 * 1024
 
 export type Handle = {
+  readonly instructions: () => Effect.Effect<string | undefined>
   readonly list: () => Effect.Effect<readonly Definition[], MCPError.Failure>
   readonly call: (name: string, args: Record<string, unknown>) => Effect.Effect<Result, MCPError.Failure>
   readonly resources: () => Effect.Effect<
@@ -309,6 +310,7 @@ export function open(input: {
       )
 
     const handle: Handle = {
+      instructions: () => Effect.sync(() => connection.client.getInstructions()),
       list: () =>
         Effect.tryPromise({
           try: async (signal) => {

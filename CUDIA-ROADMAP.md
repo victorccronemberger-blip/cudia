@@ -92,8 +92,18 @@ os metadados. A regressão passou com 233 testes/1.387 verificações em 18 arqu
 O teste antigo de negação de recursos foi atualizado para o comportamento
 permissivo já presente: a cópia da versão anterior reproduziu a expectativa
 obsoleta antes de chamar o loader. Nenhuma política de execução foi alterada.
-Guidance MCP V2, demais loaders e mapeamento final continuam abertos; Preview 12
-permanece como distribuição instalada.
+Demais loaders e mapeamento final continuam abertos; Preview 12 permanece como
+distribuição instalada.
+
+**Guidance MCP V2, em fonte:** a operação explícita `instructions` lê somente o
+cache do servidor conectado, preserva o texto recebido e não acrescenta RPCs ou
+conteúdo ao sistema. Distingue campo ausente de string vazia, registra recibo local
+e não devolve o cache antigo após reconexão sem guidance. Conferências posteriores
+ao getter rejeitam troca de conexão ou exclusão da sessão durante a consulta.
+Resultados grandes mantêm o artefato completo e a contagem do recibo omitido.
+Passaram 272 testes/1.668 verificações em 21 arquivos. Sem migração de SQL ou mudança
+semântica nos clientes gerados; o contrato de entrada da ferramenta ganhou a
+operação. Continua fora da Preview 12 e não encerra o roteiro geral.
 
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no

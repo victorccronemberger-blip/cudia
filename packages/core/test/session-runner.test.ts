@@ -912,6 +912,145 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("captures explicitly requested cached MCP guidance through runner replay", () =>
+    Effect.gen(function* () {
+      yield* setup
+      requests.length = 0
+      const session = yield* SessionV2.Service
+      const applications = yield* ApplicationTools.Service
+      const server = "guidance-fixture"
+      const guidance = "Synthetic cached guidance: PRIVATE_GUIDANCE_BODY"
+      yield* applications.register({
+        mcp: Tool.make({
+          description: "Read cached server guidance when requested",
+          input: Schema.Struct({ operation: Schema.Literal("instructions"), server: Schema.String }),
+          output: Schema.Struct({ server: Schema.String, instructions: Schema.String }),
+          execute: ({ server: requestedServer }) => {
+            expect(requestedServer).toBe(server)
+            const output = { server, instructions: guidance }
+            const rendered = JSON.stringify(output)
+            return Effect.succeed(
+              ToolProvenance.attach(output, [
+                {
+                  contentIndex: 0,
+                  receipt: ToolSource.create({ kind: "mcp-guidance", origin: server, output: rendered }),
+                },
+              ]),
+            )
+          },
+          toModelOutput: ({ output }) => [{ type: "text", text: JSON.stringify(output) }],
+        }),
+      })
+
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Inspect the available tools without requesting guidance" }),
+        resume: false,
+      })
+      responses = [fragmentFixture("text", "guidance-catalog", ["Catalog inspected."]).completeEvents]
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.tools.map((tool) => tool.name)).toContain("mcp")
+      expect(JSON.stringify({ messages: requests[0]?.messages, tools: requests[0]?.tools })).not.toContain(guidance)
+      expect(systemTexts(requests[0]!).join("\n")).not.toContain(guidance)
+      expect(JSON.stringify(audits[0])).not.toContain(guidance)
+
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Fetch the cached guidance from guidance-fixture" }),
+        resume: false,
+      })
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({
+            id: "call-guidance",
+            name: "mcp",
+            input: { operation: "instructions", server },
+          }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        fragmentFixture("text", "guidance-final", ["Guidance received."]).completeEvents,
+      ]
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(3)
+      for (const request of requests) expect(systemTexts(request).join("\n")).not.toContain(guidance)
+      expect(JSON.stringify({ messages: requests[1]?.messages, tools: requests[1]?.tools })).not.toContain(guidance)
+      expect(JSON.stringify({ messages: requests[2]?.messages, tools: requests[2]?.tools })).not.toContain(
+        "contextSources",
+      )
+      expect(JSON.stringify({ messages: requests[2]?.messages, tools: requests[2]?.tools })).not.toContain(
+        "hashEncoding",
+      )
+      expect(
+        requests[2]?.messages.flatMap((message) =>
+          message.role === "tool"
+            ? message.content.flatMap((part) => (part.type === "tool-result" ? [part.result.value] : []))
+            : [],
+        ),
+      ).toContain(JSON.stringify({ server, instructions: guidance }))
+
+      const captured = audits[2]?.historySnapshot?.sources.find((source) => source.source === "loaded-tool-result")
+      expect(captured).toMatchObject({
+        source: "loaded-tool-result",
+        text: JSON.stringify({ server, instructions: guidance }),
+        tool: {
+          name: "mcp",
+          callID: "call-guidance",
+          contentIndex: 0,
+          observation: {
+            state: "matched",
+            kind: "mcp-guidance",
+            origin: server,
+            body: { type: "json-member", member: "instructions" },
+          },
+        },
+      })
+      expect(captured?.messageID).toMatch(/^msg_/)
+      expect(captured?.partID).toBe("call-guidance")
+
+      yield* replaySessionProjection(sessionID)
+      const projected = yield* session.context(sessionID)
+      expect(projected).toMatchObject([
+        { type: "user", text: "Inspect the available tools without requesting guidance" },
+        { type: "assistant", content: [{ type: "text", text: "Catalog inspected." }] },
+        { type: "user", text: "Fetch the cached guidance from guidance-fixture" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: "call-guidance",
+              name: "mcp",
+              state: {
+                status: "completed",
+                contextSources: {
+                  version: 1,
+                  projection: "original",
+                  entries: [
+                    {
+                      contentIndex: 0,
+                      receipt: {
+                        kind: "mcp-guidance",
+                        origin: server,
+                        body: { type: "json-member", member: "instructions" },
+                      },
+                    },
+                  ],
+                  omitted: 0,
+                },
+              },
+            },
+          ],
+        },
+        { type: "assistant", content: [{ type: "text", text: "Guidance received." }] },
+      ])
+    }),
+  )
+
   it.effect("starts a real runner turn after default prompt recording", () =>
     Effect.gen(function* () {
       yield* setup

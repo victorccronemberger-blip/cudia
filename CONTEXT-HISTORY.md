@@ -151,9 +151,35 @@ O histórico SQLite guarda apenas os metadados, inclusive contagens de omissão.
 
 Os testes incluem leitura HTTP local, partes mistas, limites, reconstrução da
 sessão, histórico SQLite e equivalência do corpo codificado do adaptador Responses
-com/sem recibos. Isso não é uma captura de rede de todos os provedores. Guidance
-MCP V2 e o vínculo com cada parte final após conversão permanecem pendentes.
+com/sem recibos. Isso não é uma captura de rede de todos os provedores. O vínculo
+com cada parte final após conversão permanece pendente.
 Este incremento continua fora do instalador Preview 12.
+
+## Guidance MCP no V2
+
+`mcp` com `operation: instructions` e `server` consulta as instruções recebidas na
+inicialização da conexão atual. O servidor precisa já estar conectado. A consulta
+não conecta, renova autenticação, atualiza catálogos ou faz RPC; o conteúdo não é
+acrescentado automaticamente ao sistema, à descoberta ou ao resultado de outras
+ferramentas. A descrição da operação faz parte do contrato de ferramentas.
+
+O resultado é `{server, instructions}` quando há uma string, preservada exatamente,
+inclusive espaços e string vazia. Uma conexão sem esse campo retorna apenas
+`{server}` e não produz fonte de guidance. A string vazia recebe um recibo válido
+de corpo com zero bytes. Recibos locais `mcp-guidance` verificam o membro JSON
+`instructions`, com o servidor como origem observada. A auditoria confere também
+os dados estruturados e o servidor solicitado; dados malformados, poda ou projeção
+substituída não conservam origem verificada.
+
+Sessão, localização e identidade da conexão são conferidas antes e depois da
+consulta. Reconectar não reaproveita instruções de uma conexão anterior. Os testes
+incluem trocas de conexão e exclusão da sessão na conferência posterior ao getter.
+Guidance maior que o limite do recibo continua disponível no artefato do resultado
+quando o limitador genérico reduz a saída; a omissão do recibo fica registrada.
+
+O limite do cliente para uma resposta de recurso MCP é de 8 MiB; é independente
+dos 2 MiB aceitos pela inspeção de recibos. Nenhum desses valores é uma promessa de
+limite global de armazenamento, memória, rede ou contexto do modelo.
 
 A inspeção aceita até 2 MiB de resultado, 1.024 bytes no identificador de origem
 e 4 KiB no recibo projetado. Limites ou ausência do recibo afetam somente a
@@ -161,8 +187,9 @@ atribuição; não impedem carregar ou devolver o resultado. Propriedades descon
 não são serializadas e accessors não são executados durante a inspeção.
 Resultados de loaders compartilham o limite de 128 fontes e os orçamentos de
 metadados/conteúdo dos resumos. O texto do resultado só entra na captura de
-conteúdo explícita e é removido do histórico de metadados. Outros loaders e o
-backend V2 ainda não recebem esses recibos; a cobertura não é universal.
+conteúdo explícita e é removido do histórico de metadados. A cobertura abrange
+skills/guidance MCP V1 e skills/recursos/guidance MCP V2; outros loaders permanecem
+fora dela. Não constitui rastreabilidade universal ou autenticação dos produtores.
 
 ## Validação
 
@@ -180,3 +207,9 @@ na CLI e persistência da correlação no SQLite sem o texto dos resumos.
 Os dois testes de ordenação entre shell e chamadas do modelo usam um prazo de
 fixture de 30 segundos, ajustado após medições próximas de 10 segundos no Windows.
 As asserções de ordenação foram preservadas; esse prazo não mede desempenho do runtime.
+
+A regressão integrada do guidance MCP V2 passou com 272 testes e 1.668 verificações
+em 21 arquivos. Inclui cliente HTTP, manager, runner, recibos, reconstrução da
+sessão, resultados grandes e auditoria desligada. O corpo codificado Responses
+permanece igual com/sem os metadados do recibo. O incremento está somente em fonte;
+não altera o instalador Preview 12 nem comprova a transmissão em todos os provedores.

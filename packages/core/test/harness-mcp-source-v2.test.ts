@@ -147,7 +147,7 @@ test("all omitted receipts stay visible, mutations lose attribution, and discove
   const loaded = assistant()
   const tool = loaded.content[0]!
   if (tool.type !== "tool" || tool.state.status !== "completed") throw new Error("Expected tool")
-  for (const operation of ["connect", "resources", "templates", "search", "instructions"]) {
+  for (const operation of ["connect", "resources", "templates", "search"]) {
     expect(
       HistorySource.capture([
         { ...loaded, content: [{ ...tool, state: { ...tool.state, input: { operation, server } } }] },

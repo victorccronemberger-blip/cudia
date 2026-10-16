@@ -16,6 +16,7 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { MCPTool } from "@opencode-ai/core/tool/mcp"
@@ -35,6 +36,283 @@ const rules: PermissionV2.Ruleset = [
 ]
 
 describe("MCPV2 resources", () => {
+  it("reads cached MCP guidance only after explicit connection and preserves its exact text", async () => {
+    const guidance = 'Quoted "instructions"\nUnicode: ação 🌱\n  trailing spaces stay  '
+    const server = fixture({ instructions: guidance })
+    try {
+      await run(
+        server.url,
+        Effect.gen(function* () {
+          yield* setup(rules)
+          const manager = yield* MCPV2.Service
+          const registry = yield* ToolRegistry.Service
+          const materialized = yield* registry.materialize([], sessionID)
+          expect(JSON.stringify(materialized.definitions)).not.toContain(guidance)
+
+          const dormant = yield* materialized.settle(
+            toolCall("mcp", { operation: "instructions", server: "fixture" }, "call-instructions-dormant"),
+          )
+          expect(dormant.result.type).toBe("error")
+          expect(server.posts).toEqual([])
+
+          const connected = yield* materialized.settle(
+            toolCall("mcp", { operation: "connect", server: "fixture" }, "call-instructions-connect"),
+          )
+          expect(connected.result.type).not.toBe("error")
+          expect(JSON.stringify(connected.result)).not.toContain(guidance)
+          const afterConnect = [...server.posts]
+          const catalog = yield* materialized.settle(
+            toolCall("mcp", { operation: "servers", query: "" }, "call-instructions-servers"),
+          )
+          expect(catalog.result.type).not.toBe("error")
+          expect(JSON.stringify(catalog.result)).not.toContain(guidance)
+
+          const settled = yield* materialized.settle(
+            toolCall("mcp", { operation: "instructions", server: "fixture" }, "call-instructions-guidance"),
+          )
+          expect(settled.result).toEqual({
+            type: "text",
+            value: JSON.stringify({ server: "fixture", instructions: guidance }),
+          })
+          expect(settled.contextSources).toMatchObject({
+            version: 1,
+            projection: "original",
+            omitted: 0,
+            entries: [{ contentIndex: 0, receipt: { kind: "mcp-guidance", origin: "fixture" } }],
+          })
+          const receipt = settled.contextSources?.entries[0]?.receipt
+          expect(receipt?.body).toMatchObject({ type: "json-member", member: "instructions" })
+          expect(
+            ToolSource.inspect(JSON.stringify({ server: "fixture", instructions: guidance }), {
+              contextSource: receipt,
+            }),
+          ).toMatchObject({ state: "matched", kind: "mcp-guidance", origin: "fixture" })
+          expect(server.posts).toEqual(afterConnect)
+        }),
+      )
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it("keeps absent and empty cached guidance distinct", async () => {
+    for (const instructions of [undefined, ""] as const) {
+      const server = fixture({ instructions })
+      try {
+        const settled = await run(
+          server.url,
+          Effect.gen(function* () {
+            yield* setup(rules)
+            const registry = yield* ToolRegistry.Service
+            const materialized = yield* registry.materialize([], sessionID)
+            const connected = yield* materialized.settle(
+              toolCall("mcp", { operation: "connect", server: "fixture" }, "call-guidance-connect"),
+            )
+            expect(connected.result.type).not.toBe("error")
+            const postsAfterConnect = [...server.posts]
+            const output = yield* materialized.settle(
+              toolCall("mcp", { operation: "instructions", server: "fixture" }, "call-guidance-result"),
+            )
+            expect(server.posts).toEqual(postsAfterConnect)
+            return output
+          }),
+        )
+        expect(settled.result).toEqual({
+          type: "text",
+          value: JSON.stringify(
+            instructions === undefined ? { server: "fixture" } : { server: "fixture", instructions },
+          ),
+        })
+        if (instructions === undefined) {
+          expect(settled.contextSources).toBeUndefined()
+        } else {
+          expect(settled.contextSources).toMatchObject({
+            projection: "original",
+            omitted: 0,
+            entries: [{ contentIndex: 0, receipt: { kind: "mcp-guidance", origin: "fixture" } }],
+          })
+          const receipt = settled.contextSources?.entries[0]?.receipt
+          expect(
+            ToolSource.inspect(JSON.stringify({ server: "fixture", instructions }), { contextSource: receipt }),
+          ).toMatchObject({ state: "matched", kind: "mcp-guidance" })
+        }
+      } finally {
+        await server.stop()
+      }
+    }
+  })
+
+  it("reads only the current connection guidance after disconnect and reconnect", async () => {
+    const server = fixture({ instructions: "old guidance" })
+    try {
+      await run(
+        server.url,
+        Effect.gen(function* () {
+          yield* setup(rules)
+          const manager = yield* MCPV2.Service
+          const registry = yield* ToolRegistry.Service
+          const materialized = yield* registry.materialize([], sessionID)
+          yield* materialized.settle(toolCall("mcp", { operation: "connect", server: "fixture" }, "call-connect-old"))
+          const old = yield* materialized.settle(
+            toolCall("mcp", { operation: "instructions", server: "fixture" }, "call-old-guidance"),
+          )
+          expect(old.result).toEqual({
+            type: "text",
+            value: JSON.stringify({ server: "fixture", instructions: "old guidance" }),
+          })
+
+          yield* materialized.settle(
+            toolCall("mcp", { operation: "disconnect", server: "fixture" }, "call-guidance-disconnect"),
+          )
+          server.setInstructions(undefined)
+          yield* manager.admin.connect("fixture")
+          const current = yield* materialized.settle(
+            toolCall("mcp", { operation: "instructions", server: "fixture" }, "call-current-guidance"),
+          )
+          expect(current.result).toEqual({ type: "text", value: JSON.stringify({ server: "fixture" }) })
+          expect(current.contextSources).toBeUndefined()
+          expect(server.posts.filter((method) => method === "initialize")).toHaveLength(2)
+        }),
+      )
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it("rejects foreign and deleted sessions before returning cached guidance", async () => {
+    const guidance = "session-bound cached guidance"
+    const server = fixture({ instructions: guidance })
+    try {
+      await run(
+        server.url,
+        Effect.gen(function* () {
+          yield* setup(rules)
+          const manager = yield* MCPV2.Service
+          yield* manager.admin.connect("fixture")
+          const { db } = yield* Database.Service
+          const foreignSessionID = SessionV2.ID.make("ses_mcp_guidance_foreign")
+          yield* db
+            .insert(SessionTable)
+            .values({
+              id: foreignSessionID,
+              project_id: Project.ID.global,
+              slug: foreignSessionID,
+              directory: AbsolutePath.make(path.join(process.cwd(), "foreign-location")),
+              title: "foreign",
+              version: "test",
+              agent: "build",
+            })
+            .run()
+            .pipe(Effect.orDie)
+          const afterConnect = [...server.posts]
+          expect(
+            (yield* Effect.result(manager.instructions("fixture", { ...context(), sessionID: foreignSessionID })))._tag,
+          ).toBe("Failure")
+
+          const events = yield* EventV2.Service
+          const now = Date.now()
+          yield* events.publish(SessionV1.Event.Deleted, {
+            sessionID,
+            info: SessionV1.SessionInfo.make({
+              id: sessionID,
+              slug: "deleted",
+              version: "test",
+              projectID: Project.ID.global,
+              directory,
+              path: "",
+              title: "deleted",
+              agent: "build",
+              cost: 0,
+              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              time: { created: now, updated: now },
+            }),
+          })
+          expect((yield* Effect.result(manager.instructions("fixture", context())))._tag).toBe("Failure")
+          expect(server.posts).toEqual(afterConnect)
+        }),
+      )
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it("discards cached guidance when the connection or session changes before the final identity check", async () => {
+    for (const action of ["reconnect", "delete"] as const) {
+      const reached = Deferred.makeUnsafe<void>()
+      const release = Deferred.makeUnsafe<void>()
+      const server = fixture({ instructions: "OLD_CACHED_GUIDANCE" })
+      let armed = false
+      let reads = 0
+      try {
+        await run(
+          server.url,
+          Effect.gen(function* () {
+            yield* setup(rules)
+            const manager = yield* MCPV2.Service
+            yield* manager.admin.connect("fixture")
+            armed = true
+            const pending = yield* Effect.result(manager.instructions("fixture", context())).pipe(Effect.forkScoped)
+            yield* Deferred.await(reached)
+            if (action === "reconnect") {
+              yield* manager.admin.disconnect("fixture")
+              server.setInstructions(undefined)
+              yield* manager.admin.connect("fixture")
+            } else {
+              const database = yield* Database.Service
+              const { eq } = yield* Effect.promise(() => import("drizzle-orm"))
+              yield* database.db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run().pipe(Effect.orDie)
+            }
+            yield* Deferred.succeed(release, undefined)
+            const result = yield* Fiber.join(pending)
+            expect(result._tag).toBe("Failure")
+            if (result._tag === "Failure")
+              expect(result.failure).toMatchObject({ kind: action === "reconnect" ? "stale" : "unavailable" })
+            expect(server.posts.filter((method) => method === "resources/read")).toHaveLength(0)
+          }),
+          () =>
+            Effect.suspend(() => {
+              // Permission identity plus the two pre-read checks precede the final post-getter session check.
+              if (!armed || ++reads !== 4) return Effect.void
+              return Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            }),
+        )
+      } finally {
+        Deferred.doneUnsafe(release, Effect.void)
+        await server.stop()
+      }
+    }
+  })
+
+  it("keeps oversized guidance available as an artifact and reports its omitted receipt", async () => {
+    const guidance = `${"g".repeat(2 * 1024 * 1024 + 256)}END_GUIDANCE`
+    const server = fixture({ instructions: guidance })
+    try {
+      const settled = await run(
+        server.url,
+        Effect.gen(function* () {
+          yield* setup(rules)
+          const registry = yield* ToolRegistry.Service
+          const materialized = yield* registry.materialize([], sessionID)
+          yield* materialized.settle(toolCall("mcp", { operation: "connect", server: "fixture" }, "call-long-connect"))
+          return yield* materialized.settle(
+            toolCall("mcp", { operation: "instructions", server: "fixture" }, "call-long-guidance"),
+          )
+        }),
+      )
+      expect(settled.result.type).not.toBe("error")
+      expect(settled.contextSources).toMatchObject({ projection: "replaced", entries: [], omitted: 1 })
+      const artifact = settled.outputPaths?.[0]
+      expect(artifact).toBeDefined()
+      if (!artifact) throw new Error("Expected full oversized instructions in a managed output artifact")
+      const saved = (await Bun.file(artifact).json()) as { server: string; instructions: string }
+      expect(saved.server).toBe("fixture")
+      expect(saved.instructions.length).toBe(guidance.length)
+      expect(saved.instructions.endsWith("END_GUIDANCE")).toBe(true)
+    } finally {
+      await server.stop()
+    }
+  })
+
   it("keeps a resource-only server dormant until connect and never exposes its metadata as tools", async () => {
     const server = fixture({ toolSupport: false })
     try {
@@ -590,7 +868,7 @@ function field(value: unknown, name: string): string {
   return Schema.decodeUnknownSync(Schema.Struct({ [name]: Schema.String }))(value)[name]!
 }
 
-function runtime(url: string) {
+function runtime(url: string, beforeSessionGet?: () => Effect.Effect<void>) {
   const config = Layer.succeed(
     Config.Service,
     Config.Service.of({
@@ -608,6 +886,18 @@ function runtime(url: string) {
   const current = Layer.succeed(Location.Service, Location.Service.of({ ...location({ directory }) }))
   const database = Database.layerFromPath(":memory:")
   const store = LayerNode.compile(SessionStore.node, [[Database.node, database]])
+  const observedStore = beforeSessionGet
+    ? Layer.effect(
+        SessionStore.Service,
+        Effect.gen(function* () {
+          const service = yield* SessionStore.Service
+          return SessionStore.Service.of({
+            ...service,
+            get: (id) => beforeSessionGet().pipe(Effect.andThen(service.get(id))),
+          })
+        }),
+      ).pipe(Layer.provide(store))
+    : store
   return AppNodeBuilder.build(
     LayerNode.group([
       MCPV2.node,
@@ -623,7 +913,7 @@ function runtime(url: string) {
       [Config.node, config],
       [Location.node, current],
       [Database.node, database],
-      [SessionStore.node, store],
+      [SessionStore.node, observedStore],
     ],
   )
 }
@@ -641,8 +931,9 @@ function run<A, E>(
     | PermissionV2.Service
     | Scope.Scope
   >,
+  beforeSessionGet?: () => Effect.Effect<void>,
 ) {
-  return Effect.runPromise(Effect.scoped(Effect.provide(program, runtime(url))))
+  return Effect.runPromise(Effect.scoped(Effect.provide(program, runtime(url, beforeSessionGet))))
 }
 
 function setup(permissions: PermissionV2.Ruleset) {
@@ -729,11 +1020,13 @@ function fixture(
     readonly resourceListFailure?: boolean
     readonly largeRead?: boolean
     readonly readContents?: MCPV2.ResourceResult["contents"]
+    readonly instructions?: string
     readonly beforeResourceList?: () => Promise<unknown>
   } = {},
 ) {
   const posts: string[] = []
   const readURIs: string[] = []
+  let instructions = options.instructions
   let revision = 0
   let notified = false
   let readGate: (() => Promise<unknown>) | undefined
@@ -766,6 +1059,7 @@ function fixture(
               ...(options.toolSupport === false ? {} : { tools: { listChanged: true } }),
             },
             serverInfo: { name: "resource-fixture", version: "1.0.0" },
+            ...(instructions === undefined ? {} : { instructions }),
           },
           true,
         )
@@ -869,6 +1163,9 @@ function fixture(
     readURIs,
     changeResources: () => {
       revision++
+    },
+    setInstructions: (value: string | undefined) => {
+      instructions = value
     },
     gateRead: (gate: () => Promise<unknown>) => {
       readGate = gate

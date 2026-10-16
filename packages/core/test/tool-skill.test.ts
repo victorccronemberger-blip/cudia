@@ -223,12 +223,14 @@ describe("SkillTool", () => {
             expect(bounded.outputPaths).toHaveLength(1)
             expect(bounded.result.type).toBe("text")
             if (bounded.result.type !== "text") throw new Error("Expected bounded skill text")
+            const boundedText = bounded.result.value
+            if (typeof boundedText !== "string") throw new Error("Expected bounded skill string")
             expect(bounded.result.value).toContain("LONG_SKILL_FIRST_LINE")
             expect(bounded.result.value).not.toContain("LONG_SKILL_OMITTED_MIDDLE_LINE")
             const boundedReceipt = bounded.contextSources?.entries[0]?.receipt
             expect(boundedReceipt).toBeDefined()
             if (!boundedReceipt) throw new Error("Expected bounded skill receipt")
-            expect(ToolSource.inspect(bounded.result.value, { contextSource: boundedReceipt }).state).toBe("changed")
+            expect(ToolSource.inspect(boundedText, { contextSource: boundedReceipt }).state).toBe("changed")
           }).pipe(Effect.provide(skillToolLayer))
         }),
       ),

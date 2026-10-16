@@ -13,6 +13,43 @@ const fixture = join(import.meta.dir, "mcp-fixtures", "stdio.js")
 const authorization = "Bearer fixture-secret"
 
 describe("MCP client adapter", () => {
+  it("returns exact cached server instructions without an RPC and keeps them out of catalogs and call results", async () => {
+    const values = ['Quoted "guidance"\nSecond line with Unicode: ação 🌱', "", undefined] as const
+    const compiler = await Effect.runPromise(load())
+    for (const instructions of values) {
+      const server = httpFixture({ instructions })
+      try {
+        const result = await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const client = yield* MCPClient.open({
+                server: new ConfigMCP.Remote({ type: "remote", url: server.url, headers: { authorization } }),
+                directory: process.cwd(),
+                timeout: { startup: 2_000, request: 2_000 },
+                compiler,
+                onClose: () => {},
+                onToolsChanged: () => {},
+              })
+              const first = yield* client.instructions()
+              const second = yield* client.instructions()
+              expect(server.posts).toEqual(["initialize", "notifications/initialized"])
+              const tools = yield* client.list()
+              const call = yield* client.call("echo", { value: "cached" })
+              return { first, second, tools, call }
+            }),
+          ),
+        )
+        expect(result.first).toBe(instructions)
+        expect(result.second).toBe(instructions)
+        expect(JSON.stringify(result.tools)).not.toContain("instructions")
+        expect(JSON.stringify(result.call)).not.toContain("instructions")
+        expect(server.posts).toEqual(["initialize", "notifications/initialized", "tools/list", "tools/call"])
+      } finally {
+        await server.stop()
+      }
+    }
+  })
+
   it("initializes over Streamable HTTP, keeps tool-list changes manual, and closes its transport", async () => {
     const server = httpFixture({ listChangedOnCall: true })
     let closeCount = 0
@@ -235,7 +272,13 @@ describe("MCP client adapter", () => {
 })
 
 function httpFixture(
-  options: { unauthorized?: boolean; expireOnCall?: boolean; delayCallMs?: number; listChangedOnCall?: boolean } = {},
+  options: {
+    unauthorized?: boolean
+    expireOnCall?: boolean
+    delayCallMs?: number
+    listChangedOnCall?: boolean
+    instructions?: string
+  } = {},
 ) {
   const posts: string[] = []
   let gets = 0
@@ -260,6 +303,7 @@ function httpFixture(
             protocolVersion: "2025-03-26",
             capabilities: { tools: { listChanged: true } },
             serverInfo: { name: "fixture", version: "1.0.0" },
+            ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
           },
           true,
         )

@@ -84,6 +84,16 @@ export interface Interface {
   readonly connect: (server: string, context: Tool.Context) => Effect.Effect<Summary, Error>
   readonly disconnect: (server: string, context: Tool.Context) => Effect.Effect<{ readonly removed: number }, Error>
   readonly search: (server: string, page: Page, context: Tool.Context) => Effect.Effect<unknown, Error>
+  readonly instructions: (
+    server: string,
+    context: Tool.Context,
+  ) => Effect.Effect<
+    {
+      readonly server: string
+      readonly instructions?: string
+    },
+    Error
+  >
   readonly resources: (
     server: string,
     page: MCPResourceCatalog.Page,
@@ -260,13 +270,13 @@ const layer = Layer.effect(
       }),
     )
 
-    const resourceConnection = (entry: State, connection: Connection, context: Tool.Context) =>
+    const liveConnection = (entry: State, connection: Connection, context: Tool.Context) =>
       Effect.gen(function* () {
         yield* liveSession(context.sessionID)
         if (disposed || !connection.active || entry.connection !== connection)
           return yield* new MCPError.Failure({
             kind: "stale",
-            message: "MCP connection changed during the resource operation; do not retry automatically",
+            message: "MCP connection changed during the operation",
           })
       })
     const resourceCatalog = (
@@ -306,7 +316,7 @@ const layer = Layer.effect(
         const connection = yield* current(entry)
         return yield* connection.resourceLock.withPermit(
           Effect.gen(function* () {
-            yield* resourceConnection(entry, connection, context)
+            yield* liveConnection(entry, connection, context)
             const revision = connection.resourceRevision
             const snapshot = (token: string) =>
               createHash("sha256")
@@ -324,14 +334,14 @@ const layer = Layer.effect(
                 : { supported: false, matches: [], total: 0 }
             }
             yield* oauth.prepare(name)
-            yield* resourceConnection(entry, connection, context)
+            yield* liveConnection(entry, connection, context)
             if (connection.resourceRevision !== revision)
               return yield* new MCPError.Failure({
                 kind: "stale",
                 message: "MCP resource catalog changed before discovery; request it again",
               })
             const result = yield* kind === "resources" ? connection.handle!.resources() : connection.handle!.templates()
-            yield* resourceConnection(entry, connection, context)
+            yield* liveConnection(entry, connection, context)
             if (connection.resourceRevision !== revision)
               return yield* new MCPError.Failure({
                 kind: "stale",
@@ -535,6 +545,17 @@ const layer = Layer.effect(
             }),
           )
         }),
+      instructions: (name, context) =>
+        Effect.gen(function* () {
+          const entry = yield* state(name)
+          yield* assert("mcp.instructions", [serverResource(name)], context, { server: name })
+          yield* liveSession(context.sessionID)
+          const connection = yield* current(entry)
+          yield* liveConnection(entry, connection, context)
+          const instructions = yield* connection.handle!.instructions()
+          yield* liveConnection(entry, connection, context)
+          return { server: name, ...(instructions === undefined ? {} : { instructions }) }
+        }),
       resources: (name, page, context) => resourceCatalog("resources", name, page, context),
       templates: (name, page, context) => resourceCatalog("templates", name, page, context),
       read: (name, uri, context) =>
@@ -549,9 +570,9 @@ const layer = Layer.effect(
           yield* liveSession(context.sessionID)
           const connection = yield* current(entry)
           yield* oauth.prepare(name)
-          yield* resourceConnection(entry, connection, context)
+          yield* liveConnection(entry, connection, context)
           const result = yield* connection.handle!.read(uri)
-          yield* resourceConnection(entry, connection, context)
+          yield* liveConnection(entry, connection, context)
           return result
         }),
       expose: (name, requested, context) =>

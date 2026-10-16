@@ -21,14 +21,27 @@ export function capture(
         !(
           (part.name === "skill" && ToolSource.isLoader(part.name, part.state.input)) ||
           (part.name === "mcp" &&
-            part.state.input.operation === "read" &&
             typeof part.state.input.server === "string" &&
-            typeof part.state.input.uri === "string")
+            (part.state.input.operation === "instructions" ||
+              (part.state.input.operation === "read" && typeof part.state.input.uri === "string")))
         )
       )
         continue
       const bundle = part.state.contextSources
-      const resource = part.name === "mcp"
+      const resource = part.name === "mcp" && part.state.input.operation === "read"
+      const guidance = part.name === "mcp" && part.state.input.operation === "instructions"
+      if (
+        guidance &&
+        part.state.structured.server === part.state.input.server &&
+        !Object.hasOwn(part.state.structured, "instructions")
+      )
+        continue
+      const validGuidance =
+        !guidance ||
+        (part.state.structured.server === part.state.input.server &&
+          typeof part.state.structured.instructions === "string" &&
+          part.state.content.length === 1 &&
+          part.state.content[0]?.type === "text")
       const kinds =
         resource && bundle?.projection === "original" && part.time.pruned === undefined
           ? resourceKinds(part.state.structured, part.state.content)
@@ -46,13 +59,15 @@ export function capture(
         const observed =
           part.time.pruned !== undefined ||
           bundle?.projection === "replaced" ||
+          !validGuidance ||
           (resource && kinds === undefined) ||
           (!entry && bundle && bundle.omitted > 0)
             ? { state: "unavailable" as const }
             : ToolSource.inspect(item.text, entry ? { contextSource: entry.receipt } : undefined)
         const observation =
           observed.state === "matched" &&
-          (observed.kind !== (resource ? "mcp-resource" : "skill") ||
+          (observed.kind !== (resource ? "mcp-resource" : guidance ? "mcp-guidance" : "skill") ||
+            (guidance && observed.origin !== part.state.input.server) ||
             (resource &&
               observed.origin !==
                 JSON.stringify({
