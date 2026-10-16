@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createConnection } from "node:net"
 import { fileURLToPath } from "node:url"
-import { createUpdateServer } from "../server.js"
+import { createUpdateServer } from "../app.js"
 import { publishManifest } from "../publish.js"
 import { loadPublicKeys } from "../lib/manifest.js"
 

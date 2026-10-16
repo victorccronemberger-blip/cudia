@@ -21,6 +21,17 @@ npm ci
 npm start
 ```
 
+`server.js` starts the configured application even when a managed hosting runner
+imports it. The side-effect-free HTTP factory lives in `app.js`; import that
+module in tests or when embedding the service. Do not add a direct-execution
+guard around the hosting entry's `listen()` call.
+
+The preview deployment uses the `codex/update-service` branch. Public trust and
+signed preview metadata are backed by Git commits and restored on redeploy;
+private signing keys stay on the release operator's computer. The stable
+manifest remains absent until a stable release is qualified, so `/ready` can
+return `503` while `/health` and the preview manifest work normally.
+
 It listens on `0.0.0.0:3000` by default. Set `HOST` and `PORT` to override the bind address and port. `PORT` must be an integer from 1 through 65535. Configure Hostinger's HTTPS domain/reverse proxy for `cyara.com.br` to route to the Node application.
 
 The service reads only `stable.json` and `preview.json` from `CUDIA_RELEASE_DIR`, which must be an absolute path. If unset, it uses this directory's `releases` folder. Store release files on durable storage outside an ephemeral deployment checkout. Keep private signing keys in protected operator-controlled storage; never upload them to Hostinger or place them in the application or its environment. Only public verification keys belong in the service configuration. An absent or invalid release returns a generic `503`; the initial checkout intentionally has no release, so `/ready` stays unavailable until a valid stable release is published.
