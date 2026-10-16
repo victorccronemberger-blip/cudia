@@ -4,6 +4,7 @@ import fs from "node:fs/promises"
 import { Effect } from "effect"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
 import { ContextHistory } from "@opencode-ai/core/harness/audit-history"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { cliIt } from "../lib/cli-process"
 
 cliIt.live(
@@ -120,6 +121,14 @@ cliIt.live(
   "debug context exposes captured message text only with --content",
   ({ home, opencode }) =>
     Effect.gen(function* () {
+      const toolText = "SYNTHETIC_PRIVATE_LOADED_TOOL_BODY"
+      const toolReceipt = ToolSource.create({
+        kind: "skill",
+        origin: "fixture/SKILL.md",
+        output: toolText,
+        start: 0,
+        end: toolText.length,
+      })!
       const input: ContextAudit.Input = {
         runtime: "v2",
         purpose: "compaction",
@@ -127,7 +136,7 @@ cliIt.live(
         sessionID: "ses_synthetic_audit",
         historySnapshot: {
           id: "snapshot_synthetic",
-          count: 1,
+          count: 2,
           bytes: 36,
           sources: [
             {
@@ -136,6 +145,19 @@ cliIt.live(
               messageIndex: 0,
               partIndex: 0,
               text: "SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE",
+            },
+            {
+              source: "loaded-tool-result",
+              messageID: "msg_loaded_tool",
+              partID: "prt_loaded_tool",
+              messageIndex: 1,
+              partIndex: 0,
+              text: toolText,
+              tool: {
+                name: "skill",
+                callID: "call_loaded",
+                observation: ToolSource.inspect(toolText, { contextSource: toolReceipt }),
+              },
             },
           ],
         },
@@ -165,6 +187,7 @@ cliIt.live(
       expect(metadata.stdout).not.toContain("SYNTHETIC_PRIVATE_INSTRUCTION")
       expect(metadata.stdout).not.toContain("SYNTHETIC_PRIVATE_HISTORY")
       expect(metadata.stdout).not.toContain("SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE")
+      expect(metadata.stdout).not.toContain(toolText)
       expect(JSON.parse(metadata.stdout)).toMatchObject({
         purpose: "compaction",
         compactionMessageID: "msg_synthetic_attempt",
@@ -175,6 +198,7 @@ cliIt.live(
       expect(JSON.parse(shown.stdout).instructions[0].content).toBe(input.instructions[0]!.text)
       expect(JSON.parse(shown.stdout).messageSources[0].content).toBe(input.messageSources![0]!.text)
       expect(JSON.parse(shown.stdout).historySnapshot.sources[0].content).toBe(input.historySnapshot!.sources[0]!.text)
+      expect(JSON.parse(shown.stdout).historySnapshot.sources[1].content).toBe(toolText)
       expect(yield* Effect.promise(() => Bun.file(file).text())).toBe(content)
 
       const summary = JSON.stringify(

@@ -5,6 +5,7 @@ import { APICallError, generateText } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderTransform } from "@/provider/transform"
 import { HistorySource } from "../../src/session/history-source"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import type { Provider } from "@/provider/provider"
 
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
@@ -114,6 +115,140 @@ function basePart(messageID: string, id: string) {
 }
 
 describe("session.message-v2.toModelMessage", () => {
+  test("loader source receipts describe stored results even when conversion excerpts or omits their content", async () => {
+    const body = "Loaded external body ação 🌍"
+    const text = "Wrapper\n" + body + "\nSuffix"
+    const receipt = ToolSource.create({
+      kind: "skill",
+      origin: "fixture/SKILL.md",
+      output: text,
+      start: 8,
+      end: 8 + body.length,
+    })!
+    const message: SessionV1.WithParts = {
+      info: { ...assistantInfo("msg_loader", "msg_parent"), finish: "tool-calls" },
+      parts: [
+        {
+          ...basePart("msg_loader", "prt_loader"),
+          type: "tool",
+          tool: "skill",
+          callID: "call_loader",
+          state: {
+            status: "completed",
+            input: { name: "fixture" },
+            title: "Loaded skill",
+            output: text,
+            metadata: { contextSource: receipt },
+            time: { start: 0, end: 1 },
+          },
+        },
+      ],
+    }
+    const snapshot = HistorySource.capture([message])
+    expect(snapshot.sources[0]).toMatchObject({
+      source: "loaded-tool-result",
+      partID: "prt_loader",
+      text,
+      tool: {
+        name: "skill",
+        callID: "call_loader",
+        observation: { state: "matched", kind: "skill", origin: "fixture/SKILL.md" },
+      },
+    })
+    const rendered = await MessageV2.toModelMessages([message], model)
+    expect(JSON.stringify(rendered)).toContain("Loaded external body")
+    expect(JSON.stringify(rendered)).not.toContain("contextSource")
+    expect(JSON.stringify(rendered)).not.toContain("fixture/SKILL.md")
+    const excerpt = await MessageV2.toModelMessages([message], model, { toolOutputMaxChars: 4 })
+    expect(JSON.stringify(excerpt)).not.toContain("Loaded external body")
+    expect(snapshot.sources[0]?.text).toBe(text)
+    const omitted = await MessageV2.toModelMessages(
+      [
+        {
+          ...message,
+          info: {
+            ...assistantInfo("msg_loader", "msg_parent"),
+            error: { name: "ContentFilterError", data: { message: "synthetic" } },
+          },
+        },
+      ],
+      model,
+    )
+    expect(omitted).toEqual([])
+    expect(HistorySource.capture([message]).sources[0]?.tool?.observation.state).toBe("matched")
+  })
+
+  test("loader source collection exposes changed and missing receipts and ignores discovery or unrelated tools", () => {
+    const receipt = ToolSource.create({
+      kind: "skill",
+      origin: "fixture/SKILL.md",
+      output: "original",
+      start: 0,
+      end: 8,
+    })!
+    const parts: SessionV1.Part[] = [
+      {
+        ...basePart("msg_sources", "prt_changed"),
+        type: "tool",
+        tool: "skill",
+        callID: "changed",
+        state: {
+          status: "completed",
+          input: { name: "fixture" },
+          output: "truncated",
+          title: "skill",
+          metadata: { contextSource: receipt },
+          time: { start: 0, end: 1 },
+        },
+      },
+      {
+        ...basePart("msg_sources", "prt_missing"),
+        type: "tool",
+        tool: "mcp",
+        callID: "missing",
+        state: {
+          status: "completed",
+          input: { operation: "instructions", server: "guide" },
+          output: "{}",
+          title: "mcp",
+          metadata: {},
+          time: { start: 0, end: 1 },
+        },
+      },
+      {
+        ...basePart("msg_sources", "prt_discovery"),
+        type: "tool",
+        tool: "skill",
+        callID: "search",
+        state: {
+          status: "completed",
+          input: { query: "guide" },
+          output: "{}",
+          title: "search",
+          metadata: {},
+          time: { start: 0, end: 1 },
+        },
+      },
+      {
+        ...basePart("msg_sources", "prt_unrelated"),
+        type: "tool",
+        tool: "read",
+        callID: "read",
+        state: {
+          status: "completed",
+          input: { name: "fixture" },
+          output: "original",
+          title: "read",
+          metadata: { contextSource: receipt },
+          time: { start: 0, end: 1 },
+        },
+      },
+    ]
+    const observed = HistorySource.capture([{ info: assistantInfo("msg_sources", "msg_parent"), parts }])
+    expect(observed.count).toBe(2)
+    expect(observed.sources.map((part) => part.tool?.observation)).toEqual([{ state: "changed" }, { state: "missing" }])
+  })
+
   test("checkpoint source identities remain distinct when duplicate text loses IDs and step grouping changes positions", async () => {
     const messages: SessionV1.WithParts[] = [
       {

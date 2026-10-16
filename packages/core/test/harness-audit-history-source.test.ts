@@ -4,6 +4,7 @@ import path from "node:path"
 import { Effect } from "effect"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
 import { ContextHistory } from "@opencode-ai/core/harness/audit-history"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { metadata } from "@opencode-ai/core/harness/audit-metadata"
 import { tmpdir } from "./fixture/tmpdir"
 
@@ -30,7 +31,42 @@ const policy = { contextMode: "lean", auditMode: "summary" } as const
 test("persists source and capture correlation in SQLite without retaining checkpoint text", async () => {
   await using directory = await tmpdir()
   const filename = path.join(directory.path, ContextHistory.FILE)
-  const captured = ContextAudit.report(sample, { ...policy, auditMode: "content" }, "now")
+  const loaded = "PRIVATE_SYNTHETIC_LOADED_BODY"
+  const receipt = ToolSource.create({
+    kind: "skill",
+    origin: "fixture/SKILL.md",
+    output: loaded,
+    start: 0,
+    end: loaded.length,
+  })!
+  const captured = ContextAudit.report(
+    {
+      ...sample,
+      historySnapshot: {
+        ...snapshot,
+        count: 2,
+        bytes: snapshot.bytes + Buffer.byteLength(loaded),
+        sources: [
+          ...snapshot.sources,
+          {
+            source: "loaded-tool-result",
+            messageID: "msg_loaded",
+            partID: "prt_loaded",
+            messageIndex: 1,
+            partIndex: 0,
+            text: loaded,
+            tool: {
+              name: "skill",
+              callID: "call_loaded",
+              observation: ToolSource.inspect(loaded, { contextSource: receipt }),
+            },
+          },
+        ],
+      },
+    },
+    { ...policy, auditMode: "content" },
+    "now",
+  )
   await Effect.runPromise(ContextHistory.append(filename, captured))
   const page = await Effect.runPromise(ContextHistory.read(filename))
   expect(page?.entries).toHaveLength(1)
@@ -38,10 +74,15 @@ test("persists source and capture correlation in SQLite without retaining checkp
   expect(page?.entries[0]?.capture.historySnapshot).toMatchObject({
     id: snapshot.id,
     mapping: "unmapped-after-conversion",
-    sources: [{ messageID: "msg_saved", partID: "prt_saved" }],
+    sources: [
+      { messageID: "msg_saved", partID: "prt_saved" },
+      { source: "loaded-tool-result", tool: { observation: { state: "matched", origin: "fixture/SKILL.md" } } },
+    ],
   })
   expect(JSON.stringify(page)).not.toContain(text)
+  expect(JSON.stringify(page)).not.toContain(loaded)
   expect(await Bun.file(filename).text()).not.toContain(text)
+  expect(await Bun.file(filename).text()).not.toContain(loaded)
 })
 
 test("correlates source snapshots without claiming final part identities or retaining text in metadata", () => {

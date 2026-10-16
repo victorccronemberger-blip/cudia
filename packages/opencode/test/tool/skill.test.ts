@@ -1,4 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
@@ -116,6 +117,8 @@ Use this skill.
       expect(discovery.output).toContain("Session tool tests.")
       expect(discovery.output).not.toContain("Use this skill.")
       expect(discovery.output).not.toContain("SKILL.md")
+      expect(discovery.metadata.contextSource).toBeUndefined()
+      expect(ToolSource.inspect(discovery.output, discovery.metadata).state).toBe("missing")
       expect(requests).toHaveLength(0)
 
       for (const input of [
@@ -151,6 +154,33 @@ Use this skill.
       expect(result.output).toContain(`<skill_content name="tool-skill">`)
       expect(result.output).toContain(`Base directory for this skill: ${skill}`)
       expect(result.output).toContain(`<file>${file}</file>`)
+      expect(result.output).toBe(
+        [
+          '<skill_content name="tool-skill">',
+          "# Skill: tool-skill",
+          "",
+          "# Tool Skill",
+          "",
+          "Use this skill.",
+          "",
+          `Base directory for this skill: ${skill}`,
+          "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
+          "Note: file list is sampled.",
+          "",
+          "<skill_files>",
+          `<file>${file}</file>`,
+          "</skill_files>",
+          "</skill_content>",
+        ].join("\n"),
+      )
+      const source = ToolSource.inspect(result.output, result.metadata)
+      expect(source).toMatchObject({ state: "matched", kind: "skill", origin: path.join(skill, "SKILL.md") })
+      if (source.state === "matched" && source.body.type === "utf16-span") {
+        expect(result.output.slice(source.body.start, source.body.end)).toBe("# Tool Skill\n\nUse this skill.")
+        expect(source.body.bytes).toBe(Buffer.byteLength("# Tool Skill\n\nUse this skill.", "utf8"))
+      } else {
+        throw new Error("Expected skill content source span")
+      }
     }),
   )
 

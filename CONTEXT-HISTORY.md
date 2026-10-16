@@ -59,7 +59,7 @@ execução deste incremento foram feitos com Bun. Não foi acrescentado um teste
 cancelamento com histórico habilitado; os testes existentes de cancelamento do
 runner não demonstram essa combinação específica.
 
-## Origem dos resumos V1
+## Origens no histórico selecionado V1
 
 `historySnapshot` observa os resumos concluídos selecionados após os hooks e antes
 da conversão de mensagens. Inclui IDs observados de mensagem e parte, posições na
@@ -79,6 +79,35 @@ compartilham 64 KiB com manifests, outras fontes e trace. Texto opcional usa o
 mesmo orçamento de conteúdo de 64 KiB e não entra no histórico de metadados.
 Chamadas sem auditoria não coletam esse snapshot.
 
+Os loaders V1 de skills e de guidance MCP acrescentam um recibo técnico em
+`metadata.contextSource` do resultado local, inclusive quando a auditoria está
+desligada. Isso permite conferir a origem posteriormente. O texto devolvido pela
+ferramenta e seu schema permanecem iguais. Pesquisar o catálogo não cria recibo
+de corpo; guidance é obtido somente pela operação explícita `instructions`.
+
+No snapshot, `source: loaded-tool-result` identifica o resultado armazenado de
+uma dessas invocações. `tool` conserva o nome, call ID e a observação do recibo.
+O hash e os bytes da fonte descrevem o resultado armazenado inteiro; o descritor
+`body` descreve somente o corpo carregado dentro do wrapper. Para skills, usa
+intervalos UTF-16; para MCP, o membro JSON `instructions`, após decodificação.
+Os hashes do recibo usam `json-utf8`, distinguindo inclusive surrogates isolados;
+os hashes gerais do relatório continuam descrevendo bytes UTF-8 do texto observado.
+
+`matched` comprova correspondência entre recibo e resultado armazenado, sem
+autenticar o arquivo, o servidor ou a autoria. Plugins podem substituir ambos.
+`changed`, `invalid`, `missing` e `unavailable` não conservam uma origem ou um corpo
+como verificados. Truncamento ou edição depois do loader produz divergência;
+omissão ou recorte na conversão posterior continua fora dessa prova.
+
+A inspeção aceita até 2 MiB de resultado, 1.024 bytes no identificador de origem
+e 4 KiB no recibo projetado. Limites ou ausência do recibo afetam somente a
+atribuição; não impedem carregar ou devolver o resultado. Propriedades desconhecidas
+não são serializadas e accessors não são executados durante a inspeção.
+Resultados de loaders compartilham o limite de 128 fontes e os orçamentos de
+metadados/conteúdo dos resumos. O texto do resultado só entra na captura de
+conteúdo explícita e é removido do histórico de metadados. Outros loaders e o
+backend V2 ainda não recebem esses recibos; a cobertura não é universal.
+
 ## Validação
 
 Os testes cobrem exclusão de texto e campos desconhecidos, retenção por bytes e
@@ -86,7 +115,12 @@ quantidade, paginação, arquivos incompatíveis, falha de transação, contenç
 dois processos concorrentes e encerramento antes do commit. A integração usa um
 provedor HTTP local e compara exatamente mensagens e ferramentas com o histórico
 desligado, habilitado e indisponível. A regressão de Core inclui runner,
-compactação e migrações: 177 testes passaram na regressão integrada. A conversão
-de mensagens passou em 44 testes; o ciclo real de conversa passou em 53, com
-14 skips existentes de Windows/projector. Testes adicionais conferem privacidade
+compactação e migrações: 184 testes passaram na regressão integrada. A conversão
+de mensagens passou em 46 testes; o ciclo real de conversa passou em 55, com
+14 skips existentes de Windows/projector. O cenário adicional de truncamento real
+de skill passou separadamente. Testes adicionais conferem privacidade
 na CLI e persistência da correlação no SQLite sem o texto dos resumos.
+
+Os dois testes de ordenação entre shell e chamadas do modelo usam um prazo de
+fixture de 30 segundos, ajustado após medições próximas de 10 segundos no Windows.
+As asserções de ordenação foram preservadas; esse prazo não mede desempenho do runtime.

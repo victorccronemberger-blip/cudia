@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import { NonNegativeInt, PositiveInt } from "@opencode-ai/core/schema"
 import { SkillCatalog } from "@opencode-ai/core/skill/catalog"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { Config } from "@/config/config"
 import { MCP } from "@/mcp"
 import { Tool } from "./tool"
@@ -53,7 +54,16 @@ export const McpTool = Tool.define(
             params.operation === "instructions"
               ? { server, instructions: (yield* mcp.instructions()).find((item) => item.name === server)?.instructions }
               : { server, ...(yield* mcp.status())[server] }
-          return { title: `MCP ${params.operation}: ${server}`, output: JSON.stringify(output), metadata: {} }
+          const rendered = JSON.stringify(output)
+          const contextSource =
+            params.operation === "instructions"
+              ? ToolSource.create({ kind: "mcp-guidance", origin: server, output: rendered })
+              : undefined
+          return {
+            title: `MCP ${params.operation}: ${server}`,
+            output: rendered,
+            metadata: contextSource ? { contextSource } : {},
+          }
         }).pipe(Effect.orDie),
     }
   }),

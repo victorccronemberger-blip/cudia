@@ -272,6 +272,13 @@ mesmo snapshot. Nenhum desses identificadores vai ao provedor. O texto só é
 incluído no modo `content`, dentro do orçamento compartilhado; consultas de
 metadados e o histórico opcional o removem.
 
+Esse snapshot também observa resultados dos loaders V1 de skills e guidance MCP.
+Os recibos locais descrevem o corpo carregado e o resultado inteiro separadamente;
+truncamentos e alterações por hooks ficam visíveis como divergência. Recibos e
+correlação ficam fora das mensagens e schemas do provedor.
+[Contrato e limites de origem](CONTEXT-HISTORY.md#origens-no-histórico-selecionado-v1).
+Essa cobertura é posterior à Preview 12 e ainda não inclui os loaders V2.
+
 A captura cobre V1 AI SDK, V1 nativo e o runner V2. Ela observa o contexto
 preparado antes do adaptador do provedor, não o tráfego final ou instruções
 internas de um serviço remoto. O relatório pode ser salvo antes de uma falha do

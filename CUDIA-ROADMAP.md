@@ -67,6 +67,13 @@ as partes finais. `unmapped-after-conversion` mantém visível essa lacuna. Text
 segue opt-in e orçamento compartilhado; o histórico persiste apenas metadados.
 Não representa comprovação completa da linhagem nem nova versão do instalador.
 
+**Corpos carregados sob demanda V1, em fonte:** skills e guidance MCP produzem
+recibos locais sem alterar as saídas ou os schemas do provedor. A auditoria
+observa resultados armazenados e distingue corpo carregado de framing, com estados
+de correspondência/divergência/ausência/indisponibilidade. Alterações e truncamento
+não recebem atribuição verificada. A proveniência dos demais loaders e do V2,
+assim como o vínculo com partes finais após conversão, permanece pendente.
+
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no
       ensaio isolado de 16/10, com o candidato `31d2c80a4998`.

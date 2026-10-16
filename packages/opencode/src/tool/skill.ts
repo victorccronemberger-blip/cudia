@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { NonNegativeInt, PositiveInt } from "@opencode-ai/core/schema"
 import { SkillCatalog } from "@opencode-ai/core/skill/catalog"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { Agent } from "../agent/agent"
 import { Session } from "../session/session"
 import { Permission } from "../permission"
@@ -19,7 +20,7 @@ export const Parameters = Schema.Struct({
   limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(SkillCatalog.MAX_PAGE_SIZE))),
 })
 
-type Metadata = { name?: string; dir?: string; matches?: string[]; total?: number }
+type Metadata = { name?: string; dir?: string; matches?: string[]; total?: number; contextSource?: ToolSource.Receipt }
 
 export const SkillTool = Tool.define(
   "skill",
@@ -88,26 +89,34 @@ export const SkillTool = Tool.define(
             limit: 10,
           })
 
+          const content = info.content.trim()
+          const prefix = [`<skill_content name="${info.name}">`, `# Skill: ${info.name}`, ""].join("\n") + "\n"
+          const suffix = [
+            "",
+            `Base directory for this skill: ${base}`,
+            "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
+            "Note: file list is sampled.",
+            "",
+            "<skill_files>",
+            files.map((file) => `<file>${path.resolve(dir, file.path)}</file>`).join("\n"),
+            "</skill_files>",
+            "</skill_content>",
+          ].join("\n")
+          const output = `${prefix}${content}\n${suffix}`
+          const contextSource = ToolSource.create({
+            kind: "skill",
+            origin: info.location,
+            output,
+            start: prefix.length,
+            end: prefix.length + content.length,
+          })
           return {
             title: `Loaded skill: ${info.name}`,
-            output: [
-              `<skill_content name="${info.name}">`,
-              `# Skill: ${info.name}`,
-              "",
-              info.content.trim(),
-              "",
-              `Base directory for this skill: ${base}`,
-              "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
-              "Note: file list is sampled.",
-              "",
-              "<skill_files>",
-              files.map((file) => `<file>${path.resolve(dir, file.path)}</file>`).join("\n"),
-              "</skill_files>",
-              "</skill_content>",
-            ].join("\n"),
+            output,
             metadata: {
               name: info.name,
               dir,
+              ...(contextSource && { contextSource }),
             },
           }
         }).pipe(Effect.orDie),

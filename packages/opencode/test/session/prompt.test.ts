@@ -430,11 +430,30 @@ function summaryTransform() {
   }
 }
 
+function mutateSkillToolOutput() {
+  return Layer.mock(Plugin.Service)({
+    trigger: <Name extends string, Input, Output>(name: Name, input: Input, output: Output) => {
+      if (name === "tool.execute.after" && (input as { tool?: string }).tool === "skill") {
+        ;(output as { output: string }).output += "\nPOST_TOOL_OUTPUT_MUTATION"
+      }
+      return Effect.succeed(output)
+    },
+    list: () => Effect.succeed([]),
+    init: () => Effect.void,
+  })
+}
+
 const historyAudit = contextAuditRecorder(true)
 const historyTransform = summaryTransform()
 const itWithHistoryAudit = testEffect(makeHttp({ plugin: historyTransform.plugin, audit: historyAudit.layer }))
 const disabledHistoryAudit = contextAuditRecorder(false)
 const itWithHistoryAuditDisabled = testEffect(makeHttp({ audit: disabledHistoryAudit.layer }))
+const skillSourceAudit = contextAuditRecorder(true)
+const itWithSkillSourceAudit = testEffect(makeHttp({ audit: skillSourceAudit.layer }))
+const changedSkillSourceAudit = contextAuditRecorder(true)
+const itWithChangedSkillSourceAudit = testEffect(
+  makeHttp({ plugin: mutateSkillToolOutput(), audit: changedSkillSourceAudit.layer }),
+)
 const unix = process.platform !== "win32" ? it.instance : it.instance.skip
 const unixNoLLMServer = process.platform !== "win32" ? noLLMServer.instance : noLLMServer.instance.skip
 
@@ -842,6 +861,182 @@ itWithHistoryAuditDisabled.instance("does not capture history when audit is disa
     expect(body).not.toContain("historySnapshot")
     expect(body).not.toContain("captureID")
     expect(disabledHistoryAudit.inputs).toHaveLength(0)
+  }),
+)
+
+itWithSkillSourceAudit.instance("captures the stored output and receipt from an executed skill tool", () =>
+  Effect.gen(function* () {
+    skillSourceAudit.inputs.length = 0
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const skillFile = path.join(dir, ".opencode", "skill", "prompt-source-skill", "SKILL.md")
+    const skillBody = "# Prompt source fixture\n\nLoaded skill source body."
+    yield* writeText(
+      skillFile,
+      `---\nname: prompt-source-skill\ndescription: Prompt source fixture.\n---\n\n${skillBody}\n`,
+    )
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    const session = yield* sessions.create({
+      title: "Skill source receipt",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Load the source skill." }],
+    })
+    yield* llm.tool("skill", { name: "prompt-source-skill" })
+    yield* llm.text("Skill loaded.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    const stored = yield* MessageV2.filterCompactedEffect(session.id)
+    const part = stored
+      .flatMap((message) => message.parts)
+      .find((item): item is SessionV1.ToolPart => item.type === "tool" && item.tool === "skill")
+    expect(part?.state.status).toBe("completed")
+    if (!part || part.state.status !== "completed") return
+
+    const source = skillSourceAudit.inputs
+      .flatMap((input) => input.historySnapshot?.sources ?? [])
+      .find((item) => item.partID === part.id)
+    expect(source).toBeDefined()
+    if (!source?.tool) return
+    expect(source.source).toBe("loaded-tool-result")
+    expect(source.messageID).toBe(part.messageID)
+    expect(source.partID).toBe(part.id)
+    expect(source.tool.name).toBe("skill")
+    expect(source.tool.callID).toBe(part.callID)
+    expect(source.text).toBe(part.state.output)
+    expect(source.tool.observation).toMatchObject({ state: "matched", kind: "skill", origin: skillFile })
+    if (source.tool.observation.state === "matched" && source.tool.observation.body.type === "utf16-span") {
+      expect(source.text.slice(source.tool.observation.body.start, source.tool.observation.body.end)).toBe(skillBody)
+    } else {
+      throw new Error("Expected a matched skill body span in the history source")
+    }
+
+    const inputs = yield* llm.inputs
+    const latest = inputs.at(-1) as { messages?: Array<{ role?: string; content?: unknown }> } | undefined
+    const nextRequest = JSON.stringify(latest)
+    expect(inputs.length).toBeGreaterThanOrEqual(2)
+    const toolMessage = latest?.messages?.find(
+      (message) =>
+        message.role === "tool" && typeof message.content === "string" && message.content.includes(skillBody),
+    )
+    expect(toolMessage?.content).toContain(skillBody)
+    expect(nextRequest).not.toContain("contextSource")
+    expect(nextRequest).not.toContain(source.tool.observation.body.sha256)
+  }),
+)
+
+itWithChangedSkillSourceAudit.instance("marks a skill result changed after an execute-after plugin edits it", () =>
+  Effect.gen(function* () {
+    changedSkillSourceAudit.inputs.length = 0
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const skillFile = path.join(dir, ".opencode", "skill", "mutated-prompt-source-skill", "SKILL.md")
+    const skillBody = "The original skill source body."
+    yield* writeText(
+      skillFile,
+      `---\nname: mutated-prompt-source-skill\ndescription: Prompt source mutation fixture.\n---\n\n${skillBody}\n`,
+    )
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    const session = yield* sessions.create({
+      title: "Mutated skill source receipt",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Load and then observe the modified result." }],
+    })
+    yield* llm.tool("skill", { name: "mutated-prompt-source-skill" })
+    yield* llm.text("Observed.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    const stored = yield* MessageV2.filterCompactedEffect(session.id)
+    const part = stored
+      .flatMap((message) => message.parts)
+      .find((item): item is SessionV1.ToolPart => item.type === "tool" && item.tool === "skill")
+    expect(part?.state.status).toBe("completed")
+    if (!part || part.state.status !== "completed") return
+    expect(part.state.output).toContain("POST_TOOL_OUTPUT_MUTATION")
+
+    const source = changedSkillSourceAudit.inputs
+      .flatMap((input) => input.historySnapshot?.sources ?? [])
+      .find((item) => item.partID === part.id)
+    expect(source?.text).toBe(part.state.output)
+    expect(source?.tool?.observation).toEqual({ state: "changed" })
+    expect(source?.tool).not.toHaveProperty("origin")
+    expect(source?.tool?.observation).not.toHaveProperty("body")
+  }),
+)
+
+itWithSkillSourceAudit.instance("marks the generic truncation of a skill tool result as changed", () =>
+  Effect.gen(function* () {
+    skillSourceAudit.inputs.length = 0
+    const { dir, llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      tool_output: { max_lines: 12, max_bytes: 50 * 1024 },
+    }))
+    const skillFile = path.join(dir, ".opencode", "skill", "truncated-prompt-source-skill", "SKILL.md")
+    const firstLine = "TRUNCATED_SKILL_BODY_FIRST_LINE_73A2"
+    const lastLine = "TRUNCATED_SKILL_BODY_LAST_LINE_19C4"
+    const skillBody = [
+      firstLine,
+      ...Array.from({ length: 40 }, (_, index) => `skill body line ${index + 1}`),
+      lastLine,
+    ].join("\n")
+    yield* writeText(
+      skillFile,
+      `---\nname: truncated-prompt-source-skill\ndescription: Truncation source fixture.\n---\n\n${skillBody}\n`,
+    )
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    const session = yield* sessions.create({
+      title: "Truncated skill source receipt",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Load the long source skill." }],
+    })
+    yield* llm.tool("skill", { name: "truncated-prompt-source-skill" })
+    yield* llm.text("Observed truncated output.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    const stored = yield* MessageV2.filterCompactedEffect(session.id)
+    const part = stored
+      .flatMap((message) => message.parts)
+      .find((item): item is SessionV1.ToolPart => item.type === "tool" && item.tool === "skill")
+    expect(part?.state.status).toBe("completed")
+    if (!part || part.state.status !== "completed") return
+    expect(part.state.metadata.truncated).toBe(true)
+    expect(part.state.metadata.outputPath).toBeDefined()
+    expect(part.state.metadata.contextSource).toBeDefined()
+    expect(part.state.output).toContain(firstLine)
+    expect(part.state.output).not.toContain(lastLine)
+
+    const source = skillSourceAudit.inputs
+      .flatMap((input) => input.historySnapshot?.sources ?? [])
+      .find((item) => item.partID === part.id)
+    expect(source?.text).toBe(part.state.output)
+    expect(source?.tool?.name).toBe("skill")
+    expect(source?.tool?.observation).toEqual({ state: "changed" })
+    expect(source?.tool).not.toHaveProperty("origin")
+    expect(source?.tool?.observation).not.toHaveProperty("body")
+
+    const inputs = yield* llm.inputs
+    const latest = inputs.at(-1) as { messages?: Array<{ role?: string; content?: unknown }> } | undefined
+    const request = JSON.stringify(latest)
+    const storedOutput = part.state.output
+    const toolMessage = latest?.messages?.find((message) => message.role === "tool" && message.content === storedOutput)
+    expect(toolMessage?.content).toBe(storedOutput)
+    expect(request).not.toContain("contextSource")
+    expect(request).not.toContain(lastLine)
   }),
 )
 
@@ -2490,7 +2685,8 @@ it.instance(
       expect(yield* llm.calls).toBe(1)
     }),
   { git: true },
-  10_000,
+  // Ordering assertions allow time for native shell and Git fixture startup.
+  30_000,
 )
 
 it.instance(
@@ -2529,7 +2725,7 @@ it.instance(
       expect(yield* llm.calls).toBe(1)
     }),
   { git: true },
-  10_000,
+  30_000,
 )
 
 unix(

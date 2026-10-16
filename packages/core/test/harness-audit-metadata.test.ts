@@ -4,9 +4,18 @@ import { ContextAudit } from "@opencode-ai/core/harness/audit"
 import { ContextManifest } from "@opencode-ai/core/harness/context-manifest"
 import { ContextTrace } from "@opencode-ai/core/harness/trace"
 import { metadata } from "@opencode-ai/core/harness/audit-metadata"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 
 function sample() {
   const text = "SYNTHETIC_PRIVATE_INSTRUCTION ação 🌍"
+  const toolText = "SYNTHETIC_PRIVATE_LOADED_TOOL_BODY"
+  const toolReceipt = ToolSource.create({
+    kind: "skill",
+    origin: "fixture/SKILL.md",
+    output: toolText,
+    start: 0,
+    end: toolText.length,
+  })!
   const manifest = ContextManifest.create([
     {
       producer: "agent",
@@ -30,8 +39,8 @@ function sample() {
       compactionMessageID: "msg_attempt",
       historySnapshot: {
         id: "snapshot_fixture",
-        count: 1,
-        bytes: 34,
+        count: 2,
+        bytes: Buffer.byteLength("SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE") + Buffer.byteLength(toolText),
         sources: [
           {
             messageID: "msg_persisted",
@@ -39,6 +48,19 @@ function sample() {
             messageIndex: 0,
             partIndex: 0,
             text: "SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE",
+          },
+          {
+            source: "loaded-tool-result",
+            messageID: "msg_tool",
+            partID: "prt_tool",
+            messageIndex: 0,
+            partIndex: 1,
+            text: toolText,
+            tool: {
+              name: "skill",
+              callID: "call_source",
+              observation: ToolSource.inspect(toolText, { contextSource: toolReceipt }),
+            },
           },
         ],
       },
@@ -91,7 +113,13 @@ describe("Context audit historical metadata", () => {
     expect(projected.historySnapshot).toMatchObject({
       id: "snapshot_fixture",
       mapping: "unmapped-after-conversion",
-      sources: [{ messageID: "msg_persisted", partID: "prt_persisted" }],
+      sources: [
+        { messageID: "msg_persisted", partID: "prt_persisted" },
+        {
+          source: "loaded-tool-result",
+          tool: { name: "skill", observation: { state: "matched", origin: "fixture/SKILL.md" } },
+        },
+      ],
     })
     expect(projected.historySnapshot?.sources[0]).not.toHaveProperty("content")
     expect(report.instructions[0]?.content).toContain("SYNTHETIC_PRIVATE_INSTRUCTION")
@@ -101,6 +129,8 @@ describe("Context audit historical metadata", () => {
   test("ignores unknown fields and raw-content getters at every retained object boundary", () => {
     const report = structuredClone(sample())
     const manifest = report.instructions[0]!.contextManifest!
+    const observation = report.historySnapshot!.sources[1]!.tool!.observation
+    if (observation.state !== "matched") throw new Error("Expected matched source")
     const objects = [
       report,
       report.model,
@@ -112,6 +142,10 @@ describe("Context audit historical metadata", () => {
       report.tools[0]!,
       report.historySnapshot!,
       report.historySnapshot!.sources[0]!,
+      report.historySnapshot!.sources[1]!,
+      report.historySnapshot!.sources[1]!.tool!,
+      observation,
+      observation.body,
       report.trace!,
       report.trace!.records[0]!,
       report.trace!.records[0]!.source,
@@ -125,7 +159,12 @@ describe("Context audit historical metadata", () => {
           throw new Error("Unknown fields must not be inspected")
         },
       })
-    for (const value of [report.instructions[0]!, report.messageSources![0]!, report.historySnapshot!.sources[0]!])
+    for (const value of [
+      report.instructions[0]!,
+      report.messageSources![0]!,
+      report.historySnapshot!.sources[0]!,
+      report.historySnapshot!.sources[1]!,
+    ])
       Object.defineProperty(value, "content", {
         enumerable: true,
         get() {

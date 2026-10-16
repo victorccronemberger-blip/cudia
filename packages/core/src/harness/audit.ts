@@ -10,6 +10,7 @@ import { ContextManifest } from "./context-manifest"
 import { HarnessPolicy } from "./policy"
 import { ContextTrace } from "./trace"
 import { ContextManifestSchema } from "@opencode-ai/schema/context-manifest"
+import { ToolSource } from "./tool-source"
 
 export const FILE = "cudia-context-latest.json"
 export const MAX_CONTENT_BYTES = 65_536
@@ -29,6 +30,8 @@ export type Input = {
     readonly count: number
     readonly bytes: number
     readonly sources: ReadonlyArray<{
+      readonly source?: "conversation-checkpoint" | "loaded-tool-result"
+      readonly tool?: { readonly name: string; readonly callID: string; readonly observation: ToolSource.Observation }
       readonly messageID: string
       readonly partID: string
       readonly messageIndex: number
@@ -81,7 +84,37 @@ export const Report = Schema.Struct({
       omittedSources: Schema.optional(Schema.Number),
       sources: Schema.Array(
         Schema.Struct({
-          source: Schema.Literal("conversation-checkpoint"),
+          source: Schema.Literals(["conversation-checkpoint", "loaded-tool-result"]),
+          tool: Schema.optional(
+            Schema.Struct({
+              name: Schema.String,
+              callID: Schema.String,
+              observation: Schema.Union([
+                Schema.Struct({ state: Schema.Literals(["missing", "invalid", "changed", "unavailable"]) }),
+                Schema.Struct({
+                  state: Schema.Literal("matched"),
+                  hashEncoding: Schema.Literal("json-utf8"),
+                  kind: Schema.Literals(["skill", "mcp-guidance"]),
+                  origin: Schema.String,
+                  body: Schema.Union([
+                    Schema.Struct({
+                      type: Schema.Literal("utf16-span"),
+                      start: Schema.Number,
+                      end: Schema.Number,
+                      bytes: Schema.Number,
+                      sha256: Schema.String,
+                    }),
+                    Schema.Struct({
+                      type: Schema.Literal("json-member"),
+                      member: Schema.Literal("instructions"),
+                      bytes: Schema.Number,
+                      sha256: Schema.String,
+                    }),
+                  ]),
+                }),
+              ]),
+            }),
+          ),
           role: Schema.Literal("assistant"),
           messageID: Schema.String,
           partID: Schema.String,
@@ -222,7 +255,16 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
   for (const item of input.historySnapshot?.sources.slice(0, 128) ?? []) {
     const bytes = Buffer.byteLength(item.text, "utf8")
     const entry = {
-      source: "conversation-checkpoint" as const,
+      source: item.source ?? "conversation-checkpoint",
+      ...(item.tool === undefined
+        ? {}
+        : {
+            tool: {
+              name: item.tool.name,
+              callID: item.tool.callID,
+              observation: ToolSource.copy(item.tool.observation),
+            },
+          }),
       role: "assistant" as const,
       messageID: item.messageID,
       partID: item.partID,
