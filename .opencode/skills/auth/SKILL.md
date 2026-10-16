@@ -1,27 +1,19 @@
 ---
 name: auth
-description: Test auth, sessions, JWT and OAuth.
+description: Review login, recovery, session lifecycle, JWT validation, and OAuth flows.
 metadata:
-  version: "1"
-  tools: http,browser
+  version: "3"
 ---
-# Authentication & session testing playbook
 
-Target the mechanisms that establish and carry identity. Impact here is usually
-account takeover or privilege escalation.
+# Authentication and sessions
 
-## Focus areas
-1. Credential flows: enumeration via timing/response deltas, weak lockout, password
-   reset token predictability/reuse, host-header poisoning in reset links.
-2. Sessions: fixation, missing rotation on privilege change, insecure cookie flags,
-   overlong lifetimes, logout that does not invalidate server-side.
-3. JWT: `alg=none`, HS/RS confusion, `kid` path traversal/injection, `jku`/`x5u`
-   SSRF, weak HMAC secrets, missing expiry/audience checks.
-4. OAuth/OIDC: redirect_uri validation, state/PKCE presence, token leakage via
-   referrer, scope escalation, implicit-flow token exposure.
-5. MFA: bypass via backup flows, response tampering, or step skipping.
+Trace the relevant transitions: login/recovery, session rotation and expiry,
+MFA recovery, or privilege changes. For JWT, inspect algorithm selection,
+key trust, issuer/audience, and expiry validation. For OAuth, inspect redirect
+matching, state binding, PKCE, and callback-to-session handling.
 
-## Method
-Verify each issue end-to-end (forge a token, reuse a session, complete a takeover
-of a test account). Keep it to accounts you control. Capture the exact tokens and
-requests as evidence, with secrets redacted in the written report.
+Use code paths for source conclusions. Requested live checks need permitted
+test accounts and a baseline: distinguish token rejection from application
+errors, and capture redacted request/response evidence. Establish the requested
+behavior without changing unrelated users' sessions. API object authorization
+belongs to `api`; rendered login interactions need an enabled browser integration.

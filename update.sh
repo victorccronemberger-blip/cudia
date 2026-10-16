@@ -1,29 +1,18 @@
-#!/usr/bin/env bash
-# cudia updater — pulls the latest harness + reinstalls the opencode CLI.
-set -euo pipefail
+#!/usr/bin/env sh
+# Update the checkout and rebuild its custom engine without replacing local work.
+set -eu
 
-INSTALL_DIR="${CUDIA_DIR:-$HOME/cudia}"
+HERE=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd)
+. "$HERE/script/cudia-common.sh"
+INSTALL_DIR=${CUDIA_DIR:-$HERE}
+cudia_checkout "$INSTALL_DIR"
+git -C "$INSTALL_DIR" diff --quiet || cudia_fail "Tracked files have local edits; commit or stash them before updating."
+git -C "$INSTALL_DIR" diff --cached --quiet || cudia_fail "The index has local edits; commit or stash them before updating."
+[ -n "$(git -C "$INSTALL_DIR" branch --show-current)" ] || cudia_fail "Select a tracking branch before updating a detached checkout."
 
-[ -d "$INSTALL_DIR/.git" ] || {
-  echo "!! cudia not installed at $INSTALL_DIR — run install.sh first"
-  exit 1
-}
-
-echo "==> updating harness repo..."
+printf '==> updating checkout...\n'
 git -C "$INSTALL_DIR" pull --ff-only
-chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
-
-if command -v bun >/dev/null 2>&1; then
-  echo "==> updating cudia workspace dependencies..."
-  (cd "$INSTALL_DIR" && bun install --frozen-lockfile)
-  echo "==> rebuilding cudia local binary..."
-  (cd "$INSTALL_DIR/packages/opencode" && bun run script/build.ts --single --skip-install --skip-embed-web-ui)
-else
-  echo "!! bun not found; custom source dependencies were not installed."
-  echo "   Install it with: curl -fsSL https://bun.sh/install | bash"
-fi
-
-echo "==> updating opencode CLI..."
-curl -fsSL https://opencode.ai/install | bash
-
-echo "==> done. Restart opencode to pick up the changes."
+# Load the updated helper as well as the updated build script.
+. "$INSTALL_DIR/script/cudia-common.sh"
+cudia_build "$INSTALL_DIR"
+printf '==> updated. Restart cudia to use the new engine.\n'

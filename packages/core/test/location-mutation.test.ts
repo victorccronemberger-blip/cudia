@@ -60,16 +60,20 @@ describe("LocationMutation", () => {
     ),
   )
 
-  it.live("rejects a relative lexical escape instead of promoting it to external authority", () =>
+  it.live("resolves a parent-relative target to its canonical external path", () =>
     withTmp((directory) =>
       Effect.gen(function* () {
-        const error = yield* Effect.flip((yield* LocationMutation.Service).resolve({ path: "../outside.txt" }))
-        expect(error).toMatchObject({ _tag: "LocationMutation.PathError", reason: "relative_escape" })
+        const mutation = yield* LocationMutation.Service
+        const target = yield* mutation.resolve({ path: "../outside.txt" })
+        const parent = yield* Effect.promise(() => fs.realpath(path.dirname(directory)))
+        expect(target.canonical).toBe(path.join(parent, "outside.txt"))
+        expect(target.resource).toBe(target.canonical.replaceAll("\\", "/"))
+        expect(target.externalDirectory?.directory).toBe(parent)
       }).pipe(provide(directory)),
     ),
   )
 
-  it.live("rejects a prospective target below an escaping symlink ancestor", () =>
+  it.live("resolves a prospective target through an external symlink", () =>
     withTmp((directory) => {
       const outside = `${directory}-outside`
       return Effect.gen(function* () {
@@ -78,10 +82,10 @@ describe("LocationMutation", () => {
           await fs.mkdir(outside)
           await fs.symlink(outside, path.join(directory, "escape"))
         })
-        const error = yield* Effect.flip(
-          (yield* LocationMutation.Service).resolve({ path: path.join("escape", "new.txt") }),
-        )
-        expect(error).toMatchObject({ _tag: "LocationMutation.PathError", reason: "location_escape" })
+        const mutation = yield* LocationMutation.Service
+        const target = yield* mutation.resolve({ path: path.join("escape", "new.txt") })
+        expect(target.canonical).toBe(path.join(yield* Effect.promise(() => fs.realpath(outside)), "new.txt"))
+        expect(target.externalDirectory).toBeDefined()
         yield* Effect.promise(() => fs.rm(outside, { recursive: true, force: true }))
       }).pipe(provide(directory))
     }),

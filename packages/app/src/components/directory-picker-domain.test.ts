@@ -20,6 +20,7 @@ import {
   pickerParent,
   pickerRoot,
   pickerAbsoluteInput,
+  mergeDirectoryPickerProjects,
 } from "./directory-picker-domain"
 
 test("maps server directory entries into Pierre paths", () => {
@@ -139,6 +140,7 @@ test("resolves directory autocomplete from the current browser root", async () =
           directories.push(input.location?.directory ?? "")
           return Promise.resolve({ data: [] })
         },
+        list: () => Promise.resolve({ data: [] }),
       },
     },
   } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
@@ -150,6 +152,67 @@ test("resolves directory autocomplete from the current browser root", async () =
   await search("components")
 
   expect(directories).toEqual(["/repo", "/repo/src"])
+})
+
+test("keeps indexed directory results for servers that support empty search", async () => {
+  const sdk = {
+    api: {
+      file: {
+        find: () => Promise.resolve({ data: [{ path: "projects/", type: "directory" }] }),
+        list: () => Promise.reject(new Error("listing should not run when search returns results")),
+      },
+    },
+  } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
+  const search = createDirectorySearch({ sdk, home: () => "/home/luke", base: () => "/home/luke" })
+
+  expect(await search("")).toEqual(["/home/luke/projects"])
+})
+
+test("lists the default directory when empty search is unsupported", async () => {
+  const calls: string[] = []
+  const directories = Array.from({ length: 60 }, (_, index) => ({
+    path: `project-${index}/`,
+    type: "directory" as const,
+  }))
+  const sdk = {
+    api: {
+      file: {
+        find: () => Promise.resolve({ data: [] }),
+        list: (input: { location?: { directory?: string } }) => {
+          calls.push(input.location?.directory ?? "")
+          return Promise.resolve({
+            data: [...directories, { path: "README.md", type: "file" }],
+          })
+        },
+      },
+    },
+  } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
+  const search = createDirectorySearch({ sdk, home: () => "/home/luke", base: () => "/home/luke" })
+
+  const results = await search("")
+  expect(results).toHaveLength(60)
+  expect(results.at(-1)).toBe("/home/luke/project-59")
+  expect(calls).toEqual(["/home/luke"])
+})
+
+test("matches the default directory listing when typed search is unsupported", async () => {
+  const sdk = {
+    api: {
+      file: {
+        find: () => Promise.resolve({ data: [] }),
+        list: () =>
+          Promise.resolve({
+            data: [
+              { path: "Documents/", type: "directory" },
+              { path: "Downloads/", type: "directory" },
+            ],
+          }),
+      },
+    },
+  } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
+  const search = createDirectorySearch({ sdk, home: () => "/home/luke", base: () => "/home/luke" })
+
+  expect(await search("documents")).toEqual(["/home/luke/Documents"])
 })
 
 test("searches from an absolute root without a default base", async () => {
@@ -173,6 +236,97 @@ test("searches from an absolute root without a default base", async () => {
 
   expect(await search("/")).toEqual(["/Users", "/tmp"])
   expect(directories).toEqual(["/"])
+})
+
+test("uses native V2 filesystem reads and evicts a failed listing so it can retry", async () => {
+  let lists = 0
+  const errors: unknown[] = []
+  const sdk = {
+    protocol: Promise.resolve("v2"),
+    protocolKind: () => "v2",
+    nativeWorkspace: {
+      files: {
+        find: async () => ({ data: [] }),
+        list: async () => {
+          lists++
+          if (lists === 1) throw new Error("temporary read failure")
+          return { data: [{ path: "child/", type: "directory" as const }] }
+        },
+      },
+    },
+    api: {
+      file: {
+        find: async () => {
+          throw new Error("legacy file route used")
+        },
+        list: async () => {
+          throw new Error("legacy file route used")
+        },
+      },
+    },
+  } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
+  const search = createDirectorySearch({
+    sdk,
+    home: () => "/home/user",
+    base: () => "/home/user",
+    onError: (error) => errors.push(error),
+  })
+
+  expect(await search("")).toEqual([])
+  expect(await search("")).toEqual(["/home/user/child"])
+  expect(lists).toBe(2)
+  expect(errors).toHaveLength(1)
+})
+
+test("includes canonical projects outside the locally opened project list", () => {
+  expect(
+    mergeDirectoryPickerProjects(
+      [{ worktree: "C:/home/opened", vcs: "git" as const }],
+      [
+        { worktree: "C:/home/opened", vcs: "git" as const },
+        { worktree: "C:/workspace/AlphaGit", vcs: "git" as const },
+        { worktree: "C:/", vcs: undefined },
+      ],
+    ),
+  ).toEqual([
+    { worktree: "C:/home/opened", vcs: "git" },
+    { worktree: "C:/workspace/AlphaGit", vcs: "git" },
+  ])
+})
+
+test("resolves Windows absolute and parent-relative directory inputs from relative file entries", async () => {
+  const home = "C:/Users/victo/Temp/fixture/home"
+  const workspace = "C:/Users/victo/Temp/fixture/workspace"
+  const entries = new Map([
+    ["C:/", ["Users\\"]],
+    ["C:/Users", ["victo\\"]],
+    ["C:/Users/victo", ["Temp\\"]],
+    ["C:/Users/victo/Temp", ["fixture\\"]],
+    ["C:/Users/victo/Temp/fixture", ["home\\", "workspace\\"]],
+    [workspace, ["AlphaGit\\", "BetaPlain\\"]],
+    [`${workspace}/AlphaGit`, ["docs\\"]],
+  ])
+  const sdk = {
+    protocol: Promise.resolve("v2"),
+    protocolKind: () => "v2",
+    nativeWorkspace: {
+      files: {
+        find: async () => ({ data: [] }),
+        list: async (input: { location?: { directory?: string } }) => ({
+          data: (entries.get(input.location?.directory ?? "") ?? []).map((path) => ({
+            path,
+            type: "directory" as const,
+          })),
+        }),
+      },
+    },
+    api: { file: { find: async () => ({ data: [] }), list: async () => ({ data: [] }) } },
+  } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
+  const search = createDirectorySearch({ sdk, home: () => home, base: () => home })
+  const target = `${workspace}/AlphaGit`
+
+  expect(await search(`${workspace}/`)).toContain(target)
+  expect(await search("../workspace/AlphaGit")).toContain(target)
 })
 
 test("identifies the next directory level to preload", () => {

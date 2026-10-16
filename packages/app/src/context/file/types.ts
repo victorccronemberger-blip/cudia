@@ -1,5 +1,13 @@
 import type { FileContent } from "@opencode-ai/sdk/v2"
 
+export type FileNode = {
+  name: string
+  path: string
+  absolute: string
+  type: "file" | "directory"
+  ignored?: boolean
+}
+
 export type FileSelection = {
   startLine: number
   startChar: number

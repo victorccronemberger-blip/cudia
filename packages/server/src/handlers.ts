@@ -14,22 +14,32 @@ import { PtyHandler } from "./handlers/pty"
 import { QuestionHandler } from "./handlers/question"
 import { ReferenceHandler } from "./handlers/reference"
 import { LocationHandler } from "./handlers/location"
+import { LocationPathsHandler } from "./handlers/location-paths"
+import { ProjectHandler } from "./handlers/project"
 import { IntegrationHandler } from "./handlers/integration"
 import { CredentialHandler } from "./handlers/credential"
 import { ProjectCopyHandler } from "./handlers/project-copy"
+import { MCPHandler } from "./handlers/mcp"
+import { LSPHandler } from "./handlers/lsp"
+import { VcsHandler } from "./handlers/vcs"
 
 export const handlers = Layer.mergeAll(
   HealthHandler,
   LocationHandler,
+  LocationPathsHandler,
+  ProjectHandler,
   AgentHandler,
   SessionHandler,
   MessageHandler,
   ModelHandler,
   ProviderHandler,
   IntegrationHandler,
+  MCPHandler,
+  LSPHandler,
   CredentialHandler,
   PermissionHandler,
   FileSystemHandler,
+  VcsHandler,
   CommandHandler,
   SkillHandler,
   EventHandler,

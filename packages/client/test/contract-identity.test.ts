@@ -55,4 +55,9 @@ test("shared DTO schemas construct and decode plain objects", () => {
   expect(Prompt.ast.annotations?.identifier).toBe("Prompt")
   expect(SessionMessage.AssistantText.ast.annotations?.identifier).toBe("Session.Message.Assistant.Text")
   expect(CoreSessionMessage.AssistantText).toBe(SessionMessage.AssistantText)
+  expect(Location.Paths.ast.annotations?.identifier).toBe("Location.Paths")
+  expect(Schema.decodeUnknownSync(Location.Paths)({ home: "/home/operator", defaultDirectory: "/workspace" })).toEqual({
+    home: "/home/operator",
+    defaultDirectory: "/workspace",
+  })
 })

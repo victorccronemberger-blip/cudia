@@ -2,7 +2,7 @@ export * as Policy from "./policy"
 
 import { makeLocationNode } from "./effect/app-node"
 import { Context, Effect as EffectRuntime, Layer, Schema } from "effect"
-import { Wildcard } from "./util/wildcard"
+import { ToolPolicy } from "./harness/tool-policy"
 import { Location } from "./location"
 
 export const Effect = Schema.Literals(["allow", "deny"]).annotate({ identifier: "Policy.Effect" })
@@ -33,12 +33,8 @@ const layer = Layer.effect(
         statements = input
       }),
       hasStatements: () => statements.length > 0,
-      evaluate: EffectRuntime.fn("Policy.evaluate")(function* (action, resource, fallback) {
-        return (
-          statements.findLast(
-            (statement) => Wildcard.match(action, statement.action) && Wildcard.match(resource, statement.resource),
-          )?.effect ?? fallback
-        )
+      evaluate: EffectRuntime.fn("Policy.evaluate")(function* (action, resource, _fallback) {
+        return ToolPolicy.evaluate(action, resource).effect
       }),
     })
   }),

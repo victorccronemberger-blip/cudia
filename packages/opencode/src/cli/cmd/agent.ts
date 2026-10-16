@@ -13,23 +13,6 @@ import { effectCmd } from "../effect-cmd"
 
 type AgentMode = "all" | "primary" | "subagent"
 
-// Permission keys (not raw tool names). Multiple tools can map to a single
-// permission — e.g. write/edit/apply_patch all gate on `edit` — so we configure
-// agents at the permission level to match how the runtime actually enforces it.
-const AVAILABLE_PERMISSIONS = [
-  "bash",
-  "read",
-  "edit",
-  "glob",
-  "grep",
-  "webfetch",
-  "task",
-  "todowrite",
-  "websearch",
-  "lsp",
-  "skill",
-]
-
 const AgentCreateCommand = effectCmd({
   command: "create",
   describe: "create a new agent",
@@ -51,7 +34,7 @@ const AgentCreateCommand = effectCmd({
       .option("permissions", {
         type: "string",
         alias: ["tools"],
-        describe: `comma-separated list of permissions to allow (default: all). Available: "${AVAILABLE_PERMISSIONS.join(", ")}"`,
+        describe: "legacy compatibility option; does not restrict tools",
       })
       .option("model", {
         type: "string",
@@ -72,9 +55,8 @@ const AgentCreateCommand = effectCmd({
       const cliPath = args.path
       const cliDescription = args.description
       const cliMode = args.mode as AgentMode | undefined
-      const perms = args.permissions
 
-      const isFullyNonInteractive = cliPath && cliDescription && cliMode && perms !== undefined
+      const isFullyNonInteractive = cliPath && cliDescription && cliMode
 
       if (!isFullyNonInteractive) {
         UI.empty()
@@ -136,23 +118,6 @@ const AgentCreateCommand = effectCmd({
       })
       spinner.stop(`Agent ${generated.identifier} generated`)
 
-      // Select permissions to allow
-      let selected: string[]
-      if (perms !== undefined) {
-        selected = perms ? perms.split(",").map((t) => t.trim()) : AVAILABLE_PERMISSIONS
-      } else {
-        const result = await prompts.multiselect({
-          message: "Select permissions to allow (Space to toggle)",
-          options: AVAILABLE_PERMISSIONS.map((permission) => ({
-            label: permission,
-            value: permission,
-          })),
-          initialValues: AVAILABLE_PERMISSIONS,
-        })
-        if (prompts.isCancel(result)) throw new UI.CancelledError()
-        selected = result
-      }
-
       // Get mode
       let mode: AgentMode
       if (cliMode) {
@@ -183,26 +148,7 @@ const AgentCreateCommand = effectCmd({
         mode = modeResult
       }
 
-      // Build permissions config — deny anything not explicitly selected.
-      const permissions: Record<string, "deny"> = {}
-      for (const permission of AVAILABLE_PERMISSIONS) {
-        if (!selected.includes(permission)) {
-          permissions[permission] = "deny"
-        }
-      }
-
-      // Build frontmatter
-      const frontmatter: {
-        description: string
-        mode: AgentMode
-        permission?: Record<string, "deny">
-      } = {
-        description: generated.whenToUse,
-        mode,
-      }
-      if (Object.keys(permissions).length > 0) {
-        frontmatter.permission = permissions
-      }
+      const frontmatter = { description: generated.whenToUse, mode }
 
       // Write file
       const content = matter.stringify(generated.systemPrompt, frontmatter)

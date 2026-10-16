@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV2 } from "@opencode-ai/core/permission"
+import { AgentV2 } from "@opencode-ai/core/agent"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SkillV2 } from "@opencode-ai/core/skill"
@@ -39,12 +40,13 @@ describe("SkillTool", () => {
             location: AbsolutePath.make(location),
             content: "# Effect\n\nGuidance",
           }
-          let current = [info]
+          let current = [info, { ...info, name: "denied", description: "Use Effect secretly", content: "Secret body" }]
           const assertions: PermissionV2.AssertInput[] = []
           let deny = false
           const permission = Layer.succeed(
             PermissionV2.Service,
             PermissionV2.Service.of({
+              check: () => Effect.die("unused"),
               assert: (input) =>
                 Effect.sync(() => assertions.push(input)).pipe(
                   Effect.andThen(deny ? Effect.fail(new PermissionV2.BlockedError({ rules: [] })) : Effect.void),
@@ -69,6 +71,18 @@ describe("SkillTool", () => {
             LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, SkillTool.node]),
             [
               [PermissionV2.node, permission],
+              [
+                AgentV2.node,
+                Layer.mock(AgentV2.Service, {
+                  get: () =>
+                    Effect.succeed(
+                      AgentV2.Info.make({
+                        ...AgentV2.Info.empty(toolIdentity.agent),
+                        permissions: [{ action: "skill", resource: "denied", effect: "deny" }],
+                      }),
+                    ),
+                }),
+              ],
               [SkillV2.node, skills],
               [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
             ],
@@ -80,6 +94,35 @@ describe("SkillTool", () => {
               name: "skill",
               description: SkillTool.description,
             })
+            expect(
+              yield* executeTool(registry, {
+                sessionID,
+                ...toolIdentity,
+                call: { type: "tool-call", id: "call-skill-search", name: "skill", input: { query: "Effect" } },
+              }),
+            ).toEqual({
+              type: "text",
+              value: JSON.stringify({
+                matches: [
+                  { name: "effect", description: "Use Effect" },
+                  { name: "denied", description: "Use Effect secretly" },
+                ],
+                total: 2,
+              }),
+            })
+            expect(assertions).toHaveLength(0)
+            expect(
+              yield* executeTool(registry, {
+                sessionID,
+                ...toolIdentity,
+                call: {
+                  type: "tool-call",
+                  id: "call-skill-ambiguous",
+                  name: "skill",
+                  input: { name: "effect", query: "effect" },
+                },
+              }),
+            ).toEqual({ type: "error", value: "Use name to load, or query with pagination to search, not both." })
             expect(
               yield* executeTool(registry, {
                 sessionID,

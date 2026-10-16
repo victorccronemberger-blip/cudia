@@ -1,0 +1,1 @@
+Read pages from a completed tool result already recorded in this session. Start with offset 0 using the exact messageID and partID from conversation history. Continue with nextOffset and the outputHash returned by the first page; continuation fails if the recorded output changes. This reads stored output only and never reruns the original tool.

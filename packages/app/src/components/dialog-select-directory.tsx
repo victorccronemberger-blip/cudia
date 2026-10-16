@@ -8,8 +8,16 @@ import { createMemo, createResource, createSignal } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { useGlobal } from "@/context/global"
-import { cleanPickerInput, createDirectorySearch, displayPickerPath } from "./directory-picker-domain"
+import {
+  cleanPickerInput,
+  createDirectorySearch,
+  displayPickerPath,
+  mergeDirectoryPickerProjects,
+  skipDirectoryPickerClientFilter,
+} from "./directory-picker-domain"
 import type { Path } from "@opencode-ai/sdk/v2/client"
+import { formatServerError } from "@/utils/server-errors"
+import { showToast } from "@/utils/toast"
 
 interface DialogSelectDirectoryProps {
   title?: string
@@ -17,6 +25,8 @@ interface DialogSelectDirectoryProps {
   onSelect: (result: string | string[] | null) => void
   server: ServerConnection.Any
 }
+
+const RECENT_PROJECT_LIMIT = 5
 
 type Row = {
   absolute: string
@@ -79,10 +89,16 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
     sdk,
     home,
     base: start,
+    onError: (error) =>
+      showToast({
+        variant: "error",
+        title: language.t("common.requestFailed"),
+        description: formatServerError(error, language.t),
+      }),
   })
 
   const recentProjects = createMemo(() => {
-    const projects = serverCtx.projects.list()
+    const projects = mergeDirectoryPickerProjects(serverCtx.projects.list(), sync.data.project)
     const byProject = new Map<string, number>()
 
     for (const project of projects) {
@@ -102,7 +118,6 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
     return projects
       .map((project, index) => ({ project, at: byProject.get(project.worktree) ?? 0, index }))
       .sort((a, b) => b.at - a.at || a.index - b.index)
-      .slice(0, 5)
       .map(({ project }) => {
         const row = toRow(project.worktree, home(), "recent")
         const name = project.name || getFilename(project.worktree)
@@ -116,7 +131,10 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
   const items = async (value: string) => {
     const results = await directories(value)
     const directoryRows = results.map((absolute) => toRow(absolute, home(), "folders"))
-    return uniqueRows([...recentProjects(), ...directoryRows])
+    // Cap the idle list only. Once a query narrows the results, every project stays searchable.
+    const recent = recentProjects()
+    const visible = value ? recent : recent.slice(0, RECENT_PROJECT_LIMIT)
+    return uniqueRows([...visible, ...directoryRows])
   }
 
   function resolve(absolute: string) {
@@ -134,6 +152,7 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
         items={items}
         key={(x) => x.absolute}
         filterKeys={["search"]}
+        skipFilter={skipDirectoryPickerClientFilter}
         groupBy={(item) => item.group}
         sortGroupsBy={(a, b) => {
           if (a.category === b.category) return 0

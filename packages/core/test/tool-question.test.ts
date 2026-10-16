@@ -20,6 +20,7 @@ const capturedInput = () => captured
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
+    check: () => Effect.die("unused"),
     assert: (input) =>
       Effect.sync(() => assertions.push(input)).pipe(
         Effect.andThen(deny ? Effect.fail(new PermissionV2.BlockedError({ rules: [] })) : Effect.void),
@@ -52,13 +53,17 @@ const it = testEffect(
 )
 
 describe("QuestionTool", () => {
-  it.effect("omits a denied built-in question and terminally settles a stale call", () =>
+  it.effect("keeps question visible while preserving an injected service failure", () =>
     Effect.gen(function* () {
       captured = undefined
       deny = true
       const registry = yield* ToolRegistry.Service
 
-      expect(yield* toolDefinitions(registry, [{ action: "question", resource: "*", effect: "deny" }])).toEqual([])
+      expect(
+        (yield* toolDefinitions(registry, [{ action: "question", resource: "*", effect: "deny" }])).map(
+          (tool) => tool.name,
+        ),
+      ).toEqual(["question"])
       expect(
         yield* settleTool(registry, {
           sessionID,

@@ -41,6 +41,8 @@ import type {
   MessagesListOutput,
   ModelsListInput,
   ModelsListOutput,
+  ModelsDefaultInput,
+  ModelsDefaultOutput,
   ProvidersListInput,
   ProvidersListOutput,
   ProvidersGetInput,
@@ -59,6 +61,14 @@ import type {
   IntegrationsAttemptCompleteOutput,
   IntegrationsAttemptCancelInput,
   IntegrationsAttemptCancelOutput,
+  McpListInput,
+  McpListOutput,
+  McpConnectInput,
+  McpConnectOutput,
+  McpDisconnectInput,
+  McpDisconnectOutput,
+  LspStatusInput,
+  LspStatusOutput,
   CredentialsUpdateInput,
   CredentialsUpdateOutput,
   CredentialsRemoveInput,
@@ -81,6 +91,12 @@ import type {
   FilesListOutput,
   FilesFindInput,
   FilesFindOutput,
+  VcsGetInput,
+  VcsGetOutput,
+  VcsStatusInput,
+  VcsStatusOutput,
+  VcsDiffInput,
+  VcsDiffOutput,
   CommandsListInput,
   CommandsListOutput,
   SkillsListInput,
@@ -112,6 +128,8 @@ import type {
   ProjectCopiesRemoveOutput,
   ProjectCopiesRefreshInput,
   ProjectCopiesRefreshOutput,
+  ProjectsListOutput,
+  LocationPathsGetOutput,
 } from "./types"
 import { ClientError } from "./client-error"
 
@@ -520,6 +538,18 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ),
+      default: (input?: ModelsDefaultInput, requestOptions?: RequestOptions) =>
+        request<ModelsDefaultOutput>(
+          {
+            method: "GET",
+            path: `/api/model/default`,
+            query: { location: input?.["location"] },
+            successStatus: 200,
+            declaredStatuses: [503, 401, 400],
+            empty: false,
+          },
+          requestOptions,
+        ),
     },
     providers: {
       list: (input?: ProvidersListInput, requestOptions?: RequestOptions) =>
@@ -632,6 +662,58 @@ export function make(options: ClientOptions) {
             successStatus: 204,
             declaredStatuses: [401, 400],
             empty: true,
+          },
+          requestOptions,
+        ),
+    },
+    mcp: {
+      list: (input?: McpListInput, requestOptions?: RequestOptions) =>
+        request<McpListOutput>(
+          {
+            method: "GET",
+            path: `/api/mcp`,
+            query: { location: input?.["location"] },
+            successStatus: 200,
+            declaredStatuses: [401, 400],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      connect: (input: McpConnectInput, requestOptions?: RequestOptions) =>
+        request<McpConnectOutput>(
+          {
+            method: "POST",
+            path: `/api/mcp/${encodeURIComponent(input.server)}/connect`,
+            query: { location: input["location"] },
+            successStatus: 204,
+            declaredStatuses: [400, 404, 401],
+            empty: true,
+          },
+          requestOptions,
+        ),
+      disconnect: (input: McpDisconnectInput, requestOptions?: RequestOptions) =>
+        request<McpDisconnectOutput>(
+          {
+            method: "POST",
+            path: `/api/mcp/${encodeURIComponent(input.server)}/disconnect`,
+            query: { location: input["location"] },
+            successStatus: 204,
+            declaredStatuses: [400, 404, 401],
+            empty: true,
+          },
+          requestOptions,
+        ),
+    },
+    lsp: {
+      status: (input?: LspStatusInput, requestOptions?: RequestOptions) =>
+        request<LspStatusOutput>(
+          {
+            method: "GET",
+            path: `/api/lsp`,
+            query: { location: input?.["location"] },
+            successStatus: 200,
+            declaredStatuses: [401, 400],
+            empty: false,
           },
           requestOptions,
         ),
@@ -775,6 +857,44 @@ export function make(options: ClientOptions) {
             query: { location: input["location"], query: input["query"], type: input["type"], limit: input["limit"] },
             successStatus: 200,
             declaredStatuses: [401, 400],
+            empty: false,
+          },
+          requestOptions,
+        ),
+    },
+    vcs: {
+      get: (input?: VcsGetInput, requestOptions?: RequestOptions) =>
+        request<VcsGetOutput>(
+          {
+            method: "GET",
+            path: `/api/vcs`,
+            query: { location: input?.["location"] },
+            successStatus: 200,
+            declaredStatuses: [500, 413, 400, 503, 401],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      status: (input?: VcsStatusInput, requestOptions?: RequestOptions) =>
+        request<VcsStatusOutput>(
+          {
+            method: "GET",
+            path: `/api/vcs/status`,
+            query: { location: input?.["location"] },
+            successStatus: 200,
+            declaredStatuses: [500, 413, 400, 503, 401],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      diff: (input: VcsDiffInput, requestOptions?: RequestOptions) =>
+        request<VcsDiffOutput>(
+          {
+            method: "GET",
+            path: `/api/vcs/diff`,
+            query: { location: input["location"], mode: input["mode"], context: input["context"] },
+            successStatus: 200,
+            declaredStatuses: [500, 413, 400, 503, 401],
             empty: false,
           },
           requestOptions,
@@ -983,6 +1103,26 @@ export function make(options: ClientOptions) {
             successStatus: 204,
             declaredStatuses: [400, 401],
             empty: true,
+          },
+          requestOptions,
+        ),
+    },
+    projects: {
+      list: (requestOptions?: RequestOptions) =>
+        request<ProjectsListOutput>(
+          { method: "GET", path: `/api/project`, successStatus: 200, declaredStatuses: [401, 400], empty: false },
+          requestOptions,
+        ),
+    },
+    locationPaths: {
+      get: (requestOptions?: RequestOptions) =>
+        request<LocationPathsGetOutput>(
+          {
+            method: "GET",
+            path: `/api/location/paths`,
+            successStatus: 200,
+            declaredStatuses: [401, 400],
+            empty: false,
           },
           requestOptions,
         ),

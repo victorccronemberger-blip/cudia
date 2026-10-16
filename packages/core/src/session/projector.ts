@@ -1,6 +1,7 @@
 export * as SessionProjector from "./projector"
 
 import { and, desc, eq, gt, or, sql } from "drizzle-orm"
+import { createHash } from "node:crypto"
 import { DateTime, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
@@ -12,7 +13,6 @@ import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
-import { SessionContextEpoch } from "./context-epoch"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
 
@@ -253,7 +253,6 @@ const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
-        yield* SessionContextEpoch.reset(db, event.data.sessionID)
       }),
     )
     yield* events.project(SessionV1.Event.Deleted, (event) =>
@@ -326,6 +325,48 @@ const layer = Layer.effectDiscard(
         const next = usage(event.data.part)
         if (previous) yield* applyUsage(db, row.session_id, previous, -1)
         if (next) yield* applyUsage(db, sessionID, next)
+      }),
+    )
+    yield* events.project(SessionV1.Event.ToolOutputCompacted, (event) =>
+      Effect.gen(function* () {
+        const row = yield* db
+          .select()
+          .from(PartTable)
+          .where(
+            and(
+              eq(PartTable.id, event.data.partID),
+              eq(PartTable.message_id, event.data.messageID),
+              eq(PartTable.session_id, event.data.sessionID),
+            ),
+          )
+          .get()
+          .pipe(Effect.orDie)
+        if (!row) return
+        const part = Schema.decodeUnknownSync(SessionV1.Part)({
+          ...row.data,
+          id: row.id,
+          sessionID: row.session_id,
+          messageID: row.message_id,
+        })
+        if (part.type !== "tool" || part.tool !== event.data.tool) return
+        if (part.state.status !== "completed" || part.state.time.compacted !== undefined) return
+        if (createHash("sha256").update(JSON.stringify(part.state.output)).digest("hex") !== event.data.outputHash)
+          return
+        yield* db
+          .update(PartTable)
+          .set({
+            data: sql`json_set(${PartTable.data}, '$.state.time.compacted', ${event.data.time})`,
+          })
+          .where(
+            and(
+              eq(PartTable.id, event.data.partID),
+              eq(PartTable.message_id, event.data.messageID),
+              eq(PartTable.session_id, event.data.sessionID),
+              eq(PartTable.data, row.data),
+            ),
+          )
+          .run()
+          .pipe(Effect.orDie)
       }),
     )
     yield* events.project(SessionEvent.AgentSwitched, (event) =>
@@ -449,7 +490,6 @@ const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
-        yield* SessionContextEpoch.reset(db, event.data.sessionID)
       }),
     )
   }),

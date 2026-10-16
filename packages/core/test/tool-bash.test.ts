@@ -47,6 +47,7 @@ let afterPermission = (_input: PermissionV2.AssertInput): Effect.Effect<void> =>
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
+    check: () => Effect.die("unused"),
     assert: (input) =>
       Effect.sync(() => assertions.push(input)).pipe(
         Effect.andThen(Effect.suspend(() => afterPermission(input))),
@@ -147,7 +148,11 @@ describe("BashTool", () => {
             expect(definitions[0]?.outputSchema).not.toHaveProperty("properties.output")
             expect(definitions[0]?.outputSchema).not.toHaveProperty("properties.command")
             expect(definitions[0]?.outputSchema).not.toHaveProperty("properties.cwd")
-            expect(yield* toolDefinitions(registry, [{ action: "bash", resource: "*", effect: "deny" }])).toEqual([])
+            expect(
+              (yield* toolDefinitions(registry, [{ action: "bash", resource: "*", effect: "deny" }])).map(
+                (tool) => tool.name,
+              ),
+            ).toEqual(["bash"])
             expect(yield* settleTool(registry, call({ command: "pwd" }))).toEqual({
               result: {
                 type: "content",

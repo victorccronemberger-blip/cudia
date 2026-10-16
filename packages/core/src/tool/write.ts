@@ -1,8 +1,7 @@
 /**
- * Model-facing V2 file-write leaf. Relative paths resolve within the active
- * Location. Absolute paths inside that Location are accepted, while explicit
- * absolute external paths retain mutation capability through a separate
- * external_directory approval before edit approval.
+ * Model-facing V2 file-write leaf. Paths resolve against the active Location;
+ * parent-relative, absolute, and symlink-resolved paths can target elsewhere.
+ * Resolved targets use canonical paths.
  */
 export * as WriteTool from "./write"
 
@@ -11,6 +10,7 @@ import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { FileMutation } from "../file-mutation"
 import { LocationMutation } from "../location-mutation"
+import { LSPMutation } from "../lsp/mutation"
 import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -22,7 +22,7 @@ export const name = "write"
 export const Input = Schema.Struct({
   path: Schema.String.annotate({
     description:
-      "File path to write. Relative paths resolve within the active Location. Absolute paths inside that Location are accepted; external absolute paths require external_directory approval.",
+      "File path to write. Paths resolve against the active Location; parent-relative, absolute, and symlink-resolved paths can target elsewhere. Resolved targets use canonical paths.",
   }),
   content: Schema.String.annotate({ description: "Content to write to the file" }),
 })
@@ -32,17 +32,17 @@ export const Output = Schema.Struct({
   target: Schema.String,
   resource: Schema.String,
   existed: Schema.Boolean,
+  lsp: LSPMutation.Result.pipe(Schema.optional),
 })
 export type Output = typeof Output.Type
 
 export const toModelOutput = (output: Output) =>
-  `${output.existed ? "Wrote" : "Created"} file successfully: ${output.resource}`
+  `${output.existed ? "Wrote" : "Created"} file successfully: ${output.resource}${LSPMutation.format(output.lsp)}`
 
 /** Deferred V2 write UX integrations remain visible at the model-facing seam. */
 // TODO: Add formatter integration after V2 formatter runtime exists.
 // TODO: Publish watcher/file-edit events after V2 watcher integration exists.
 // TODO: Add snapshots / undo after design exists.
-// TODO: Add LSP notification and diagnostics after V2 LSP runtime exists.
 
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -50,13 +50,14 @@ const layer = Layer.effectDiscard(
     const mutation = yield* LocationMutation.Service
     const files = yield* FileMutation.Service
     const permission = yield* PermissionV2.Service
+    const lsp = yield* LSPMutation.Service
 
     yield* tools
       .register({
         [name]: Tool.withPermission(
           Tool.make({
             description:
-              "Write content to one file. Relative paths resolve within the active Location. Absolute paths inside the Location are accepted. Explicit external absolute paths require external_directory approval before edit approval.",
+              "Write content to one file. Paths resolve against the active Location; parent-relative, absolute, and symlink-resolved paths can target elsewhere. Resolved targets use canonical paths.",
             input: Input,
             output: Output,
             toModelOutput: ({ output }) => [{ type: "text", text: toModelOutput(output) }],
@@ -84,7 +85,9 @@ const layer = Layer.effectDiscard(
                   agent: context.agent,
                   source,
                 })
-                return yield* files.writeTextPreservingBom({ target, content: input.content })
+                const result = yield* files.writeTextPreservingBom({ target, content: input.content })
+                const report = yield* lsp.after([{ filePath: result.target, kind: "changed" }])
+                return { ...result, ...(report ? { lsp: report } : {}) }
               }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to write ${input.path}` }))),
           }),
           "edit",
@@ -97,5 +100,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/write",
   layer,
-  deps: [ToolRegistry.node, LocationMutation.node, FileMutation.node, PermissionV2.node],
+  deps: [ToolRegistry.node, LocationMutation.node, FileMutation.node, PermissionV2.node, LSPMutation.node],
 })

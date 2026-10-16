@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { cmd } from "./cmd"
-import { effectCmd } from "../effect-cmd"
+import { effectCmd, fail } from "../effect-cmd"
 
 export { extractResponseText, formatPromptTooLargeError, parseGitHubRemote } from "./github.shared"
 
@@ -8,10 +8,9 @@ export const GithubInstallCommand = effectCmd({
   command: "install",
   describe: "install the GitHub agent",
   handler: () =>
-    Effect.gen(function* () {
-      const { githubInstall } = yield* Effect.promise(() => import("./github.handler"))
-      return yield* githubInstall()
-    }),
+    fail(
+      "GitHub App installation is not available in CUDIA. Configure a GitHub Actions workflow for your chosen provider instead.",
+    ),
 })
 
 export const GithubRunCommand = effectCmd({

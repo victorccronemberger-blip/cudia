@@ -31,7 +31,9 @@ import { VcsEvent } from "./vcs-event"
 import { WorkspaceEvent } from "./workspace-event"
 import { WorktreeEvent } from "./worktree-event"
 
-const sessionV1DurableDefinitions = SessionV1.Event.Definitions.filter((definition) => definition.durable !== undefined)
+const sessionV1DurableDefinitions = SessionV1.Event.Definitions.filter(
+  (definition) => definition.durable !== undefined && definition !== SessionV1.Event.ToolOutputCompacted,
+)
 const sessionV1LiveDefinitions = SessionV1.Event.Definitions.filter((definition) => definition.durable === undefined)
 
 const coreDefinitions = Event.inventory(...sessionV1DurableDefinitions, ...SessionEvent.Definitions)
@@ -62,6 +64,7 @@ export const ServerDefinitions = Event.inventory(
 
 export const Definitions = Event.inventory(
   ...foundationDefinitions,
+  SessionV1.Event.ToolOutputCompacted,
   ...sessionV1LiveDefinitions,
   ...InstallationEvent.Definitions,
   ...featureDefinitions,

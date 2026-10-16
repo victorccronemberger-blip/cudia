@@ -1,6 +1,6 @@
 export * as SessionStore from "./store"
 
-import { eq } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
@@ -21,6 +21,12 @@ export interface Interface {
   readonly message: (
     messageID: SessionMessage.ID,
   ) => Effect.Effect<{ readonly sessionID: SessionSchema.ID; readonly message: SessionMessage.Message } | undefined>
+  /** Includes pre-compaction history; two rows suffice to reject ambiguous call IDs. */
+  readonly toolMessages: (
+    sessionID: SessionSchema.ID,
+    callID: string,
+  ) => Effect.Effect<SessionMessage.Message[], MessageDecodeError>
+  readonly hasRecoverableToolResult: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionStore") {}
@@ -41,6 +47,55 @@ const layer = Layer.effect(
       }),
       runnerContext: Effect.fn("SessionStore.runnerContext")(function* (sessionID, baselineSeq) {
         return yield* SessionHistory.loadForRunner(db, sessionID, baselineSeq)
+      }),
+      toolMessages: Effect.fn("SessionStore.toolMessages")(function* (sessionID, callID) {
+        const rows = yield* db
+          .select()
+          .from(SessionMessageTable)
+          .where(
+            and(
+              eq(SessionMessageTable.session_id, sessionID),
+              eq(SessionMessageTable.type, "assistant"),
+              sql`exists (select 1 from json_each(${SessionMessageTable.data}, '$.content') as part
+                where json_extract(part.value, '$.type') = 'tool'
+                  and json_extract(part.value, '$.id') = ${callID})`,
+            ),
+          )
+          .limit(2)
+          .all()
+          .pipe(Effect.orDie)
+        return yield* Effect.forEach(rows, (row) =>
+          decodeMessage({ ...row.data, id: row.id, type: row.type }).pipe(
+            Effect.mapError(() => new MessageDecodeError({ sessionID, messageID: row.id })),
+          ),
+        )
+      }),
+      hasRecoverableToolResult: Effect.fn("SessionStore.hasRecoverableToolResult")(function* (sessionID) {
+        const row = yield* db
+          .select({ id: SessionMessageTable.id })
+          .from(SessionMessageTable)
+          .where(
+            and(
+              eq(SessionMessageTable.session_id, sessionID),
+              eq(SessionMessageTable.type, "assistant"),
+              sql`exists (select 1 from json_each(${SessionMessageTable.data}, '$.content') as part
+                where json_extract(part.value, '$.type') = 'tool'
+                  and json_extract(part.value, '$.state.status') = 'completed'
+                  and json_extract(part.value, '$.time.pruned') is null
+                  and (
+                    json_array_length(json_extract(part.value, '$.state.outputPaths')) > 0
+                    or exists (select 1 from json_each(json_extract(part.value, '$.state.structured')))
+                    or exists (select 1 from json_each(json_extract(part.value, '$.state.content')) as content
+                      where json_extract(content.value, '$.type') = 'file'
+                        or (json_extract(content.value, '$.type') = 'text'
+                          and length(cast(json_extract(content.value, '$.text') as blob)) > 0))
+                  ))`,
+            ),
+          )
+          .limit(1)
+          .get()
+          .pipe(Effect.orDie)
+        return row !== undefined
       }),
       message: Effect.fn("SessionStore.message")(function* (messageID) {
         const row = yield* db

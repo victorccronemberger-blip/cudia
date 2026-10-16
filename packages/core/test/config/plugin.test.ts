@@ -17,6 +17,54 @@ const it = testEffect(PluginTestLayer)
 const decode = Schema.decodeUnknownSync(Config.Info)
 
 describe("ConfigExternalPlugin", () => {
+  it.live("skips immutable documents and plugin directories while loading ordinary user plugins", () =>
+    Effect.gen(function* () {
+      const plugins = yield* PluginV2.Service
+      const agents = yield* AgentV2.Service
+      const fs = yield* FSUtil.Service
+      const location = yield* Location.Service
+      const npm = yield* Npm.Service
+      const host = yield* PluginHost.make(plugins)
+      const installed: string[] = []
+      yield* ConfigExternalPlugin.Plugin.effect(host).pipe(
+        Effect.provideService(FSUtil.Service, fs),
+        Effect.provideService(Location.Service, location),
+        Effect.provideService(Npm.Service, {
+          ...npm,
+          add: (name) =>
+            Effect.sync(() => {
+              installed.push(name)
+              return { directory: "", entrypoint: undefined }
+            }),
+        }),
+        Effect.provideService(
+          Config.Service,
+          Config.Service.of({
+            entries: () =>
+              Effect.succeed([
+                new Config.Document({ type: "document", readOnly: true, info: decode({ plugins: ["never-install"] }) }),
+                new Config.Directory({
+                  type: "directory",
+                  readOnly: true,
+                  path: AbsolutePath.make(path.join(import.meta.dir, "fixtures")),
+                }),
+                new Config.Document({
+                  type: "document",
+                  path: path.join(import.meta.dir, "opencode.json"),
+                  info: decode({ plugins: ["../plugin/fixtures/config-effect-plugin.ts"] }),
+                }),
+              ]),
+          }),
+        ),
+      )
+      // This user plugin is processed after both immutable entries, so its agent
+      // provides a readiness signal for the entire ordered discovery pass.
+      expect(yield* waitForAgent(agents, "effect-configured")).toBeDefined()
+      expect(yield* agents.get(AgentV2.ID.make("directory"))).toBeUndefined()
+      expect(installed).toEqual([])
+    }),
+  )
+
   it.live("resolves and loads a configured Promise plugin with options", () =>
     Effect.gen(function* () {
       const plugins = yield* PluginV2.Service

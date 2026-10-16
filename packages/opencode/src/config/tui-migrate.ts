@@ -6,7 +6,8 @@ import { TuiConfig } from "@opencode-ai/tui/config"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
-import * as ConfigPaths from "@/config/paths"
+import { ConfigPaths } from "@/config/paths"
+import { ConfigDistribution } from "@opencode-ai/core/config/distribution"
 
 const TUI_SCHEMA_URL = "https://opencode.ai/tui.json"
 
@@ -27,8 +28,10 @@ interface MigrateInput {
  * skips only locations where a tui.json already exists.
  */
 export async function migrateTuiConfig(input: MigrateInput) {
+  const distribution = await ConfigDistribution.resolve()
   const opencode = await opencodeFiles(input)
   for (const file of opencode) {
+    if (distribution && (await distribution.contains(file))) continue
     const source = await Filesystem.readText(file).catch(() => undefined)
     if (!source) continue
     const errors: JsoncParseError[] = []

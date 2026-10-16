@@ -18,65 +18,17 @@ describe("Permission.evaluate for permission.task", () => {
       action,
     }))
 
-  test("returns ask when no match (default)", () => {
-    expect(Permission.evaluate("task", "code-reviewer", []).action).toBe("ask")
-  })
-
-  test("returns deny for explicit deny", () => {
-    const ruleset = createRuleset({ "code-reviewer": "deny" })
-    expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("deny")
-  })
-
-  test("returns allow for explicit allow", () => {
-    const ruleset = createRuleset({ "code-reviewer": "allow" })
-    expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("allow")
-  })
-
-  test("returns ask for explicit ask", () => {
-    const ruleset = createRuleset({ "code-reviewer": "ask" })
-    expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("ask")
-  })
-
-  test("matches wildcard patterns with deny", () => {
-    const ruleset = createRuleset({ "orchestrator-*": "deny" })
-    expect(Permission.evaluate("task", "orchestrator-fast", ruleset).action).toBe("deny")
-    expect(Permission.evaluate("task", "orchestrator-slow", ruleset).action).toBe("deny")
-    expect(Permission.evaluate("task", "general", ruleset).action).toBe("ask")
-  })
-
-  test("matches wildcard patterns with allow", () => {
-    const ruleset = createRuleset({ "orchestrator-*": "allow" })
-    expect(Permission.evaluate("task", "orchestrator-fast", ruleset).action).toBe("allow")
-    expect(Permission.evaluate("task", "orchestrator-slow", ruleset).action).toBe("allow")
-  })
-
-  test("matches wildcard patterns with ask", () => {
-    const ruleset = createRuleset({ "orchestrator-*": "ask" })
-    expect(Permission.evaluate("task", "orchestrator-fast", ruleset).action).toBe("ask")
-    const globalRuleset = createRuleset({ "*": "ask" })
-    expect(Permission.evaluate("task", "code-reviewer", globalRuleset).action).toBe("ask")
-  })
-
-  test("later rules take precedence (last match wins)", () => {
-    const ruleset = createRuleset({
-      "orchestrator-*": "deny",
-      "orchestrator-fast": "allow",
-    })
-    expect(Permission.evaluate("task", "orchestrator-fast", ruleset).action).toBe("allow")
-    expect(Permission.evaluate("task", "orchestrator-slow", ruleset).action).toBe("deny")
-  })
-
-  test("matches global wildcard", () => {
-    expect(Permission.evaluate("task", "any-agent", createRuleset({ "*": "allow" })).action).toBe("allow")
-    expect(Permission.evaluate("task", "any-agent", createRuleset({ "*": "deny" })).action).toBe("deny")
-    expect(Permission.evaluate("task", "any-agent", createRuleset({ "*": "ask" })).action).toBe("ask")
+  test("legacy allow, ask, and deny records do not restrict task evaluation", () => {
+    for (const action of ["allow", "ask", "deny"] as const) {
+      const ruleset = createRuleset({ "orchestrator-*": action, "*": action })
+      expect(Permission.evaluate("task", "orchestrator-fast", ruleset).action).toBe("allow")
+      expect(Permission.evaluate("task", "future-agent", ruleset).action).toBe("allow")
+    }
+    expect(Permission.evaluate("task", "future-agent", []).action).toBe("allow")
   })
 })
 
 describe("Permission.disabled for task tool", () => {
-  // Note: The `disabled` function checks if a TOOL should be completely removed from the tool list.
-  // It only disables a tool when there's a rule with `pattern: "*"` and `action: "deny"`.
-  // It does NOT evaluate complex subagent patterns - those are handled at runtime by `evaluate`.
   const createRuleset = (rules: Record<string, "allow" | "deny" | "ask">): PermissionV1.Ruleset =>
     Object.entries(rules).map(([pattern, action]) => ({
       permission: "task",
@@ -84,62 +36,12 @@ describe("Permission.disabled for task tool", () => {
       action,
     }))
 
-  test("task tool is disabled when global deny pattern exists (even with specific allows)", () => {
-    // When "*": "deny" exists, the task tool is disabled because the disabled() function
-    // only checks for wildcard deny patterns - it doesn't consider that specific subagents might be allowed
-    const ruleset = createRuleset({
-      "orchestrator-*": "allow",
-      "*": "deny",
-    })
-    const disabled = Permission.disabled(["task", "bash", "read"], ruleset)
-    // The task tool IS disabled because there's a pattern: "*" with action: "deny"
-    expect(disabled.has("task")).toBe(true)
-  })
-
-  test("task tool is disabled when global deny pattern exists (even with ask overrides)", () => {
-    const ruleset = createRuleset({
-      "orchestrator-*": "ask",
-      "*": "deny",
-    })
-    const disabled = Permission.disabled(["task"], ruleset)
-    // The task tool IS disabled because there's a pattern: "*" with action: "deny"
-    expect(disabled.has("task")).toBe(true)
-  })
-
-  test("task tool is disabled when global deny pattern exists", () => {
-    const ruleset = createRuleset({ "*": "deny" })
-    const disabled = Permission.disabled(["task"], ruleset)
-    expect(disabled.has("task")).toBe(true)
-  })
-
-  test("task tool is NOT disabled when only specific patterns are denied (no wildcard)", () => {
-    // The disabled() function only disables tools when pattern: "*" && action: "deny"
-    // Specific subagent denies don't disable the task tool - those are handled at runtime
-    const ruleset = createRuleset({
-      "orchestrator-*": "deny",
-      general: "deny",
-    })
-    const disabled = Permission.disabled(["task"], ruleset)
-    // The task tool is NOT disabled because no rule has pattern: "*" with action: "deny"
-    expect(disabled.has("task")).toBe(false)
-  })
-
-  test("task tool is enabled when no task rules exist (default ask)", () => {
-    const disabled = Permission.disabled(["task"], [])
-    expect(disabled.has("task")).toBe(false)
-  })
-
-  test("task tool is NOT disabled when last wildcard pattern is allow", () => {
-    // Last matching rule wins - if wildcard allow comes after wildcard deny, tool is enabled
-    const ruleset = createRuleset({
-      "*": "deny",
-      "orchestrator-coder": "allow",
-    })
-    const disabled = Permission.disabled(["task"], ruleset)
-    // The disabled() function uses findLast and checks if the last matching rule
-    // has pattern: "*" and action: "deny". In this case, the last rule matching
-    // "task" permission has pattern "orchestrator-coder", not "*", so not disabled
-    expect(disabled.has("task")).toBe(false)
+  test("legacy task records never remove task from the enabled catalog", () => {
+    for (const action of ["allow", "ask", "deny"] as const) {
+      const disabled = Permission.disabled(["task", "bash", "read"], createRuleset({ "*": action }))
+      expect(disabled).toEqual(new Set())
+    }
+    expect(Permission.disabled(["task"], [])).toEqual(new Set())
   })
 })
 
@@ -151,10 +53,14 @@ describe("permission.task with real config files", () => {
       Effect.gen(function* () {
         const config = yield* load
         const ruleset = Permission.fromConfig(config.permission ?? {})
-        // general and orchestrator-fast should be allowed, code-reviewer denied
+        // Parsing retains legacy records even though they no longer govern availability.
+        expect(ruleset.filter((rule) => rule.permission === "task")).toEqual([
+          { permission: "task", pattern: "*", action: "allow" },
+          { permission: "task", pattern: "code-reviewer", action: "deny" },
+        ])
         expect(Permission.evaluate("task", "general", ruleset).action).toBe("allow")
         expect(Permission.evaluate("task", "orchestrator-fast", ruleset).action).toBe("allow")
-        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("deny")
+        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("allow")
       }),
     {
       git: true,
@@ -175,10 +81,13 @@ describe("permission.task with real config files", () => {
       Effect.gen(function* () {
         const config = yield* load
         const ruleset = Permission.fromConfig(config.permission ?? {})
-        // general and code-reviewer should be ask, orchestrator-* denied
-        expect(Permission.evaluate("task", "general", ruleset).action).toBe("ask")
-        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("ask")
-        expect(Permission.evaluate("task", "orchestrator-fast", ruleset).action).toBe("deny")
+        expect(ruleset.filter((rule) => rule.permission === "task")).toEqual([
+          { permission: "task", pattern: "*", action: "ask" },
+          { permission: "task", pattern: "orchestrator-*", action: "deny" },
+        ])
+        expect(Permission.evaluate("task", "general", ruleset).action).toBe("allow")
+        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("allow")
+        expect(Permission.evaluate("task", "orchestrator-fast", ruleset).action).toBe("allow")
       }),
     {
       git: true,
@@ -194,15 +103,18 @@ describe("permission.task with real config files", () => {
   )
 
   it.instance(
-    "evaluate respects task permission from config",
+    "retains task permission records from config without restricting new agents",
     () =>
       Effect.gen(function* () {
         const config = yield* load
         const ruleset = Permission.fromConfig(config.permission ?? {})
+        expect(ruleset.filter((rule) => rule.permission === "task")).toEqual([
+          { permission: "task", pattern: "general", action: "allow" },
+          { permission: "task", pattern: "code-reviewer", action: "deny" },
+        ])
         expect(Permission.evaluate("task", "general", ruleset).action).toBe("allow")
-        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("deny")
-        // Unspecified agents default to "ask"
-        expect(Permission.evaluate("task", "unknown-agent", ruleset).action).toBe("ask")
+        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("allow")
+        expect(Permission.evaluate("task", "unknown-agent", ruleset).action).toBe("allow")
       }),
     {
       git: true,
@@ -224,20 +136,22 @@ describe("permission.task with real config files", () => {
         const config = yield* load
         const ruleset = Permission.fromConfig(config.permission ?? {})
 
-        // Verify task permissions
+        // Verify task permission records are retained while task availability remains unrestricted.
+        expect(ruleset.filter((rule) => rule.permission === "task")).toEqual([
+          { permission: "task", pattern: "*", action: "deny" },
+          { permission: "task", pattern: "general", action: "allow" },
+        ])
         expect(Permission.evaluate("task", "general", ruleset).action).toBe("allow")
-        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("deny")
+        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("allow")
 
         // Verify other tool permissions
         expect(Permission.evaluate("bash", "*", ruleset).action).toBe("allow")
-        expect(Permission.evaluate("edit", "*", ruleset).action).toBe("ask")
+        expect(Permission.evaluate("edit", "*", ruleset).action).toBe("allow")
 
         // Verify disabled tools
         const disabled = Permission.disabled(["bash", "edit", "task"], ruleset)
         expect(disabled.has("bash")).toBe(false)
         expect(disabled.has("edit")).toBe(false)
-        // task is NOT disabled because disabled() uses findLast, and the last rule
-        // matching "task" permission is {pattern: "general", action: "allow"}, not pattern: "*"
         expect(disabled.has("task")).toBe(false)
       }),
     {
@@ -256,21 +170,21 @@ describe("permission.task with real config files", () => {
   )
 
   it.instance(
-    "task tool disabled when global deny comes last in config",
+    "retains task record order when global deny comes last in config",
     () =>
       Effect.gen(function* () {
         const config = yield* load
         const ruleset = Permission.fromConfig(config.permission ?? {})
 
-        // Last matching rule wins - "*" deny is last, so all agents are denied
-        expect(Permission.evaluate("task", "general", ruleset).action).toBe("deny")
-        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("deny")
-        expect(Permission.evaluate("task", "unknown", ruleset).action).toBe("deny")
-
-        // Since "*": "deny" is the last rule, disabled() finds it with findLast
-        // and sees pattern: "*" with action: "deny", so task is disabled
-        const disabled = Permission.disabled(["task"], ruleset)
-        expect(disabled.has("task")).toBe(true)
+        expect(ruleset.filter((rule) => rule.permission === "task")).toEqual([
+          { permission: "task", pattern: "general", action: "allow" },
+          { permission: "task", pattern: "code-reviewer", action: "allow" },
+          { permission: "task", pattern: "*", action: "deny" },
+        ])
+        expect(Permission.evaluate("task", "general", ruleset).action).toBe("allow")
+        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("allow")
+        expect(Permission.evaluate("task", "unknown", ruleset).action).toBe("allow")
+        expect(Permission.disabled(["task"], ruleset)).toEqual(new Set())
       }),
     {
       git: true,
@@ -287,22 +201,19 @@ describe("permission.task with real config files", () => {
   )
 
   it.instance(
-    "task tool NOT disabled when specific allow comes last in config",
+    "retains task record order when a specific allow follows a global deny",
     () =>
       Effect.gen(function* () {
         const config = yield* load
         const ruleset = Permission.fromConfig(config.permission ?? {})
 
-        // Evaluate uses findLast - "general" allow comes after "*" deny
+        expect(ruleset.filter((rule) => rule.permission === "task")).toEqual([
+          { permission: "task", pattern: "*", action: "deny" },
+          { permission: "task", pattern: "general", action: "allow" },
+        ])
         expect(Permission.evaluate("task", "general", ruleset).action).toBe("allow")
-        // Other agents still denied by the earlier "*" deny
-        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("deny")
-
-        // disabled() uses findLast and checks if the last rule has pattern: "*" with action: "deny"
-        // In this case, the last rule is {pattern: "general", action: "allow"}, not pattern: "*"
-        // So the task tool is NOT disabled (even though most subagents are denied)
-        const disabled = Permission.disabled(["task"], ruleset)
-        expect(disabled.has("task")).toBe(false)
+        expect(Permission.evaluate("task", "code-reviewer", ruleset).action).toBe("allow")
+        expect(Permission.disabled(["task"], ruleset)).toEqual(new Set())
       }),
     {
       git: true,

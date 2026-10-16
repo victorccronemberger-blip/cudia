@@ -13,6 +13,7 @@ test("exposes every standard HTTP API group", () => {
     "models",
     "providers",
     "integrations",
+    "mcp",
     "credentials",
     "permissions",
     "files",
@@ -23,6 +24,8 @@ test("exposes every standard HTTP API group", () => {
     "questions",
     "references",
     "projectCopies",
+    "projects",
+    "locationPaths",
   ])
   expect(Object.keys(client.messages)).toEqual(["list"])
   expect(Object.keys(client.integrations)).toEqual([
@@ -52,6 +55,28 @@ test("sessions.get returns the wire projection", async () => {
   const result = await client.sessions.get({ sessionID: "ses_test" })
 
   expect(result.time.created).toBe(1_717_171_717_000)
+})
+
+test("workspace metadata uses global routes and selected locations use the location route", async () => {
+  const requests: URL[] = []
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: async (input) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url)
+      requests.push(url)
+      if (url.pathname === "/api/project") return Response.json([])
+      if (url.pathname === "/api/location/paths")
+        return Response.json({ home: "/server/home", defaultDirectory: "/server/work" })
+      return Response.json({ directory: "/selected", project: { id: "global", directory: "/" } })
+    },
+  })
+
+  expect(await client.projects.list()).toEqual([])
+  expect(await client.locationPaths.get()).toEqual({ home: "/server/home", defaultDirectory: "/server/work" })
+  expect(await client.location.get({ location: { directory: "/selected" } })).toMatchObject({ directory: "/selected" })
+  expect(requests.map((url) => url.pathname)).toEqual(["/api/project", "/api/location/paths", "/api/location"])
+  expect(requests.slice(0, 2).every((url) => url.search === "")).toBe(true)
+  expect(requests[2].searchParams.get("location[directory]")).toBe("/selected")
 })
 
 test("events.subscribe exposes the Promise event stream wire projection", async () => {

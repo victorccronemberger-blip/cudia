@@ -26,6 +26,7 @@ export class Local extends Schema.Class<Local>("ConfigV2.MCP.Local")({
 export class OAuth extends Schema.Class<OAuth>("ConfigV2.MCP.OAuth")({
   client_id: Schema.String.pipe(Schema.optional),
   client_secret: Schema.String.pipe(Schema.optional),
+  client_metadata_url: Schema.String.pipe(Schema.optional),
   scope: Schema.String.pipe(Schema.optional),
   callback_port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })).pipe(Schema.optional),
   redirect_uri: Schema.String.pipe(Schema.optional),

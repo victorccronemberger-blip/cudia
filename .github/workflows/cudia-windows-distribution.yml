@@ -1,0 +1,56 @@
+name: CUDIA Windows distribution
+
+on:
+  push:
+    branches: [codex/distribution-qa]
+    paths:
+      - installer/windows/ci-candidate.json
+      - installer/windows/test/fresh-install.ps1
+      - .github/workflows/cudia-windows-distribution.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cudia-distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fresh-install:
+    if: github.repository == 'victorccronemberger-blip/cudia'
+    runs-on: windows-2025
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [normal, baseline]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install, cold launch and remove production candidate
+        shell: powershell
+        env:
+          CUDIA_CI_DOWNLOAD_TOKEN: ${{ github.token }}
+          CUDIA_CI_VARIANT: ${{ matrix.variant }}
+        run: |
+          & .\installer\windows\test\fresh-install.ps1 `
+            -CandidatePath (Join-Path $env:GITHUB_WORKSPACE 'installer\windows\ci-candidate.json') `
+            -Variant $env:CUDIA_CI_VARIANT `
+            -ReportDirectory (Join-Path $env:RUNNER_TEMP 'cudia-distribution-report')
+      - name: Report qualification
+        if: always()
+        shell: powershell
+        run: |
+          $taskResult = Join-Path $env:RUNNER_TEMP 'cudia-distribution-report\result.json'
+          if (Test-Path -LiteralPath $taskResult) {
+            Get-Content -LiteralPath $taskResult
+            '```json' | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Get-Content -LiteralPath $taskResult | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            '```' | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          $taskLog = Join-Path $env:RUNNER_TEMP 'cudia-distribution-report\setup.log'
+          if ('${{ job.status }}' -ne 'success' -and (Test-Path -LiteralPath $taskLog)) {
+            Get-Content -LiteralPath $taskLog -Tail 100
+          }

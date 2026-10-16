@@ -16,9 +16,10 @@ export interface OAuth extends Schema.Schema.Type<typeof OAuth> {}
 export const OAuth = Schema.Struct({
   type: Schema.Literal("oauth"),
   methodID: IntegrationMethodID,
-  refresh: Schema.String,
+  refresh: optional(Schema.String),
   access: Schema.String,
-  expires: NonNegativeInt,
+  expires: optional(NonNegativeInt),
+  issued: optional(NonNegativeInt),
   metadata: optional(Schema.Record(Schema.String, Schema.Unknown)),
 }).annotate({ identifier: "Credential.OAuth" })
 

@@ -10,6 +10,7 @@ import { Heap } from "@/cli/heap"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { AmbientInstructions } from "@opencode-ai/core/harness/ambient-instructions"
 
 Heap.start()
 
@@ -28,6 +29,10 @@ GlobalBus.on("event", (event) => {
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 
 export const rpc = {
+  instructions(automatic?: boolean) {
+    if (automatic !== undefined) AmbientInstructions.configure(automatic)
+    return AmbientInstructions.current()
+  },
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
     const headers = { ...input.headers }
     const auth = ServerAuth.header()

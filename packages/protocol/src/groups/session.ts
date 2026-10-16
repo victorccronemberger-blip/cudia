@@ -233,7 +233,8 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
           OpenApi.annotations({
             identifier: "v2.session.compact",
             summary: "Compact session",
-            description: "Compact a session conversation.",
+            description:
+              "Wait for a settled turn boundary and compact the current conversation. Returns after a completed checkpoint, or without a provider call when no older context is eligible. Queued user inputs remain pending until ordinary execution promotes them.",
           }),
         ),
     )

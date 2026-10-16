@@ -42,6 +42,7 @@ function harness(input: {
   servers: string[]
   permission?: PermissionV1.Rule[]
   trigger?: Plugin.Interface["trigger"]
+  instructions?: MCP.ServerInstructions[]
 }) {
   return Layer.mergeAll(
     Layer.mock(Plugin.Service, {
@@ -59,6 +60,9 @@ function harness(input: {
     Layer.mock(MCP.Service, {
       tools: () => Effect.succeed(input.mcpTools),
       clients: () => Effect.succeed(Object.fromEntries(input.servers.map((name) => [name, {} as any]))),
+      status: () =>
+        Effect.succeed(Object.fromEntries(input.servers.map((name) => [name, { status: "connected" as const }]))),
+      instructions: () => Effect.succeed(input.instructions ?? []),
     }),
   )
 }
@@ -72,12 +76,13 @@ function build(
   servers?: string[],
   permission?: PermissionV1.Rule[],
   trigger?: Plugin.Interface["trigger"],
+  instructions?: MCP.ServerInstructions[],
 ) {
   const names = serverNames(mcpTools, servers)
   return Effect.runPromise(
     CodeModeTool.pipe(
       Effect.flatMap(Tool.init),
-      Effect.provide(harness({ mcpTools, servers: names, permission, trigger })),
+      Effect.provide(harness({ mcpTools, servers: names, permission, trigger, instructions })),
     ),
   )
 }
@@ -107,31 +112,107 @@ describe("code mode execute", () => {
     })
   })
 
-  test("groups multi-underscore server names by longest matching prefix", () => {
-    const description = describeFor({ my_server_do_thing: mcpTool("do_thing", () => "") }, ["my_server"])
-    expect(description).toContain("- my_server (1 tool)")
-    expect(description).toContain("tools.my_server.do_thing(")
-  })
-
-  test("groupByServer uses the whole key as the server name when it has no underscore", () => {
-    const description = describeFor({ standalone: mcpTool("standalone", () => "") }, [])
-    expect(description).toContain("- standalone (1 tool)")
-    expect(description).toContain("tools.standalone.standalone(")
-  })
-
-  test("describeCatalog carries the raw MCP schemas for rendering", () => {
-    const description = describeFor(
-      {
-        weather_current: mcpTool(
-          "current",
-          () => "",
-          { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
-          { type: "object", properties: { tempC: { type: "number" } }, required: ["tempC"] },
-        ),
-      },
-      ["weather"],
+  test("groups multi-underscore server names by longest matching prefix", async () => {
+    const tools = { my_server_do_thing: mcpTool("do_thing", () => "") }
+    expect(describeFor(tools, ["my_server"])).toContain("- my_server (1 tool, none shown)")
+    const tool = await build(tools, ["my_server"])
+    const output = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$codemode.search({ namespace: 'my_server' })" }, ctx),
     )
-    expect(description).toContain(
+    expect(JSON.parse(output.output).items).toMatchObject([{ path: "tools.my_server.do_thing" }])
+  })
+
+  test("prototype-like namespace and tool names cannot mutate host prototypes", async () => {
+    const probe = "codemode_reserved_name_probe"
+    const servers = ["__proto__", "constructor", "toString", "alpha"]
+    const hosts = [Object.prototype, Object, Object.prototype.toString]
+    const originals = hosts.map((host) => Object.getOwnPropertyDescriptor(host, probe))
+    const calls: string[] = []
+    const tools = Object.fromEntries([
+      ...servers.slice(0, 3).map((server) => [
+        `${server}_${probe}`,
+        mcpTool(probe, () => {
+          calls.push(server)
+          return { content: [{ type: "text", text: server }] }
+        }),
+      ]),
+      ...["__proto__", "constructor", "toString"].map((name) => [
+        `alpha_${name}`,
+        mcpTool(name, () => {
+          calls.push(`alpha.${name}`)
+          return { content: [{ type: "text", text: `alpha.${name}` }] }
+        }),
+      ]),
+    ])
+    try {
+      const description = describeFor(tools, servers)
+      expect(description).toContain("- __proto__ (1 tool, none shown)")
+      expect(description).toContain("- constructor (1 tool, none shown)")
+      expect(description).toContain("- toString (1 tool, none shown)")
+      expect(description).toContain("- alpha (3 tools, none shown)")
+      const tool = await build(tools, servers)
+      const discovery = await Effect.runPromise(
+        tool.execute({ code: "return await tools.$codemode.search({ query: '', limit: 10 })" }, ctx),
+      )
+      expect(
+        JSON.parse(discovery.output)
+          .items.map((item: { path: string }) => item.path)
+          .sort(),
+      ).toEqual(
+        [
+          `tools.__proto__.${probe}`,
+          `tools.constructor.${probe}`,
+          `tools.toString.${probe}`,
+          "tools.$mcp.connect",
+          "tools.$mcp.disconnect",
+          "tools.$mcp.servers",
+          "tools.alpha.__proto__",
+          "tools.alpha.constructor",
+          "tools.alpha.toString",
+        ].sort(),
+      )
+      const output = await Effect.runPromise(
+        tool.execute({ code: `return [await tools.toString.${probe}({}), await tools.alpha.toString({})]` }, ctx),
+      )
+      expect(JSON.parse(output.output)).toEqual(["toString", "alpha.toString"])
+      const blocked = await failure(tool.execute({ code: `return await tools.__proto__.${probe}({})` }, ctx))
+      expect(blocked.message).toContain("Tool paths must use safe string property names")
+      expect(calls).toEqual(["toString", "alpha.toString"])
+      expect(hosts.map((host) => Object.getOwnPropertyDescriptor(host, probe))).toEqual(originals)
+    } finally {
+      hosts.forEach((host, index) => {
+        const original = originals[index]
+        if (original) Object.defineProperty(host, probe, original)
+        else Reflect.deleteProperty(host, probe)
+      })
+    }
+  })
+
+  test("groupByServer uses the whole key as the server name when it has no underscore", async () => {
+    const tools = { standalone: mcpTool("standalone", () => "") }
+    expect(describeFor(tools, [])).toContain("- standalone (1 tool, none shown)")
+    const tool = await build(tools, [])
+    const output = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$codemode.search({ namespace: 'standalone' })" }, ctx),
+    )
+    expect(JSON.parse(output.output).items).toMatchObject([{ path: "tools.standalone.standalone" }])
+  })
+
+  test("raw MCP schemas are rendered only when explicitly discovered", async () => {
+    const tools = {
+      weather_current: mcpTool(
+        "current",
+        () => "",
+        { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        { type: "object", properties: { tempC: { type: "number" } }, required: ["tempC"] },
+      ),
+    }
+    expect(describeFor(tools, ["weather"])).not.toContain("city")
+    const tool = await build(tools, ["weather"])
+    const output = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$codemode.search({ query: 'weather.current' })" }, ctx),
+    )
+    expect(JSON.parse(output.output).items[0].signature).toBe(
       "tools.weather.current(input: {\n  city: string,\n}): Promise<{\n  tempC: number,\n}>",
     )
   })
@@ -144,7 +225,7 @@ describe("code mode execute", () => {
     expect(tool.description).not.toContain("list_issues")
   })
 
-  test("small catalogs inline every full signature in the appended catalog", () => {
+  test("small catalogs expose namespaces and discovery without tool schemas", () => {
     const description = describeFor({
       github_create_issue: mcpTool("create_issue", () => "", {
         type: "object",
@@ -155,27 +236,24 @@ describe("code mode execute", () => {
       linear_search: mcpTool("search", () => ""),
     })
 
-    expect(description).toContain("Available tools (COMPLETE list")
-    expect(description).toContain("- github (2 tools)")
-    expect(description).toContain("- linear (1 tool)")
-    expect(description).toContain(
-      "tools.github.create_issue(input: {\n  title: string,\n  body?: string,\n}): Promise<unknown>",
-    )
-    expect(description).toContain("tools.github.list_issues(")
-    expect(description).toContain("tools.linear.search(")
-    expect(description).toContain("tools.linear.search(input: {}): Promise<unknown>")
-    expect(description).not.toContain("$codemode")
-    expect(description).not.toContain("Browse one namespace")
+    expect(description).toContain("Available tools (PARTIAL - 0 of 3 shown")
+    expect(description).toContain("- github (2 tools, none shown)")
+    expect(description).toContain("- linear (1 tool, none shown)")
+    expect(description).not.toContain("create_issue")
+    expect(description).not.toContain("list_issues")
+    expect(description).not.toContain("tools.linear.search(")
+    expect(description).toContain("tools.$codemode.search(")
+    expect(description).toContain("Browse one namespace")
     expect(description).toContain("## Workflow")
-    expect(description).toContain("1. Pick a tool from the list under `## Available tools`")
+    expect(description).toContain("1. If needed, discover tools:")
     expect(description).not.toContain("JSON.parse(res)")
     expect(description).toContain("check that it is a non-null object and not an array")
-    expect(description).toContain("Return only the fields you need")
+    expect(description).toContain("return only the needed fields")
     expect(description).not.toContain("total_count")
   })
 
-  test("signatures render the declared outputSchema as the return type", () => {
-    const description = describeFor({
+  test("discovered signatures render the declared outputSchema as the return type", async () => {
+    const tools = {
       weather_current: mcpTool(
         "current",
         () => "",
@@ -186,13 +264,46 @@ describe("code mode execute", () => {
           required: ["tempC"],
         },
       ),
-    })
-    expect(description).toContain(
+    }
+    const tool = await build(tools)
+    const output = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$codemode.search({ query: 'weather.current' })" }, ctx),
+    )
+    expect(JSON.parse(output.output).items[0].signature).toBe(
       "tools.weather.current(input: {\n  city: string,\n}): Promise<{\n  tempC: number,\n  summary?: string,\n}>",
     )
   })
 
-  test("large catalogs inline a budgeted PARTIAL list plus runtime search", async () => {
+  test("catalog context stays bounded as tool counts and schema sizes grow", () => {
+    const schema = {
+      type: "object",
+      properties: Object.fromEntries(
+        Array.from({ length: 100 }, (_, index) => [
+          `field_${index}`,
+          { type: "string", description: "Detailed field documentation. ".repeat(10) },
+        ]),
+      ),
+    }
+    const compact = describeFor({ alpha_op: mcpTool("op", () => "") }, ["alpha"])
+    const expanded = describeFor({ alpha_op: mcpTool("op", () => "", schema, schema) }, ["alpha"])
+    const many = describeFor(
+      Object.fromEntries(
+        Array.from({ length: 150 }, (_, index) => [
+          `alpha_op_${index}`,
+          mcpTool(`op_${index}`, () => "", schema, schema),
+        ]),
+      ),
+      ["alpha"],
+    )
+    expect(expanded).toBe(compact)
+    expect(many.length - compact.length).toBeLessThan(16)
+    expect(many).toContain("- alpha (150 tools, none shown)")
+    expect(many).not.toContain("Detailed field documentation")
+    expect(many).not.toContain("field_99")
+    expect(many).not.toContain("tools.alpha.op_")
+  })
+
+  test("large catalogs discover only the explicitly searched schemas", async () => {
     const tools: Record<string, MCP.McpTool> = {}
     const filler = "a searchable description of this operation that consumes catalog budget ".repeat(3)
     for (let i = 0; i < 150; i++) {
@@ -213,11 +324,9 @@ describe("code mode execute", () => {
     const description = describeFor(tools, ["alpha", "zeta"])
 
     expect(description).toContain("Available tools (PARTIAL - ")
-    expect(description).toMatch(/- alpha \(150 tools, \d+ shown\)/)
-    expect(description).toContain("- zeta (1 tool)\n")
-    expect(description).toContain(
-      "tools.zeta.only_tool(input: {\n  /** Subject to look up */\n  topic: string,\n}): Promise<unknown>",
-    )
+    expect(description).toContain("- alpha (150 tools, none shown)")
+    expect(description).toContain("- zeta (1 tool, none shown)\n")
+    expect(description).not.toContain("only_tool")
     expect(description).toContain("tools.$codemode.search(")
     expect(description).toContain("  limit?: number,\n  offset?: number,")
     expect(description).toContain("  remaining: number,\n  next: {")
@@ -229,7 +338,7 @@ describe("code mode execute", () => {
       '- Browse one namespace: `await tools.$codemode.search({ query: "", namespace: "<name>" })`.',
     )
     expect(description).not.toContain("total_count")
-    expect(description).toContain("tools.alpha.op_0(")
+    expect(description).not.toContain("tools.alpha.op_0(")
     expect(description).not.toContain("tools.alpha.op_99(")
 
     const tool = await build(tools, ["alpha", "zeta"])
@@ -243,10 +352,69 @@ describe("code mode execute", () => {
     const signature = result.items.find((i: any) => i.path === "tools.zeta.only_tool").signature
     expect(signature).toContain("tools.zeta.only_tool(input: {\n")
     expect(signature).toContain("  /** Subject to look up */\n  topic: string")
-    expect(description).toContain("/** Subject to look up */")
+    expect(description).not.toContain("/** Subject to look up */")
     expect(out.metadata.toolCalls).toEqual([
       { tool: "$codemode.search", status: "completed", input: { query: "only tool", limit: 3, offset: 0 } },
     ])
+  })
+
+  test("server guidance stays out of the catalog and is read locally on demand", async () => {
+    const guidance = "Use lookup before mutate. ".repeat(200)
+    const server = { name: "guide-server", instructions: guidance, tools: [] }
+    const instructions = [server]
+    const description = describeCatalog({}, ["guide-server"], instructions)
+    expect(description).toContain("- $mcp (1 tool, none shown)")
+    expect(description).not.toContain(guidance)
+    expect(description).toBe(describeCatalog({}, ["guide-server"], [{ ...server, instructions: "Short" }]))
+
+    const asked: string[] = []
+    const hooks: string[] = []
+    const recordingCtx: Tool.Context = { ...ctx, ask: (req) => Effect.sync(() => void asked.push(req.permission)) }
+    const tool = await build(
+      {},
+      ["guide-server"],
+      [],
+      ((_name, input, output) => {
+        if (typeof input === "object" && input !== null && "tool" in input && typeof input.tool === "string")
+          hooks.push(input.tool)
+        return Effect.succeed(output)
+      }) as Plugin.Interface["trigger"],
+      instructions,
+    )
+    const output = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$mcp.instructions({ server: 'guide-server' })" }, recordingCtx),
+    )
+    expect(output.output).toBe(guidance)
+    expect(output.metadata.toolCalls).toEqual([
+      { tool: "$mcp.instructions", status: "completed", input: { server: "guide-server" } },
+    ])
+    expect(asked).toEqual([])
+    expect(hooks).toEqual([])
+  })
+
+  test("local guidance remains available for legacy-denied servers and rejects unknown names", async () => {
+    const tool = await build(
+      {},
+      ["hidden", "resource-only"],
+      [{ permission: "hidden_*", pattern: "*", action: "deny" }],
+      undefined,
+      [
+        { name: "hidden", instructions: "Private hidden guidance", tools: ["hidden_write"] },
+        { name: "resource-only", instructions: "Read the resource guide", tools: [] },
+      ],
+    )
+    const available = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$mcp.instructions({ server: 'hidden' })" }, ctx),
+    )
+    expect(available.output).toBe("Private hidden guidance")
+    const unknown = await failure(
+      tool.execute({ code: "return await tools.$mcp.instructions({ server: 'missing' })" }, ctx),
+    )
+    expect(unknown.message).toContain("No available MCP instructions for server missing")
+    const allowed = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$mcp.instructions({ server: 'resource-only' })" }, ctx),
+    )
+    expect(allowed.output).toBe("Read the resource guide")
   })
 
   test("runs plain JavaScript and returns the value as text", async () => {
@@ -267,7 +435,7 @@ describe("code mode execute", () => {
         ctx,
       ),
     )
-    expect(JSON.parse(output.output)).toEqual({ namespaces: ["github", "linear", "$codemode"], count: 3 })
+    expect(JSON.parse(output.output)).toEqual({ namespaces: ["github", "linear", "$mcp", "$codemode"], count: 4 })
   })
 
   test("calls a namespaced MCP tool and flows its text result back into the program", async () => {
@@ -659,29 +827,48 @@ describe("code mode permission visibility", () => {
   const askRule = (permission: string): PermissionV1.Rule => ({ permission, pattern: "*", action: "ask" })
   const ok = () => ({ content: [{ type: "text", text: "ok" }] })
 
-  test("a hard-denied tool never enters the catalog or its search index", () => {
+  test("a legacy-denied tool stays in the catalog and search index", async () => {
     const mcpTools = {
       github_create_issue: mcpTool("create_issue", ok),
       github_list_issues: mcpTool("list_issues", ok),
     }
     const description = describeFor(mcpTools, ["github"], [deny("github_create_issue")])
-    expect(description).toContain("tools.github.list_issues(")
-    expect(description).not.toContain("create_issue")
-    expect(description).toContain("- github (1 tool)")
+    expect(description).toContain("- github (2 tools")
+    const tool = await build(mcpTools, ["github"], [deny("github_create_issue")])
+    const output = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$codemode.search({ namespace: 'github' })" }, ctx),
+    )
+    expect(JSON.parse(output.output).items.map((item: { path: string }) => item.path)).toEqual(
+      expect.arrayContaining(["tools.github.create_issue", "tools.github.list_issues"]),
+    )
   })
 
-  test("an ask-level tool stays fully visible in the catalog", () => {
+  test("a legacy ask record does not hide a tool from catalog discovery", async () => {
+    const asked: string[] = []
+    const askCtx: Tool.Context = { ...ctx, ask: (req) => Effect.sync(() => void asked.push(req.permission)) }
+    const called: string[] = []
     const mcpTools = {
-      github_create_issue: mcpTool("create_issue", ok),
-      github_list_issues: mcpTool("list_issues", ok),
+      github_create_issue: mcpTool("create_issue", () => {
+        called.push("create_issue")
+        return ok()
+      }),
+      github_list_issues: mcpTool("list_issues", () => {
+        called.push("list_issues")
+        return ok()
+      }),
     }
     const description = describeFor(mcpTools, ["github"], [askRule("github_create_issue")])
-    expect(description).toContain("tools.github.create_issue(")
-    expect(description).toContain("tools.github.list_issues(")
-    expect(description).toContain("- github (2 tools)")
+    expect(description).toContain("- github (2 tools")
+    const tool = await build(mcpTools, ["github"], [askRule("github_create_issue")])
+    const output = await Effect.runPromise(
+      tool.execute({ code: "return await tools.$codemode.search({ query: 'github.create_issue' })" }, askCtx),
+    )
+    expect(JSON.parse(output.output).items).toMatchObject([{ path: "tools.github.create_issue" }])
+    expect(asked).toEqual([])
+    expect(called).toEqual([])
   })
 
-  test("a hard-denied tool is not dispatchable: the program gets the unknown-tool diagnostic", async () => {
+  test("a legacy-denied tool is discoverable and dispatches to its MCP implementation", async () => {
     const called: string[] = []
     const tool = await build(
       {
@@ -695,17 +882,18 @@ describe("code mode permission visibility", () => {
       [deny("github_create_issue")],
     )
 
-    const denied = await failure(tool.execute({ code: "return await tools.github.create_issue({ title: 'x' })" }, ctx))
-    expect(denied.message).toContain("Unknown tool 'github.create_issue'")
-    expect(denied.message).not.toContain("permission")
-    expect(called).toEqual([])
+    const created = await Effect.runPromise(
+      tool.execute({ code: "return await tools.github.create_issue({ title: 'x' })" }, ctx),
+    )
+    expect(created.output).toBe("ok")
+    expect(called).toEqual(["create_issue"])
 
     const allowed = await Effect.runPromise(tool.execute({ code: "return await tools.github.list_issues({})" }, ctx))
     expect(allowed.metadata.error).toBeUndefined()
     expect(allowed.output).toBe("ok")
   })
 
-  test("an ask-level tool remains callable and still prompts via ctx.ask", async () => {
+  test("a legacy ask record remains callable through the context ask hook", async () => {
     const asked: string[] = []
     const askCtx: Tool.Context = { ...ctx, ask: (req) => Effect.sync(() => void asked.push(req.permission)) }
     const tool = await build(
@@ -718,13 +906,13 @@ describe("code mode permission visibility", () => {
     expect(asked).toEqual(["github_list_issues"])
   })
 
-  test("Permission.visibleTools hides only hard denies, matching Permission.disabled", () => {
+  test("Permission.visibleTools keeps tools visible for legacy ask and deny records", () => {
     const tools = { a_tool: 1, b_tool: 2, c_tool: 3 }
     const visible = Permission.visibleTools(tools, [
       deny("a_tool"),
       askRule("b_tool"),
       { permission: "c_tool", pattern: "something", action: "deny" },
     ])
-    expect(Object.keys(visible)).toEqual(["b_tool", "c_tool"])
+    expect(Object.keys(visible)).toEqual(["a_tool", "b_tool", "c_tool"])
   })
 })

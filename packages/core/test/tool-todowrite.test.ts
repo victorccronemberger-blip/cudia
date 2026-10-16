@@ -24,6 +24,7 @@ let deny = false
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
+    check: () => Effect.die("unused"),
     assert: (input) =>
       Effect.sync(() => assertions.push(input)).pipe(
         Effect.andThen(deny ? Effect.fail(new PermissionV2.BlockedError({ rules: [] })) : Effect.void),

@@ -5,17 +5,15 @@ import { Account } from "@/account/account"
 import { AccountID, OrgID, PollExpired, type PollResult, type AccountError } from "@/account/schema"
 import { effectCmd } from "../effect-cmd"
 import * as Prompt from "../effect/prompt"
-import open from "open"
+import { openUrl } from "@opencode-ai/core/open"
 
-const openBrowser = (url: string) => Effect.promise(() => open(url).catch(() => undefined))
+const openBrowser = (url: string) => Effect.promise(() => openUrl(url).catch(() => undefined))
 
 const println = (msg: string) => Effect.sync(() => UI.println(msg))
 
 const dim = (value: string) => UI.Style.TEXT_DIM + value + UI.Style.TEXT_NORMAL
 
 const activeSuffix = (isActive: boolean) => (isActive ? dim(" (active)") : "")
-
-export const defaultConsoleUrl = "https://console.opencode.ai"
 
 export const formatAccountLabel = (account: { email: string; url: string }, isActive: boolean) =>
   `${account.email} ${dim(account.url)}${activeSuffix(isActive)}`
@@ -175,17 +173,21 @@ const openEffect = Effect.fn("open")(function* () {
 })
 
 export const LoginCommand = effectCmd({
-  command: "login [url]",
+  command: "login <url>",
   describe: false,
   instance: false,
   builder: (yargs) =>
     yargs.positional("url", {
-      describe: "server URL",
+      describe: "URL of the account server",
       type: "string",
     }),
   handler: Effect.fn("Cli.account.login")(function* (args) {
     UI.empty()
-    yield* Effect.orDie(loginEffect(args.url ?? defaultConsoleUrl))
+    if (!args.url)
+      return yield* Effect.die(
+        "Provide the account server URL, for example: cudia account login https://your-server.example",
+      )
+    yield* Effect.orDie(loginEffect(args.url))
   }),
 })
 

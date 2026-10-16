@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { SessionID } from "@/session/schema"
-import { Cause, Effect, Layer, Context, Option, Schema } from "effect"
+import { MessageID, SessionID } from "@/session/schema"
+import { Cause, Effect, Fiber, Layer, Context, Option, Schema, Scope } from "effect"
 import { Storage } from "@/storage/storage"
 import { Session } from "@/session/session"
 import type { CommandInput, PromptInput } from "@/session/prompt"
@@ -8,6 +8,14 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Provider } from "@/provider/provider"
 import { Image } from "@/image/image"
 import { ulid } from "ulid"
+import { InstanceState } from "@/effect/instance-state"
+import { GoalStateControl } from "./state"
+import { Agent } from "@/agent/agent"
+import { Permission } from "@/permission"
+import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
+import { isGoalControl } from "./control"
+
+import { GoalPrompts } from "./prompts"
 
 // --- Schemas ---
 
@@ -57,6 +65,12 @@ const GoalState = Schema.Struct({
   currentStep: Schema.optional(Schema.String),
   recentHashes: Schema.Array(Schema.String),
   replanned: Schema.Boolean,
+  variant: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.Struct({ providerID: Schema.String, modelID: Schema.String })),
+  instructions: Schema.optional(Schema.Array(Schema.String)),
+  latestEvidence: Schema.optional(
+    Schema.Struct({ iteration: Schema.Number, text: Schema.String, messageID: MessageID }),
+  ),
 })
 
 // Native types for mutable state (mirroring Schema.Schema.Type but mutable)
@@ -82,6 +96,10 @@ interface GoalState {
   currentStep: string | undefined
   recentHashes: string[]
   replanned: boolean
+  variant?: string
+  model?: PromptInput["model"]
+  instructions?: string[]
+  latestEvidence?: { iteration: number; text: string; messageID: MessageID }
 }
 
 interface VerificationResult {
@@ -128,10 +146,12 @@ const PLAN_JSON_SCHEMA: Record<string, unknown> = {
   properties: {
     criteria: {
       type: "array",
+      minItems: 1,
       items: { type: "string" },
     },
     plan: {
       type: "array",
+      minItems: 1,
       items: {
         type: "object",
         properties: {
@@ -161,9 +181,11 @@ export interface Interface {
     input: CommandInput,
     run: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>,
     respond: (text: string) => Effect.Effect<SessionV1.WithParts, unknown>,
+    stop: (sessionID: SessionID) => Effect.Effect<void>,
   ) => Effect.Effect<SessionV1.WithParts, unknown>
   readonly get: (sessionID: SessionID) => Effect.Effect<GoalState | undefined, unknown>
   readonly observe: (sessionID: SessionID, text: string) => Effect.Effect<void, unknown>
+  readonly pause: (sessionID: SessionID) => Effect.Effect<void, unknown>
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void, unknown>
 }
 
@@ -174,30 +196,42 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const storage = yield* Storage.Service
     const sessions = yield* Session.Service
+    const agents = yield* Agent.Service
+
+    const running = yield* InstanceState.make(
+      Effect.fn("Goal.running")(function* () {
+        const scope = yield* Scope.Scope
+        const runs = new Map<
+          SessionID,
+          {
+            target: SessionID
+            stop: (sessionID: SessionID) => Effect.Effect<void>
+            stopped: boolean
+            fiber?: Fiber.Fiber<SessionV1.WithParts, unknown>
+          }
+        >()
+        return { runs, scope }
+      }),
+    )
 
     // --- Persistence helpers ---
 
     const storageKey = (sessionID: SessionID) => [...STORAGE_PREFIX, sessionID] as unknown as string[]
 
     const save = Effect.fn("Goal.save")(function* (goal: GoalState) {
-      const updated = { ...goal, updatedAt: Date.now() }
-      yield* storage.write(storageKey(goal.sessionID), updated)
+      const updated = yield* storage.update<GoalState>(storageKey(goal.sessionID), (current) => {
+        const merged = GoalStateControl.merge(current, goal)
+        if (merged === current) return
+        Object.assign(current, merged, { updatedAt: Date.now() })
+      })
+      if (updated.id === goal.id) Object.assign(goal, updated)
+      else goal.status = "cancelled"
     })
 
     const load = Effect.fn("Goal.load")(function* (sessionID: SessionID) {
       return yield* storage
         .read<GoalState>(storageKey(sessionID))
         .pipe(Effect.catch(() => Effect.succeed(undefined as GoalState | undefined)))
-    })
-
-    const pauseInterrupted = Effect.fn("Goal.pauseInterrupted")(function* (goal: GoalState, observation: string) {
-      const current = yield* load(goal.sessionID)
-      if (!current || current.id !== goal.id || current.status !== "active") return
-      yield* save({
-        ...current,
-        status: "paused",
-        observations: [...current.observations, observation].slice(-30),
-      })
     })
 
     // --- Hash for repetition detection ---
@@ -219,105 +253,11 @@ const layer = Layer.effect(
     function isComplete(goal: GoalState, verification: VerificationResult): boolean {
       return (
         verification.completed &&
+        goal.completionCriteria.length > 0 &&
         goal.completionCriteria.every(
           (criterion) => verification.criteria.find((item) => item.criterion === criterion)?.passed === true,
         )
       )
-    }
-
-    // --- Prompt builders ---
-
-    function planPrompt(objective: string): string {
-      return [
-        `You are operating inside an autonomous goal loop.`,
-        `Given this objective, determine the completion criteria and an initial plan.`,
-        `Objective: ${objective}`,
-        ``,
-        `Return a JSON object with:`,
-        `- "criteria": array of strings, each a verifiable completion criterion (3-8 items).`,
-        `- "plan": array of steps, each with "description", "status": "pending", "attempts": 0. Keep it to 3-8 high-level steps.`,
-        ``,
-        `Criteria must be objectively verifiable: test pass, file exists, typecheck clean, etc.`,
-        `Do NOT include vague criteria like "implementation is good".`,
-      ].join("\n")
-    }
-
-    function firstMessage(goal: GoalState): string {
-      const criteriaList = goal.completionCriteria.map((c) => `- ${c}`).join("\n")
-      const planList = goal.plan.map((s, i) => `${i + 1}. ${s.description} (${s.status})`).join("\n")
-      return [
-        `[GOAL LOOP — iteration 0/${goal.maxIterations}]`,
-        ``,
-        `## Objective`,
-        goal.objective,
-        ``,
-        `## Completion Criteria`,
-        criteriaList,
-        ``,
-        `## Initial Plan`,
-        planList,
-        ``,
-        `You are inside an autonomous goal loop. The harness will verify your progress after this turn using an independent verifier.`,
-        `Work toward satisfying every criterion. After each action, compare the current state against the goal and continue.`,
-        `Only mark yourself done when every criterion would pass independent verification.`,
-      ].join("\n")
-    }
-
-    function continuationMessage(goal: GoalState, verification: VerificationResult, forceReplan: boolean): string {
-      const criteriaTable = verification.criteria
-        .map((c) => `${c.passed ? "✓" : "✗"} ${c.criterion}${c.evidence ? ` — ${c.evidence}` : ""}`)
-        .join("\n")
-      const remaining = verification.remainingWork.join("\n")
-      const next = verification.recommendedNextAction
-        ? `\nRecommended next action: ${verification.recommendedNextAction}`
-        : ""
-      const updates = goal.observations
-        .filter((observation) => observation.startsWith("[user]"))
-        .slice(-5)
-        .map((observation) => `- ${observation.slice("[user] ".length)}`)
-
-      const replanBlock = forceReplan
-        ? [
-            ``,
-            `## FORCE REPLAN`,
-            `Your recent iterations are repeating without measurable progress.`,
-            `Stop what you are doing. Reassess the situation from scratch and try a fundamentally different approach.`,
-          ].join("\n")
-        : ""
-
-      return [
-        `[GOAL LOOP — iteration ${goal.iteration}/${goal.maxIterations}]`,
-        ``,
-        `## Verification Result`,
-        criteriaTable,
-        ``,
-        `## Remaining Work`,
-        remaining,
-        next,
-        ...(updates.length ? ["", "## User Updates", ...updates] : []),
-        replanBlock,
-        ``,
-        `Continue working toward the completion criteria.`,
-      ].join("\n")
-    }
-
-    function verifyPrompt(goal: GoalState): string {
-      const criteriaList = goal.completionCriteria.map((c) => `- ${c}`).join("\n")
-      return [
-        `Objective: ${goal.objective}`,
-        ``,
-        `Completion Criteria:`,
-        criteriaList,
-        ``,
-        `Iteration: ${goal.iteration}`,
-        ``,
-        `Evaluate each criterion against the actual state of the repository using tools.`,
-        `Do not trust claims — run tests, read files, inspect diffs, check exit codes.`,
-        `A criterion passes only with positive evidence.`,
-        ``,
-        `Observations from this iteration:`,
-        ...goal.observations.slice(-10).map((o) => `- ${o}`),
-      ].join("\n")
     }
 
     // --- Structured output format ---
@@ -340,17 +280,30 @@ const layer = Layer.effect(
 
     // --- Verifier invocation ---
 
+    const createChild = Effect.fn("Goal.createChild")(function* (parentID: SessionID, agent: string) {
+      const parent = yield* sessions.get(parentID)
+      const subagent = yield* agents.get(agent)
+      if (!subagent) return yield* Effect.die(new Error(`Agent not found: ${agent}`))
+      const permission = deriveSubagentSessionPermission({
+        parentSessionPermission: parent.permission ?? [],
+        subagent,
+      })
+      return yield* sessions.create({ parentID, agent, permission })
+    })
+
     const runVerifier = Effect.fn("Goal.runVerifier")(function* (
       parentSessionID: SessionID,
       promptText: string,
       model: PromptInput["model"],
+      variant: string | undefined,
       run: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>,
     ) {
-      const child = yield* sessions.create({ parentID: parentSessionID, agent: VERIFIER_AGENT })
+      const child = yield* createChild(parentSessionID, VERIFIER_AGENT)
       const result = yield* run({
         sessionID: child.id,
         agent: VERIFIER_AGENT,
         model,
+        variant,
         parts: [{ type: "text", text: promptText }],
         format: verificationFormat(),
       })
@@ -366,20 +319,29 @@ const layer = Layer.effect(
       parentSessionID: SessionID,
       objective: string,
       model: PromptInput["model"],
+      variant: string | undefined,
       run: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>,
     ) {
-      const child = yield* sessions.create({ parentID: parentSessionID, agent: PLANNER_AGENT })
+      const child = yield* createChild(parentSessionID, PLANNER_AGENT)
       const result = yield* run({
         sessionID: child.id,
         agent: PLANNER_AGENT,
         model,
-        parts: [{ type: "text", text: planPrompt(objective) }],
+        variant,
+        parts: [{ type: "text", text: GoalPrompts.plan(objective) }],
         format: planFormat(),
       })
       if (result.info.role !== "assistant" || !result.info.structured) {
         return undefined
       }
-      return result.info.structured as { criteria: string[]; plan: GoalState["plan"] }
+      const data = result.info.structured as { criteria?: string[]; plan?: GoalState["plan"] }
+      if (
+        !data.criteria?.length ||
+        !data.plan?.length ||
+        !data.criteria.every((criterion) => typeof criterion === "string" && criterion.trim())
+      )
+        return undefined
+      return { criteria: data.criteria, plan: data.plan }
     })
 
     // --- Status formatter ---
@@ -418,10 +380,65 @@ const layer = Layer.effect(
 
     // --- Subcommand router ---
 
+    const stopRunning = Effect.fn("Goal.stopRunning")(function* (sessionID: SessionID) {
+      const { runs } = yield* InstanceState.get(running)
+      const current = runs.get(sessionID)
+      if (!current) return
+      current.stopped = true
+      const target = current.target
+      yield* current.stop(target)
+      if (current.target !== target) yield* current.stop(current.target)
+      if (current.fiber) yield* Fiber.interrupt(current.fiber)
+      if (runs.get(sessionID) === current) runs.delete(sessionID)
+    })
+
+    const managedStart = Effect.fn("Goal.managedStart")(function* (
+      input: CommandInput,
+      objective: string,
+      maxIterations: number,
+      run: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>,
+      respond: (text: string) => Effect.Effect<SessionV1.WithParts, unknown>,
+      stop: (sessionID: SessionID) => Effect.Effect<void>,
+      existing?: GoalState,
+    ) {
+      const { runs, scope } = yield* InstanceState.get(running)
+      if (runs.has(input.sessionID)) return yield* respond("A goal loop is already running for this session.")
+      const current = {
+        target: input.sessionID,
+        stop,
+        stopped: false,
+        fiber: undefined as Fiber.Fiber<SessionV1.WithParts, unknown> | undefined,
+      }
+      runs.set(input.sessionID, current)
+      current.fiber = yield* start(
+        input,
+        objective,
+        maxIterations,
+        (prompt) => {
+          current.target = prompt.sessionID
+          if (current.stopped) return Effect.interrupt
+          return run(prompt)
+        },
+        respond,
+        existing,
+      ).pipe(
+        Effect.interruptible,
+        Effect.onExit(() =>
+          Effect.sync(() => {
+            if (runs.get(input.sessionID) === current) runs.delete(input.sessionID)
+          }),
+        ),
+        Effect.forkIn(scope),
+      )
+      if (current.stopped) yield* Fiber.interrupt(current.fiber)
+      return yield* Fiber.join(current.fiber)
+    })
+
     const command = Effect.fn("Goal.command")(function* (
       input: CommandInput,
       run: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>,
       respond: (text: string) => Effect.Effect<SessionV1.WithParts, unknown>,
+      stop: (sessionID: SessionID) => Effect.Effect<void>,
     ) {
       const args = input.arguments.trim()
       const reply = respond
@@ -437,20 +454,43 @@ const layer = Layer.effect(
         const goal = yield* load(input.sessionID)
         if (!goal) return yield* reply("No active goal to pause.")
         if (goal.status !== "active") return yield* reply(`Goal is already ${goal.status}.\n\n${formatStatus(goal)}`)
-        const paused = { ...goal, status: "paused" as const }
-        yield* save(paused)
-        return yield* reply(`Goal paused.\n\n${formatStatus(paused)}`)
+        yield* pause(input.sessionID)
+        const paused = yield* load(input.sessionID)
+        return yield* reply(`Goal paused.\n\n${formatStatus(paused ?? goal)}`)
       }
 
-      if (args === "resume" || args === "continue") {
+      const resume = args.match(/^(?:resume|continue)(?:\s+--max-iterations\s+(\d+))?$/)
+      if (resume) {
         const goal = yield* load(input.sessionID)
         if (!goal) return yield* reply("No goal is available to resume.")
         if (goal.status === "completed" || goal.status === "cancelled" || goal.status === "failed") {
           return yield* reply(`Goal cannot be resumed because it is ${goal.status}.`)
         }
-        const resumed = { ...goal, status: "active" as const }
-        yield* save(resumed)
-        return yield* start(input, resumed.objective, resumed.maxIterations, run, respond, resumed)
+        if ((yield* InstanceState.get(running)).runs.has(input.sessionID)) {
+          return yield* reply(`Goal is already running.\n\n${formatStatus(goal)}`)
+        }
+        const limit = GoalStateControl.resumeLimit(
+          goal.iteration,
+          goal.maxIterations,
+          resume[1] === undefined ? undefined : Number.parseInt(resume[1], 10),
+        )
+        if (limit === undefined) {
+          return yield* reply(
+            "Iteration limit reached. Use `/goal resume --max-iterations N` to authorize N additional iterations (1-500).",
+          )
+        }
+        const resumed = yield* storage.update<GoalState>(storageKey(input.sessionID), (current) => {
+          if (current.id !== goal.id || !["active", "paused", "blocked"].includes(current.status)) return
+          current.status = "active"
+          current.maxIterations = limit
+          current.recentHashes = []
+          current.replanned = false
+          current.variant = input.variant ?? current.variant
+          current.updatedAt = Date.now()
+        })
+        if (resumed.id !== goal.id || resumed.status !== "active")
+          return yield* reply("The goal changed; resume the current goal explicitly.")
+        return yield* managedStart(input, resumed.objective, resumed.maxIterations, run, respond, stop, resumed)
       }
 
       // Subcommand: cancel
@@ -458,7 +498,8 @@ const layer = Layer.effect(
         const goal = yield* load(input.sessionID)
         if (!goal) return yield* reply("No active goal to cancel.")
         yield* cancel(input.sessionID)
-        return yield* reply(`Goal cancelled.\n\n${formatStatus({ ...goal, status: "cancelled" })}`)
+        const cancelled = yield* load(input.sessionID)
+        return yield* reply(`Goal ${cancelled?.status ?? goal.status}.\n\n${formatStatus(cancelled ?? goal)}`)
       }
 
       // New goal — parse flags
@@ -480,19 +521,32 @@ const layer = Layer.effect(
         const recoverable =
           existing.iteration === 0 && (existing.plan.length === 0 || existing.completionCriteria.length === 0)
         if (recoverable && existing.objective === objective) {
-          return yield* start(input, existing.objective, existing.maxIterations, run, respond, existing)
+          return yield* managedStart(input, existing.objective, existing.maxIterations, run, respond, stop, existing)
         }
         return yield* reply(
           "A goal is already active. Use `/goal pause`, `/goal cancel`, or `/goal replace <objective>`.",
         )
       }
       if (existing?.status === "paused" && existing.objective === objective && !replace) {
-        const resumed = { ...existing, status: "active" as const }
-        yield* save(resumed)
-        return yield* start(input, resumed.objective, resumed.maxIterations, run, respond, resumed)
+        if (GoalStateControl.resumeLimit(existing.iteration, existing.maxIterations) === undefined) {
+          return yield* reply(
+            "Iteration limit reached. Use `/goal resume --max-iterations N` to authorize additional iterations.",
+          )
+        }
+        const resumed = yield* storage.update<GoalState>(storageKey(input.sessionID), (current) => {
+          if (current.id !== existing.id || current.status !== "paused") return
+          current.status = "active"
+          current.recentHashes = []
+          current.replanned = false
+          current.updatedAt = Date.now()
+        })
+        if (resumed.id !== existing.id || resumed.status !== "active") {
+          return yield* reply("The goal changed; resume the current goal explicitly.")
+        }
+        return yield* managedStart(input, resumed.objective, resumed.maxIterations, run, respond, stop, resumed)
       }
-      if (existing?.status === "active" && replace) yield* save({ ...existing, status: "paused" })
-      return yield* start(input, objective, maxIterations, run, respond)
+      if (existing?.status === "active" && replace) yield* pause(input.sessionID)
+      return yield* managedStart(input, objective, maxIterations, run, respond, stop)
     })
 
     // --- Main goal loop ---
@@ -521,10 +575,11 @@ const layer = Layer.effect(
         failures: [],
         recentHashes: [],
         replanned: false,
+        variant: input.variant,
         lastVerification: undefined,
         currentStep: undefined,
       }
-      if (!existing) yield* save(goal)
+      if (!existing) yield* storage.write(storageKey(goal.sessionID), goal)
 
       // Phase 1: Planning — extract criteria + plan via verifier
       const needsPlanning = goal.plan.length === 0 || goal.completionCriteria.length === 0
@@ -537,24 +592,32 @@ const layer = Layer.effect(
       }
       const latestUser = yield* sessions.findMessage(
         input.sessionID,
-        (message) => message.info.role === "user" && !!message.info.model,
+        (message) => !isGoalControl(message) && message.info.role === "user" && !!message.info.model,
       )
       const model = input.model
         ? Provider.parseModel(input.model)
-        : Option.isSome(latestUser) && latestUser.value.info.role === "user"
-          ? latestUser.value.info.model
+        : (goal.model ??
+          (Option.isSome(latestUser) && latestUser.value.info.role === "user"
+            ? latestUser.value.info.model
+            : undefined))
+      goal.model = model
+      goal.variant ??=
+        Option.isSome(latestUser) && latestUser.value.info.role === "user"
+          ? latestUser.value.info.model.variant
           : undefined
+      yield* save(goal)
       const planData = needsPlanning
-        ? yield* runPlanning(input.sessionID, objective, model, run).pipe(
-            Effect.onInterrupt(() => pauseInterrupted(goal, "Planning was interrupted; goal can be resumed.")),
-            Effect.catchCause((cause) => {
-              if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
-              return Effect.gen(function* () {
-                goal.failures.push({ iteration: 0, error: `Planning failed: ${Cause.pretty(cause).slice(0, 1000)}` })
-                yield* save(goal)
-                return undefined
-              })
-            }),
+        ? yield* runPlanning(input.sessionID, objective, model, goal.variant, run).pipe(
+            Effect.catchCause(
+              (cause): Effect.Effect<{ criteria: string[]; plan: GoalState["plan"] } | undefined, unknown> => {
+                if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
+                return Effect.gen(function* () {
+                  goal.failures.push({ iteration: 0, error: `Planning failed: ${Cause.pretty(cause).slice(0, 1000)}` })
+                  yield* save(goal)
+                  return undefined
+                })
+              },
+            ),
           )
         : undefined
       if (planData) {
@@ -571,17 +634,18 @@ const layer = Layer.effect(
       }
       if (needsPlanning) {
         yield* save(goal)
-        yield* respond(
-          planData
-            ? `Goal planned: ${goal.completionCriteria.length} criteria, ${goal.plan.length} steps. Starting autonomous execution.`
-            : `Planner failed to return a plan. Continuing with a fallback plan so the goal does not remain stuck.`,
-        )
+        if (goal.status === "active") {
+          yield* respond(
+            planData
+              ? `Goal planned: ${goal.completionCriteria.length} criteria, ${goal.plan.length} steps. Starting autonomous execution.`
+              : `Planner failed to return a plan. Continuing with a fallback plan so the goal does not remain stuck.`,
+          )
+        }
       }
 
-      // Phase 2: First agent turn
-      let currentMessage = goal.lastVerification
-        ? continuationMessage(goal, goal.lastVerification, goal.replanned)
-        : firstMessage(goal)
+      let lastInputID: MessageID | undefined
+      let deliveredUpdates = 0
+      let deliveredVerification: VerificationResult | undefined
       let forceReplan = false
 
       // Phase 3: Loop
@@ -589,10 +653,29 @@ const layer = Layer.effect(
         // Check cancellation between iterations
         const current = yield* load(input.sessionID)
         if (current?.id !== goal.id || current?.status !== "active") {
-          goal.status = current?.status ?? "cancelled"
-          yield* save(goal)
+          goal.status = current?.id === goal.id ? current.status : "cancelled"
           break
         }
+        Object.assign(goal, GoalStateControl.merge(current, goal))
+        // A durable input is the delivery boundary, never a persisted cursor.
+        // Compaction after that boundary requires a fresh objective/criteria anchor.
+        const boundary = lastInputID
+          ? yield* sessions.findMessage(
+              input.sessionID,
+              (message) =>
+                message.info.id === lastInputID ||
+                (message.info.role === "assistant" && message.info.summary === true) ||
+                message.parts.some((part) => part.type === "compaction"),
+            )
+          : Option.none<SessionV1.WithParts>()
+        const anchor = Option.isNone(boundary) || boundary.value.info.id !== lastInputID
+        const updates = GoalStateControl.userUpdates(goal.observations, goal.instructions)
+        const newUpdates = anchor ? updates : updates.slice(deliveredUpdates)
+        const sentVerification = goal.lastVerification
+        const currentMessage = anchor
+          ? GoalPrompts.initial(goal, newUpdates, sentVerification)
+          : GoalPrompts.continuation(goal, newUpdates, sentVerification, deliveredVerification, forceReplan)
+        const messageID = MessageID.ascending()
 
         goal.iteration++
         const step = goal.plan.find((step) => step.status === "running" || step.status === "pending")
@@ -603,6 +686,7 @@ const layer = Layer.effect(
           )
         }
         yield* save(goal)
+        if (goal.status !== "active") break
         yield* respond(
           `Goal iteration ${goal.iteration}/${goal.maxIterations} — executing: ${goal.currentStep ?? goal.objective}`,
         )
@@ -610,11 +694,13 @@ const layer = Layer.effect(
         // Run agent turn on the parent session
         const agentResult = yield* run({
           sessionID: input.sessionID,
+          messageID,
           agent: input.agent,
+          model,
+          variant: goal.variant,
           parts: [{ type: "text", text: currentMessage }],
         }).pipe(
-          Effect.onInterrupt(() => pauseInterrupted(goal, "Agent execution was interrupted; goal can be resumed.")),
-          Effect.catchCause((cause) => {
+          Effect.catchCause((cause): Effect.Effect<SessionV1.WithParts | undefined, unknown> => {
             if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
             return Effect.gen(function* () {
               goal.failures.push({ iteration: goal.iteration, error: Cause.pretty(cause).slice(0, 1000) })
@@ -624,21 +710,38 @@ const layer = Layer.effect(
           }),
         )
 
+        if (
+          agentResult?.info.role === "assistant" &&
+          !agentResult.info.error &&
+          agentResult.info.finish !== "error" &&
+          Option.isSome(
+            yield* sessions.findMessage(
+              input.sessionID,
+              (message) => message.info.role === "user" && message.info.id === messageID,
+            ),
+          )
+        ) {
+          lastInputID = messageID
+          deliveredUpdates = updates.length
+          deliveredVerification = sentVerification
+        } else lastInputID = undefined
+
         // Capture observations from agent output
         const textParts = agentResult?.parts.filter((p) => p.type === "text") ?? []
         const agentText = textParts.map((p) => p.text).join("\n")
-        if (agentText.length > 0 && agentText.length < 2000) {
-          goal.observations.push(`[${goal.iteration}] ${agentText.slice(0, 500)}`)
+        if (agentResult) {
+          goal.latestEvidence = { iteration: goal.iteration, text: agentText, messageID: agentResult.info.id }
+          goal.observations.push(`[${goal.iteration}] Executor report: ${agentResult.info.id}`)
           if (goal.observations.length > 50) goal.observations = goal.observations.slice(-30)
         }
 
         // Check cancellation after agent turn
         const afterAgent = yield* load(input.sessionID)
         if (afterAgent?.id !== goal.id || afterAgent?.status !== "active") {
-          goal.status = afterAgent?.status ?? "cancelled"
-          yield* save(goal)
+          goal.status = afterAgent?.id === goal.id ? afterAgent.status : "cancelled"
           break
         }
+        Object.assign(goal, GoalStateControl.merge(afterAgent, goal))
 
         // Check for agent-reported errors (finish === "error")
         if (agentResult?.info.role === "assistant" && agentResult.info.error) {
@@ -654,10 +757,18 @@ const layer = Layer.effect(
         }
 
         // Phase 4: Verification via independent verifier
-        yield* respond(`Goal iteration ${goal.iteration}/${goal.maxIterations} — verifying repository state...`)
-        const verification = yield* runVerifier(input.sessionID, verifyPrompt(goal), model, run).pipe(
-          Effect.onInterrupt(() => pauseInterrupted(goal, "Verification was interrupted; goal can be resumed.")),
-          Effect.catchCause((cause) => {
+        yield* save(goal)
+        if (goal.status !== "active") break
+        const verificationUpdates = JSON.stringify(GoalStateControl.userUpdates(goal.observations, goal.instructions))
+        yield* respond(`Goal iteration ${goal.iteration}/${goal.maxIterations} — verifying progress...`)
+        const verification = yield* runVerifier(
+          input.sessionID,
+          GoalPrompts.verify(goal, GoalStateControl.userUpdates(goal.observations, goal.instructions)),
+          model,
+          goal.variant,
+          run,
+        ).pipe(
+          Effect.catchCause((cause): Effect.Effect<VerificationResult | undefined, unknown> => {
             if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
             return Effect.gen(function* () {
               goal.failures.push({
@@ -689,6 +800,14 @@ const layer = Layer.effect(
           }
         }
         yield* save(goal)
+        if (goal.status !== "active") break
+        if (
+          JSON.stringify(GoalStateControl.userUpdates(goal.observations, goal.instructions)) !== verificationUpdates
+        ) {
+          goal.lastVerification = undefined
+          yield* save(goal)
+          continue
+        }
 
         const passed = goal.lastVerification.criteria.filter((criterion) => criterion.passed).length
         yield* respond(
@@ -703,7 +822,8 @@ const layer = Layer.effect(
           // Mark all plan steps as completed
           goal.plan = goal.plan.map((s) => (s.status !== "skipped" ? { ...s, status: "completed" as const } : s))
           yield* save(goal)
-          break
+          if (goal.status === "completed") break
+          continue
         }
 
         // Check blocked
@@ -734,9 +854,7 @@ const layer = Layer.effect(
         } else {
           forceReplan = false
         }
-
-        // Prepare continuation message
-        currentMessage = continuationMessage(goal, goal.lastVerification, forceReplan)
+        yield* save(goal)
       }
 
       // Hit iteration limit while still active
@@ -769,20 +887,38 @@ const layer = Layer.effect(
       return yield* respond(summaryLines.join("\n"))
     })
 
-    // --- Cancel ---
+    // --- Control changes are atomic and interrupt whichever session is active. ---
+
+    const pause = Effect.fn("Goal.pause")(function* (sessionID: SessionID) {
+      if (yield* load(sessionID)) {
+        yield* storage.update<GoalState>(storageKey(sessionID), (current) => {
+          if (current.status !== "active") return
+          current.status = "paused"
+          current.updatedAt = Date.now()
+        })
+      }
+      yield* stopRunning(sessionID)
+    })
 
     const cancel = Effect.fn("Goal.cancel")(function* (sessionID: SessionID) {
-      const goal = yield* load(sessionID)
-      if (goal && ["active", "paused", "blocked"].includes(goal.status)) {
-        yield* save({ ...goal, status: "cancelled" })
-      }
+      if (!(yield* load(sessionID))) return
+      yield* storage.update<GoalState>(storageKey(sessionID), (current) => {
+        if (!["active", "paused", "blocked"].includes(current.status)) return
+        current.status = "cancelled"
+        current.updatedAt = Date.now()
+      })
+      yield* stopRunning(sessionID)
     })
 
     const observe = Effect.fn("Goal.observe")(function* (sessionID: SessionID, text: string) {
-      const goal = yield* load(sessionID)
-      if (!goal || goal.status !== "active") return
-      const observations = [...goal.observations, `[user] ${text.slice(0, 1000)}`].slice(-30)
-      yield* save({ ...goal, observations, replanned: true })
+      if (!(yield* load(sessionID))) return
+      yield* storage.update<GoalState>(storageKey(sessionID), (current) => {
+        if (current.status !== "active") return
+        current.instructions = [...GoalStateControl.instructionTexts(current.observations, current.instructions), text]
+        current.observations = [...current.observations, `[user] ${text}`].slice(-30)
+        current.replanned = true
+        current.updatedAt = Date.now()
+      })
     })
 
     // --- Get ---
@@ -791,14 +927,14 @@ const layer = Layer.effect(
       return yield* load(sessionID)
     })
 
-    return Service.of({ command, get, observe, cancel })
+    return Service.of({ command, get, observe, pause, cancel })
   }),
 )
 
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Storage.node, Session.node],
+  deps: [Storage.node, Session.node, Agent.node],
 })
 
 export * as Goal from "./index"

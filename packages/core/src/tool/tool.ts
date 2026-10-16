@@ -67,6 +67,28 @@ type Runtime = {
 }
 
 const runtimes = new WeakMap<AnyTool, Runtime>()
+const jsonInputSchemas = new WeakMap<Schema.Top, JsonSchema.JsonSchema>()
+
+export const jsonInput = (
+  raw: JsonSchema.JsonSchema,
+): Effect.Effect<Schema.Codec<Record<string, unknown>>, RegistrationError> =>
+  Effect.gen(function* () {
+    const helper = yield* Effect.promise(() => import("./json-input"))
+    const compiler = yield* helper.load()
+    const compiled = yield* Effect.try({
+      try: () => compiler.compile(raw),
+      catch: (error) =>
+        error instanceof RegistrationError
+          ? error
+          : new RegistrationError({ name: "json-input", message: "Invalid JSON Schema for tool input" }),
+    })
+    const codec = Schema.declare<Record<string, unknown>>(
+      (input): input is Record<string, unknown> =>
+        typeof input === "object" && input !== null && !Array.isArray(input) && compiled.validate(input),
+    )
+    jsonInputSchemas.set(codec, compiled.schema)
+    return codec
+  })
 
 export function make<
   Input extends SchemaType<any>,
@@ -85,6 +107,7 @@ export function make<
         inputSchema: toJsonSchema(config.input),
         outputSchema: toJsonSchema(config.structured ?? config.output),
       })
+      if (jsonInputSchemas.has(config.input)) freezeJsonSchema(definition.inputSchema)
       definitions.set(name, definition)
       return definition
     },
@@ -156,7 +179,23 @@ function runtimeOf(tool: AnyTool) {
 }
 
 function toJsonSchema(schema: Schema.Top): JsonSchema.JsonSchema {
+  const raw = jsonInputSchemas.get(schema)
+  if (raw) return raw
   const document = Schema.toJsonSchemaDocument(schema)
   if (Object.keys(document.definitions).length === 0) return document.schema
   return { ...document.schema, $defs: document.definitions }
+}
+
+function freezeJsonSchema(schema: JsonSchema.JsonSchema): void {
+  for (const value of Object.values(schema)) {
+    if (typeof value !== "object" || value === null || Object.isFrozen(value)) continue
+    if (!Array.isArray(value)) freezeJsonSchema(value as JsonSchema.JsonSchema)
+    else {
+      for (const item of value) {
+        if (typeof item === "object" && item !== null) freezeJsonSchema(item as JsonSchema.JsonSchema)
+      }
+      Object.freeze(value)
+    }
+  }
+  Object.freeze(schema)
 }

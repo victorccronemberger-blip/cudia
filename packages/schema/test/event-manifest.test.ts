@@ -9,8 +9,8 @@ import { WorkspaceEvent } from "../src/workspace-event"
 
 describe("public event manifest", () => {
   test("owns the complete public event surface", () => {
-    expect(EventManifest.ServerDefinitions.length).toBe(55)
-    expect(EventManifest.Definitions.length).toBe(85)
+    expect(EventManifest.ServerDefinitions.length).toBe(58)
+    expect(EventManifest.Definitions.length).toBe(89)
     expect(SessionV1.Event.Definitions).toEqual([
       SessionV1.Event.Created,
       SessionV1.Event.Updated,
@@ -19,12 +19,18 @@ describe("public event manifest", () => {
       SessionV1.Event.MessageRemoved,
       SessionV1.Event.PartUpdated,
       SessionV1.Event.PartRemoved,
+      SessionV1.Event.ToolOutputCompacted,
       SessionV1.Event.PartDelta,
       SessionV1.Event.Diff,
       SessionV1.Event.Error,
     ])
-    expect(EventManifest.Latest.size).toBe(85)
-    expect(EventManifest.Durable.size).toBe(32)
+    expect(EventManifest.Latest.size).toBe(89)
+    expect(EventManifest.Durable.size).toBe(36)
+    expect(EventManifest.ServerDefinitions).not.toContain(SessionV1.Event.ToolOutputCompacted)
+    expect(EventManifest.Latest.get(SessionV1.Event.ToolOutputCompacted.type)).toBe(SessionV1.Event.ToolOutputCompacted)
+    expect(EventManifest.Durable.get(`${SessionV1.Event.ToolOutputCompacted.type}.1`)).toBe(
+      SessionV1.Event.ToolOutputCompacted,
+    )
   })
 
   test("uses canonical definitions for current public events", () => {
@@ -42,7 +48,7 @@ describe("public event manifest", () => {
     expect(Reference.Event.Definitions).toEqual([Reference.Event.Updated])
     expect(EventManifest.Latest.has("ide.installed")).toBe(false)
     expect(IdeEvent.Definitions).toEqual([IdeEvent.Installed])
-    expect(EventManifest.Definitions.slice(40, 43)).toEqual([
+    expect(EventManifest.Definitions.slice(44, 47)).toEqual([
       SessionV1.Event.PartDelta,
       SessionV1.Event.Diff,
       SessionV1.Event.Error,

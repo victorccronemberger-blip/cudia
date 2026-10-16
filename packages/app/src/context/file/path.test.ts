@@ -44,6 +44,23 @@ describe("file path helpers", () => {
     expect(path.normalizeDir("literal\\name/")).toBe("literal\\name")
   })
 
+  test("round-trips literal POSIX names through file tabs", () => {
+    const path = createPathHelpers(() => "/repo", { literalPaths: () => true })
+    const names = ["hash#name", "percent%20name", "query?name", "literal\\name", "\\name", ".\\name", '"name"', "文档"]
+
+    for (const name of names) {
+      expect(path.normalize(name)).toBe(name)
+      expect(path.pathFromTab(path.tab(name))).toBe(name)
+    }
+  })
+
+  test("round-trips literal Windows file names and canonical separators", () => {
+    const path = createPathHelpers(() => "C:\\repo", { literalPaths: () => true })
+    const absolute = "C:\\repo\\file# %20?\\文档.txt"
+
+    expect(path.pathFromTab(path.tab(absolute))).toBe("file# %20?/文档.txt")
+  })
+
   test("keeps query/hash stripping behavior stable", () => {
     expect(stripQueryAndHash("a/b.ts#L12?x=1")).toBe("a/b.ts")
     expect(stripQueryAndHash("a/b.ts?x=1#L12")).toBe("a/b.ts")

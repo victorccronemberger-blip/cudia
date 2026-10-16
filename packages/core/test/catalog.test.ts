@@ -334,7 +334,7 @@ describe("CatalogV2", () => {
     }),
   )
 
-  it.effect("removes providers denied by policy after loading", () =>
+  it.effect("keeps providers available when legacy policy records contain deny", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
       const policy = yield* Policy.Service
@@ -345,9 +345,9 @@ describe("CatalogV2", () => {
         catalog.model.update(providerID, ModelV2.ID.make("model"), () => {})
       })
 
-      expect(yield* catalog.provider.all()).toEqual([])
-      expect(yield* catalog.model.all()).toEqual([])
-      expect(yield* catalog.provider.get(providerID)).toBeUndefined()
+      expect((yield* catalog.provider.all()).map((provider) => provider.id)).toContain(providerID)
+      expect((yield* catalog.model.all()).map((model) => model.id)).toContain(ModelV2.ID.make("model"))
+      expect(yield* catalog.provider.get(providerID)).toBeDefined()
     }),
   )
 })

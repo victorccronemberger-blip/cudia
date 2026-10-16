@@ -190,8 +190,15 @@ export function createChildStoreManager(input: {
 
           const pathQuery = useQuery(() => ({ ...input.queryOptions.path(key), enabled: instanceQueriesEnabled() }))
           const mcpQuery = useQuery(() => ({ ...input.queryOptions.mcp(key), enabled: mcpEnabled() }))
-          const mcpResourceQuery = useQuery(() => ({ ...input.queryOptions.mcpResources(key), enabled: mcpEnabled() }))
-          const lspQuery = useQuery(() => ({ ...input.queryOptions.lsp(key), enabled: instanceQueriesEnabled() }))
+          const mcpResourceQuery = useQuery(() => {
+            const options = input.queryOptions.mcpResources(key)
+            return { ...options, enabled: mcpEnabled() && options.enabled !== false }
+          })
+          const lspSupported = () => input.queryOptions.lsp(key).enabled !== false
+          const lspQuery = useQuery(() => {
+            const options = input.queryOptions.lsp(key)
+            return { ...options, enabled: instanceQueriesEnabled() && options.enabled !== false }
+          })
           const providerQuery = useQuery(() => ({
             ...input.queryOptions.providers(key),
             enabled: instanceQueriesEnabled(),
@@ -247,10 +254,10 @@ export function createChildStoreManager(input: {
               return mcpResourceQuery.isLoading ? {} : (mcpResourceQuery.data ?? {})
             },
             get lsp_ready() {
-              return instanceQueriesEnabled() && !lspQuery.isLoading
+              return lspSupported() && instanceQueriesEnabled() && !lspQuery.isLoading
             },
             get lsp() {
-              return lspQuery.isLoading ? [] : (lspQuery.data ?? [])
+              return !lspSupported() || lspQuery.isLoading ? [] : (lspQuery.data ?? [])
             },
             vcs: vcsStore.value,
             limit: 5,

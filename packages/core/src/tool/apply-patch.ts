@@ -8,6 +8,7 @@ import { makeLocationNode } from "../effect/app-node"
 import { FileMutation } from "../file-mutation"
 import { FSUtil } from "../fs-util"
 import { LocationMutation } from "../location-mutation"
+import { LSPMutation } from "../lsp/mutation"
 import { Patch } from "../patch"
 import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
@@ -31,6 +32,7 @@ export const Applied = Schema.Struct({
 export const Output = Schema.Struct({
   applied: Schema.Array(Applied),
   files: Schema.Array(FileDiff.Info),
+  lsp: LSPMutation.Result.pipe(Schema.optional),
 })
 export type Output = typeof Output.Type
 
@@ -40,7 +42,7 @@ export const toModelOutput = (output: Output) =>
     ...output.applied.map(
       (item) => `${item.type === "add" ? "A" : item.type === "delete" ? "D" : "M"} ${item.resource}`,
     ),
-  ].join("\n")
+  ].join("\n") + LSPMutation.format(output.lsp)
 
 type Prepared =
   | (Extract<Patch.Hunk, { readonly type: "add" | "delete" }> & {
@@ -63,18 +65,26 @@ const layer = Layer.effectDiscard(
     const files = yield* FileMutation.Service
     const fs = yield* FSUtil.Service
     const permission = yield* PermissionV2.Service
+    const lsp = yield* LSPMutation.Service
 
     yield* tools
       .register({
         [name]: Tool.withPermission(
           Tool.make({
             description:
-              "Apply one patch containing add, update, and delete file operations. All targets are resolved and approved before target contents are read. Operations apply sequentially; if a later operation fails, earlier operations remain applied and the failure reports them explicitly. Moves and atomic rollback are not supported yet.",
+              "Apply one patch containing add, update, and delete file operations. Targets are resolved to canonical paths before target contents are read. Paths resolve against the active Location; parent-relative, absolute, and symlink-resolved paths can target elsewhere. Operations apply sequentially; if a later operation fails, earlier operations remain applied and the failure reports them explicitly. Moves and atomic rollback are not supported yet.",
             input: Input,
             output: Output,
             toModelOutput: ({ output }) => [{ type: "text", text: toModelOutput(output) }],
             execute: (input, context) => {
               const applied: Array<typeof Applied.Type> = []
+              const followup = () =>
+                lsp.after(
+                  applied.map((item) => ({
+                    filePath: item.target,
+                    kind: item.type === "delete" ? ("deleted" as const) : ("changed" as const),
+                  })),
+                )
               const fail = (path: string) => {
                 const prefix =
                   applied.length === 0
@@ -186,7 +196,27 @@ const layer = Layer.effectDiscard(
                   { discard: true },
                 )
                 return { applied, files: patchFiles }
-              }).pipe(Effect.mapError((error) => (error instanceof ToolFailure ? error : fail("patch"))))
+              }).pipe(
+                Effect.mapError((error) => (error instanceof ToolFailure ? error : fail("patch"))),
+                Effect.catch((error) =>
+                  followup().pipe(
+                    Effect.flatMap((report) =>
+                      Effect.fail(
+                        report
+                          ? new ToolFailure({
+                              message: error.message + LSPMutation.format(report),
+                              error: error.error,
+                              metadata: { ...error.metadata, lsp: report },
+                            })
+                          : error,
+                      ),
+                    ),
+                  ),
+                ),
+                Effect.flatMap((output) =>
+                  followup().pipe(Effect.map((report) => ({ ...output, ...(report ? { lsp: report } : {}) }))),
+                ),
+              )
             },
           }),
           "edit",
@@ -199,7 +229,7 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/apply-patch",
   layer,
-  deps: [ToolRegistry.node, LocationMutation.node, FileMutation.node, FSUtil.node, PermissionV2.node],
+  deps: [ToolRegistry.node, LocationMutation.node, FileMutation.node, FSUtil.node, PermissionV2.node, LSPMutation.node],
 })
 
 function patchFile(change: Prepared): typeof FileDiff.Info.Type {

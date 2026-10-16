@@ -7,6 +7,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { it } from "./lib/effect"
 import { readFile, rm, writeFile, utimes, mkdir } from "fs/promises"
 import path from "path"
@@ -18,16 +19,21 @@ import path from "path"
 // bun process.
 const ORIGINAL_MODELS_PATH = Flag.OPENCODE_MODELS_PATH
 const ORIGINAL_DISABLE_FETCH = Flag.OPENCODE_DISABLE_MODELS_FETCH
+const ORIGINAL_MODELS_URL = Flag.OPENCODE_MODELS_URL
 beforeAll(() => {
   Flag.OPENCODE_MODELS_PATH = undefined
   Flag.OPENCODE_DISABLE_MODELS_FETCH = true
+  Flag.OPENCODE_MODELS_URL = undefined
 })
 afterAll(() => {
   Flag.OPENCODE_MODELS_PATH = ORIGINAL_MODELS_PATH
   Flag.OPENCODE_DISABLE_MODELS_FETCH = ORIGINAL_DISABLE_FETCH
+  Flag.OPENCODE_MODELS_URL = ORIGINAL_MODELS_URL
 })
 
 const cacheFile = path.join(Global.Path.cache, "models.json")
+const explicitSource = "https://catalog.fixture.invalid"
+const explicitCacheFile = path.join(Global.Path.cache, `models-${Hash.fast(explicitSource)}.json`)
 
 const fixture: Record<string, ModelsDev.Provider> = {
   acme: {
@@ -97,13 +103,13 @@ const buildLayer = (state: Ref.Ref<MockState>) =>
     ]),
   )
 
-const writeCacheText = (text: string, mtimeMs?: number) =>
+const writeCacheText = (text: string, mtimeMs?: number, target = cacheFile) =>
   Effect.promise(async () => {
     await mkdir(Global.Path.cache, { recursive: true })
-    await writeFile(cacheFile, text)
+    await writeFile(target, text)
     if (mtimeMs !== undefined) {
       const t = mtimeMs / 1000
-      await utimes(cacheFile, t, t)
+      await utimes(target, t, t)
     }
   })
 
@@ -114,10 +120,14 @@ const provided = <A, E>(state: Ref.Ref<MockState>, eff: Effect.Effect<A, E, Mode
 
 beforeEach(async () => {
   await rm(cacheFile, { force: true })
+  await rm(explicitCacheFile, { force: true })
+  Flag.OPENCODE_MODELS_URL = undefined
+  Flag.OPENCODE_DISABLE_MODELS_FETCH = true
 })
 
 afterAll(async () => {
   await rm(cacheFile, { force: true })
+  await rm(explicitCacheFile, { force: true })
 })
 
 const initialState: MockState = {
@@ -156,8 +166,10 @@ describe("ModelsDev Service", () => {
 
   it.live("get() recovers from a corrupted cache file by fetching a fresh catalog", () =>
     Effect.gen(function* () {
-      yield* writeCacheText("{")
+      yield* writeCacheText("{", undefined, explicitCacheFile)
       const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
+      Flag.OPENCODE_MODELS_URL = explicitSource
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = false
       const context = yield* Layer.build(buildLayer(state))
       const result = yield* Effect.acquireUseRelease(
         Effect.sync(() => {
@@ -167,12 +179,15 @@ describe("ModelsDev Service", () => {
         () =>
           Effect.sync(() => {
             Flag.OPENCODE_DISABLE_MODELS_FETCH = true
+            Flag.OPENCODE_MODELS_URL = undefined
           }),
       )
       expect(result).toEqual(fixture2)
-      expect(yield* Effect.promise(() => readFile(cacheFile, "utf8"))).toBe(JSON.stringify(fixture2))
+      expect(yield* Effect.promise(() => readFile(explicitCacheFile, "utf8"))).toBe(JSON.stringify(fixture2))
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBe(1)
+      Flag.OPENCODE_MODELS_URL = undefined
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = true
     }),
   )
 
@@ -215,7 +230,9 @@ describe("ModelsDev Service", () => {
 
   it.live("refresh(true) fetches via HttpClient and updates the cache", () =>
     Effect.gen(function* () {
-      yield* writeCache(fixture)
+      Flag.OPENCODE_MODELS_URL = explicitSource
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = false
+      yield* writeCacheText(JSON.stringify(fixture), undefined, explicitCacheFile)
       const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
       const result = yield* provided(
         state,
@@ -233,6 +250,8 @@ describe("ModelsDev Service", () => {
       expect(final.calls.length).toBe(1)
       expect(final.calls[0].url).toContain("/api.json")
       expect(final.calls[0].userAgent).toContain("/cli")
+      Flag.OPENCODE_MODELS_URL = undefined
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = true
     }),
   )
 
@@ -252,8 +271,10 @@ describe("ModelsDev Service", () => {
 
   it.live("refresh(false) fetches when on-disk file is stale", () =>
     Effect.gen(function* () {
+      Flag.OPENCODE_MODELS_URL = explicitSource
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = false
       // Stale: mtime 10 minutes ago, beyond the 5-minute TTL.
-      yield* writeCache(fixture, Date.now() - 10 * 60 * 1000)
+      yield* writeCacheText(JSON.stringify(fixture), Date.now() - 10 * 60 * 1000, explicitCacheFile)
       const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
       const after = yield* provided(
         state,
@@ -266,12 +287,16 @@ describe("ModelsDev Service", () => {
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBe(1)
       expect(after).toEqual(fixture2)
+      Flag.OPENCODE_MODELS_URL = undefined
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = true
     }),
   )
 
   it.live("refresh swallows HTTP errors and leaves cache intact", () =>
     Effect.gen(function* () {
-      yield* writeCache(fixture)
+      Flag.OPENCODE_MODELS_URL = explicitSource
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = false
+      yield* writeCacheText(JSON.stringify(fixture), undefined, explicitCacheFile)
       const state = yield* Ref.make({ ...initialState, status: 500, body: "boom" })
       const result = yield* provided(
         state,
@@ -285,6 +310,53 @@ describe("ModelsDev Service", () => {
       // retryTransient retries 5xx, so calls may be > 1.
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBeGreaterThanOrEqual(1)
+      Flag.OPENCODE_MODELS_URL = undefined
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = true
+    }),
+  )
+
+  it.live("uses the embedded or cached catalog by default without upstream refresh and hides OpenCode accounts", () =>
+    Effect.gen(function* () {
+      const catalog = {
+        ...fixture,
+        opencode: { ...fixture.acme, id: "opencode", name: "OpenCode Zen" },
+      }
+      yield* writeCache(catalog)
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = false
+      const state = yield* Ref.make(initialState)
+      const result = yield* provided(
+        state,
+        Effect.gen(function* () {
+          const service = yield* ModelsDev.Service
+          const providers = yield* service.get()
+          yield* service.refresh(true)
+          return providers
+        }),
+      )
+      expect(Object.keys(result)).toEqual(["acme"])
+      expect((yield* Ref.get(state)).calls).toEqual([])
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = true
+    }),
+  )
+
+  it.live("keeps an explicitly selected catalog source available", () =>
+    Effect.gen(function* () {
+      const source = explicitSource
+      Flag.OPENCODE_MODELS_URL = source
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = false
+      const customCatalog = {
+        ...fixture2,
+        opencode: { ...fixture.acme, id: "opencode", name: "Explicitly configured catalog" },
+      }
+      const state = yield* Ref.make({ ...initialState, body: JSON.stringify(customCatalog) })
+      const result = yield* provided(
+        state,
+        ModelsDev.Service.use((service) => service.get()),
+      )
+      expect(result).toEqual(customCatalog)
+      expect((yield* Ref.get(state)).calls.map((call) => call.url)).toEqual([`${source}/api.json`])
+      Flag.OPENCODE_MODELS_URL = undefined
+      Flag.OPENCODE_DISABLE_MODELS_FETCH = true
     }),
   )
 })

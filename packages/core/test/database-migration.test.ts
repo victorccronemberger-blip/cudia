@@ -8,6 +8,7 @@ import { Effect, Layer } from "effect"
 import { eq, inArray, sql } from "drizzle-orm"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
 import { migrations } from "@opencode-ai/core/database/migration.gen"
+import workspaceNameMigration from "@opencode-ai/core/database/migration/20260410174513_workspace-name"
 import sessionUsageMigration from "@opencode-ai/core/database/migration/20260510033149_session_usage"
 import normalizeStoragePathsMigration from "@opencode-ai/core/database/migration/20260601010001_normalize_storage_paths"
 import sessionMessageProjectionOrderMigration from "@opencode-ai/core/database/migration/20260603040000_session_message_projection_order"
@@ -15,6 +16,8 @@ import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migrat
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
+import credentialRefreshAttemptMigration from "@opencode-ai/core/database/migration/20261015134041_credential_refresh_attempt"
+import sessionContextManifestMigration from "@opencode-ai/core/database/migration/20261015201710_session_context_manifest"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -38,6 +41,129 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
 const makeDb = EffectDrizzleSqlite.makeWithDefaults()
 
 describe("DatabaseMigration", () => {
+  test("adds a private refresh marker without changing existing credentials", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        const value = JSON.stringify({ type: "oauth", methodID: "oauth", access: "legacy", refresh: "legacy-refresh" })
+        yield* db.run(sql`CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text, value text)`)
+        yield* db.run(sql`INSERT INTO credential VALUES ('cred_legacy', 'legacy', 'Work', ${value})`)
+        yield* DatabaseMigration.applyOnly(db, [credentialRefreshAttemptMigration])
+        yield* DatabaseMigration.applyOnly(db, [credentialRefreshAttemptMigration])
+        expect(yield* db.get(sql`SELECT id, integration_id, label, value, refresh_attempt FROM credential`)).toEqual({
+          id: "cred_legacy",
+          integration_id: "legacy",
+          label: "Work",
+          value,
+          refresh_attempt: null,
+        })
+        expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([
+          { id: "20261015134041_credential_refresh_attempt" },
+        ])
+      }),
+    )
+  })
+
+  test("adds nullable context provenance without rewriting existing context epochs", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        const snapshot = '{"test/context":{"value":"legacy"}}'
+        yield* db.run(sql`
+          CREATE TABLE session_context_epoch (
+            session_id text PRIMARY KEY,
+            baseline text NOT NULL,
+            snapshot text NOT NULL,
+            baseline_seq integer NOT NULL
+          )
+        `)
+        yield* db.run(
+          sql`INSERT INTO session_context_epoch (session_id, baseline, snapshot, baseline_seq) VALUES ('legacy', 'old baseline', ${snapshot}, 47)`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [sessionContextManifestMigration])
+        yield* DatabaseMigration.applyOnly(db, [sessionContextManifestMigration])
+
+        expect(
+          yield* db.get(
+            sql`SELECT session_id, baseline, snapshot, baseline_seq, baseline_manifest FROM session_context_epoch WHERE session_id = 'legacy'`,
+          ),
+        ).toEqual({
+          session_id: "legacy",
+          baseline: "old baseline",
+          snapshot,
+          baseline_seq: 47,
+          baseline_manifest: null,
+        })
+        expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([
+          { id: "20261015201710_session_context_manifest" },
+        ])
+      }),
+    )
+  })
+
+  test("defaults missing workspace names while preserving legacy workspace data", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`
+          CREATE TABLE workspace (
+            id text PRIMARY KEY,
+            type text NOT NULL,
+            branch text,
+            directory text,
+            extra text,
+            project_id text NOT NULL
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO workspace (id, type, branch, directory, extra, project_id)
+          VALUES ('wrk_legacy', 'remote', 'main', '/repo', '{}', 'proj_legacy')
+        `)
+
+        yield* DatabaseMigration.applyOnly(db, [workspaceNameMigration])
+
+        expect(yield* db.get(sql`SELECT id, name, branch, directory, extra FROM workspace`)).toEqual({
+          id: "wrk_legacy",
+          name: "",
+          branch: "main",
+          directory: "/repo",
+          extra: "{}",
+        })
+      }),
+    )
+  })
+
+  test("imports unnamed legacy Drizzle journal entries by their actual migration timestamps", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE __drizzle_migrations (id integer PRIMARY KEY, hash text, created_at integer)`)
+        yield* db.run(sql`
+          INSERT INTO __drizzle_migrations (hash, created_at)
+          VALUES ('', ${Date.UTC(2026, 3, 10, 17, 45, 13)})
+        `)
+
+        yield* DatabaseMigration.applyOnly(db, [workspaceNameMigration])
+
+        expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([{ id: "20260410174513_workspace-name" }])
+      }),
+    )
+  })
+
+  test("rejects unknown legacy Drizzle journal timestamps instead of guessing completed migrations", async () => {
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const db = yield* makeDb
+          yield* db.run(sql`CREATE TABLE __drizzle_migrations (id integer PRIMARY KEY, hash text, created_at integer)`)
+          yield* db.run(sql`INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('', 1234567890000)`)
+          yield* DatabaseMigration.applyOnly(db, [workspaceNameMigration])
+        }),
+      ),
+    ).rejects.toThrow("does not match any known migration")
+  })
+
   test("serializes concurrent embedded initialization for one database path", async () => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "embedded.sqlite")
@@ -50,15 +176,13 @@ describe("DatabaseMigration", () => {
       ),
     )
   })
-  if (process.platform === "linux") {
-    test("declared schema has no ungenerated migrations", async () => {
-      const result = await $`bun ${fileURLToPath(new URL("../script/migration.ts", import.meta.url))} --check`
-        .quiet()
-        .nothrow()
-      expect(result.exitCode, result.stderr.toString()).toBe(0)
-      expect(result.stdout.toString()).toContain("No schema changes, nothing to migrate")
-    }, 30_000)
-  }
+  test("declared schema has no ungenerated migrations", async () => {
+    const result = await $`bun ${fileURLToPath(new URL("../script/migration.ts", import.meta.url))} --check`
+      .quiet()
+      .nothrow()
+    expect(result.exitCode, result.stderr.toString()).toBe(0)
+    expect(result.stdout.toString()).toContain("No schema changes, nothing to migrate")
+  }, 30_000)
 
   test("applies tracked migrations to an empty database", async () => {
     await run(

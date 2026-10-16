@@ -21,8 +21,10 @@ import { AzureAuthPlugin } from "./azure"
 import { DigitalOceanAuthPlugin } from "./digitalocean"
 import { XaiAuthPlugin } from "./xai"
 import { KimiAuthPlugin } from "./kimi"
+import { CerebrasPlugin } from "./cerebras"
 import { SnowflakeCortexAuthPlugin } from "./snowflake-cortex"
-import { Effect, Layer, Context } from "effect"
+import { Cause, Effect, Exit, Layer, Context } from "effect"
+import type { ContextTrace } from "@opencode-ai/core/harness/trace"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
@@ -36,7 +38,13 @@ import { InstallationChannel } from "@opencode-ai/core/installation/version"
 
 type State = {
   hooks: Hooks[]
+  registrations: { hook: Hooks; origin: ContextTrace.Origin }[]
 }
+
+export type Observer<Output> = (
+  source: ContextTrace.Origin,
+  output: Output,
+) => ((outcome: ContextTrace.Outcome) => void) | undefined
 
 // Hook names that follow the (input, output) => Promise<void> trigger pattern
 type TriggerName = {
@@ -52,6 +60,7 @@ export interface Interface {
     name: Name,
     input: Input,
     output: Output,
+    observer?: Observer<Output>,
   ) => Effect.Effect<Output>
   readonly list: () => Effect.Effect<Hooks[]>
   readonly init: () => Effect.Effect<void>
@@ -64,24 +73,28 @@ export function experimentalWebSocketsEnabled(input: { enabled: boolean; channel
 }
 
 // Built-in plugins that are directly imported (not installed from npm)
-function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
+function internalPlugins(flags: RuntimeFlags.Info): { id: string; load: PluginInstance }[] {
   return [
     // Temporary rollout: pre-release builds use WebSockets by default; releases require explicit opt-in.
-    (input) =>
-      CodexAuthPlugin(input, {
-        experimentalWebSockets: experimentalWebSocketsEnabled({ enabled: flags.experimentalWebSockets }),
-      }),
-    CopilotAuthPlugin,
-    ModalPlugin,
-    GitlabAuthPlugin,
-    PoeAuthPlugin,
-    CloudflareWorkersAuthPlugin,
-    CloudflareAIGatewayAuthPlugin,
-    AzureAuthPlugin,
-    DigitalOceanAuthPlugin,
-    SnowflakeCortexAuthPlugin,
-    XaiAuthPlugin,
-    KimiAuthPlugin,
+    {
+      id: "openai-codex",
+      load: (input) =>
+        CodexAuthPlugin(input, {
+          experimentalWebSockets: experimentalWebSocketsEnabled({ enabled: flags.experimentalWebSockets }),
+        }),
+    },
+    { id: "github-copilot", load: CopilotAuthPlugin },
+    { id: "modal", load: ModalPlugin },
+    { id: "gitlab", load: GitlabAuthPlugin },
+    { id: "poe", load: PoeAuthPlugin },
+    { id: "cloudflare-workers", load: CloudflareWorkersAuthPlugin },
+    { id: "cloudflare-ai-gateway", load: CloudflareAIGatewayAuthPlugin },
+    { id: "azure", load: AzureAuthPlugin },
+    { id: "digitalocean", load: DigitalOceanAuthPlugin },
+    { id: "snowflake-cortex", load: SnowflakeCortexAuthPlugin },
+    { id: "xai", load: XaiAuthPlugin },
+    { id: "kimi", load: KimiAuthPlugin },
+    { id: "cerebras", load: CerebrasPlugin },
   ]
 }
 
@@ -98,29 +111,60 @@ function getServerPlugin(value: unknown) {
 
 function getLegacyPlugins(mod: Record<string, unknown>) {
   const seen = new Set<unknown>()
-  const result: PluginInstance[] = []
+  const result: { name: string; server: PluginInstance }[] = []
 
-  for (const entry of Object.values(mod)) {
+  for (const [name, entry] of Object.entries(mod)) {
     if (seen.has(entry)) continue
     seen.add(entry)
     const plugin = getServerPlugin(entry)
     if (!plugin) throw new TypeError("Plugin export is not a function")
-    result.push(plugin)
+    result.push({ name, server: plugin })
   }
 
   return result
 }
 
-async function applyPlugin(load: PluginLoader.Loaded, input: PluginInput, hooks: Hooks[]) {
+// These are observed registration labels, not verified publisher identities.
+// Never retain plugin options or URL credentials/query strings in attribution.
+function observedLabel(value: string) {
+  const head = value.slice(0, 2048).replace(/[\u0000-\u001f\u007f]/g, "")
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(head)) {
+    try {
+      const url = new URL(head)
+      url.username = ""
+      url.password = ""
+      url.search = ""
+      url.hash = ""
+      return url.href.slice(0, 512)
+    } catch {
+      return "unparseable-plugin-label"
+    }
+  }
+  return head.split(/[?#]/, 1)[0].slice(0, 512)
+}
+
+async function applyPlugin(
+  load: PluginLoader.Loaded,
+  input: PluginInput,
+  register: (hook: Hooks, source: Omit<ContextTrace.Origin, "ordinal">) => void,
+) {
   const plugin = readV1Plugin(load.mod, load.spec, "server", "detect")
   if (plugin) {
-    await resolvePluginId(load.source, load.spec, load.target, readPluginId(plugin.id, load.spec), load.pkg)
-    hooks.push(await (plugin as PluginModule).server(input, load.options))
+    const id = await resolvePluginId(load.source, load.spec, load.target, readPluginId(plugin.id, load.spec), load.pkg)
+    register(await (plugin as PluginModule).server(input, load.options), {
+      kind: load.source,
+      id: observedLabel(id),
+      entry: observedLabel(load.entry),
+    })
     return
   }
 
-  for (const server of getLegacyPlugins(load.mod)) {
-    hooks.push(await server(input, load.options))
+  for (const plugin of getLegacyPlugins(load.mod)) {
+    register(await plugin.server(input, load.options), {
+      kind: load.source,
+      id: `legacy:${observedLabel(plugin.name)}`,
+      entry: observedLabel(load.entry),
+    })
   }
 }
 
@@ -134,6 +178,11 @@ const layer = Layer.effect(
     const state = yield* InstanceState.make<State>(
       Effect.fn("Plugin.state")(function* (ctx) {
         const hooks: Hooks[] = []
+        const registrations: State["registrations"] = []
+        const register = (hook: Hooks, source: Omit<ContextTrace.Origin, "ordinal">) => {
+          registrations.push({ hook, origin: Object.freeze({ ...source, ordinal: hooks.length }) })
+          hooks.push(hook)
+        }
         const bridge = yield* EffectBridge.make()
 
         function publishPluginError(message: string) {
@@ -169,13 +218,13 @@ const layer = Layer.effect(
 
         for (const plugin of flags.disableDefaultPlugins ? [] : internalPlugins(flags)) {
           const init = yield* Effect.tryPromise({
-            try: () => plugin(input),
+            try: () => plugin.load(input),
             catch: errorMessage,
           }).pipe(
-            Effect.tapError((error) => Effect.logError("failed to load internal plugin", { name: plugin.name, error })),
+            Effect.tapError((error) => Effect.logError("failed to load internal plugin", { name: plugin.id, error })),
             Effect.option,
           )
-          if (init._tag === "Some") hooks.push(init.value)
+          if (init._tag === "Some") register(init.value, { kind: "builtin", id: plugin.id })
         }
 
         const plugins = flags.pure ? [] : (cfg.plugin_origins ?? [])
@@ -222,7 +271,7 @@ const layer = Layer.effect(
           // Keep plugin execution sequential so hook registration and execution
           // order remains deterministic across plugin runs.
           yield* Effect.tryPromise({
-            try: () => applyPlugin(load, input, hooks),
+            try: () => applyPlugin(load, input, register),
             catch: (err) => {
               const message = errorMessage(err)
               return message
@@ -277,7 +326,7 @@ const layer = Layer.effect(
           ),
         )
 
-        return { hooks }
+        return { hooks, registrations }
       }),
     )
 
@@ -285,13 +334,43 @@ const layer = Layer.effect(
       Name extends TriggerName,
       Input = Parameters<Required<Hooks>[Name]>[0],
       Output = Parameters<Required<Hooks>[Name]>[1],
-    >(name: Name, input: Input, output: Output) {
+    >(name: Name, input: Input, output: Output, observer?: Observer<Output>) {
       if (!name) return output
       const s = yield* InstanceState.get(state)
-      for (const hook of s.hooks) {
+      for (const [index, hook] of s.hooks.entries()) {
         const fn = hook[name] as any
         if (!fn) continue
-        yield* Effect.promise(async () => fn(input, output))
+        if (!observer) {
+          yield* Effect.promise(async () => fn(input, output))
+          continue
+        }
+        const finish = yield* Effect.sync(() => {
+          try {
+            const registration = s.registrations[index]
+            return observer(
+              registration?.hook === hook
+                ? registration.origin
+                : { kind: "runtime", id: "unattributed-plugin-registration", ordinal: index },
+              output,
+            )
+          } catch {
+            // Optional observation cannot change hook execution or its exit.
+            return undefined
+          }
+        })
+        yield* Effect.promise(async () => fn(input, output)).pipe(
+          Effect.onExit((exit) =>
+            Effect.sync(() => {
+              try {
+                finish?.(
+                  Exit.isSuccess(exit) ? "success" : Cause.hasInterruptsOnly(exit.cause) ? "interrupted" : "failure",
+                )
+              } catch {
+                // Preserve the original hook result even if observation fails.
+              }
+            }),
+          ),
+        )
       }
       return output
     })

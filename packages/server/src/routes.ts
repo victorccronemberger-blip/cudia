@@ -1,4 +1,6 @@
 import { Database } from "@opencode-ai/core/database/database"
+import { Global } from "@opencode-ai/core/global"
+import { ProjectStore } from "@opencode-ai/core/project/store"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -25,6 +27,8 @@ import { sessionLocationLayer } from "./middleware/session-location"
 
 const applicationServices = LayerNode.group([
   Database.node,
+  Global.node,
+  ProjectStore.node,
   EventV2.node,
   httpClient,
   ToolOutputStore.cleanupNode,

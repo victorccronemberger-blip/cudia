@@ -4,9 +4,10 @@ import path from "path"
 import { mergeDeep, unique } from "remeda"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Context, Effect, Fiber, Layer } from "effect"
+import { Cause, Context, Effect, Fiber, Layer, Schema } from "effect"
 import { ConfigParse } from "@/config/parse"
-import * as ConfigPaths from "@/config/paths"
+import { ConfigPaths } from "@/config/paths"
+import { ConfigDistribution } from "@opencode-ai/core/config/distribution"
 import { migrateTuiConfig } from "./tui-migrate"
 import { resolveHostAttentionSoundPaths } from "./tui-host-attention"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -82,6 +83,7 @@ function dropUnknownKeybinds(input: Record<string, unknown>) {
 
 const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: string }) {
   const afs = yield* FSUtil.Service
+  const distribution = yield* Effect.promise(() => ConfigDistribution.resolve())
   let appliedOrder = 0
 
   const resolvePlugins = (config: Info, configFilepath: string): Effect.Effect<Info> =>
@@ -96,17 +98,33 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
       }
     })
 
-  const load = (text: string, configFilepath: string): Effect.Effect<Info> =>
+  const load = (text: string, configFilepath: string, readOnly = false): Effect.Effect<Info> =>
     Effect.gen(function* () {
       const expanded = yield* Effect.promise(() =>
         ConfigVariable.substitute({ text, type: "path", path: configFilepath, missing: "empty" }),
       )
       const data = ConfigParse.jsonc(expanded, configFilepath)
-      if (!isRecord(data)) return {} as Info
+      if (readOnly) ConfigDistribution.validate(data, configFilepath)
+      if (!isRecord(data)) {
+        if (readOnly) throw new Error(`Invalid distribution TUI configuration: ${configFilepath}`)
+        return {} as Info
+      }
+      if (readOnly && "tui" in data && !isRecord(data.tui)) {
+        throw new Error(`Invalid distribution TUI configuration: ${configFilepath}`)
+      }
       // Flatten a nested "tui" key so users who wrote `{ "tui": { ... } }` inside tui.json
       // (mirroring the old opencode.json shape) still get their settings applied.
-      const normalized = dropUnknownKeybinds(normalize(data))
-      const parsed = ConfigParse.schema(Info, normalized, configFilepath)
+      const normalized = readOnly ? normalize(data) : dropUnknownKeybinds(normalize(data))
+      if (readOnly && isRecord(normalized.keybinds) && TuiKeybind.unknownKeys(normalized.keybinds).length) {
+        throw new Error(`Invalid distribution TUI keybinds: ${configFilepath}`)
+      }
+      const parsed = readOnly
+        ? yield* Schema.decodeUnknownEffect(Info, { errors: "all", onExcessProperty: "error" })(normalized).pipe(
+            Effect.catch((cause) =>
+              Effect.die(new Error(`Invalid distribution TUI configuration: ${configFilepath}`, { cause })),
+            ),
+          )
+        : ConfigParse.schema(Info, normalized, configFilepath)
       const validated = parsed.attention?.sounds
         ? {
             ...parsed,
@@ -121,34 +139,41 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
       // catchCause (not tapErrorCause + orElseSucceed) because JSONC parsing and validation
       // can sync-throw — those become defects, which orElseSucceed wouldn't catch.
       Effect.catchCause((cause) =>
-        Effect.logWarning("skipping invalid tui config", {
-          path: configFilepath,
-          reason: FormatError(Cause.squash(cause)) ?? FormatUnknownError(Cause.squash(cause)),
-        }).pipe(Effect.as({} as Info)),
+        readOnly
+          ? Effect.failCause(cause).pipe(Effect.orDie)
+          : Effect.logWarning("skipping invalid tui config", {
+              path: configFilepath,
+              reason: FormatError(Cause.squash(cause)) ?? FormatUnknownError(Cause.squash(cause)),
+            }).pipe(Effect.as({} as Info)),
       ),
     )
 
-  const loadFile = (filepath: string): Effect.Effect<Info> =>
+  const loadFile = (filepath: string, readOnly = false): Effect.Effect<Info> =>
     Effect.gen(function* () {
       // Silent-swallow non-NotFound read errors (perms, EISDIR, IO) → log + skip.
       // Matches how parse/schema/plugin failures in load() are handled — every
       // broken-config path degrades gracefully rather than crashing TUI startup.
       const text = yield* afs.readFileStringSafe(filepath).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("failed to read tui config", {
-            path: filepath,
-            reason: FormatError(Cause.squash(cause)) ?? FormatUnknownError(Cause.squash(cause)),
-          }).pipe(Effect.as(undefined)),
+          readOnly
+            ? Effect.failCause(cause).pipe(Effect.orDie)
+            : Effect.logWarning("failed to read tui config", {
+                path: filepath,
+                reason: FormatError(Cause.squash(cause)) ?? FormatUnknownError(Cause.squash(cause)),
+              }).pipe(Effect.as(undefined)),
         ),
       )
-      if (!text) return {} as Info
+      if (text === undefined || (!text && !readOnly)) return {} as Info
       yield* Effect.logInfo("loading tui config", { path: filepath })
-      return yield* load(text, filepath)
+      return yield* load(text, filepath, readOnly)
     })
 
-  const mergeFile = (acc: Acc, file: string) =>
+  const mergeFile = (acc: Acc, file: string, readOnly = false) =>
     Effect.gen(function* () {
-      const data = yield* loadFile(file)
+      // The distribution is applied once, below all user sources, even when a
+      // user path or cwd reaches it through a symlink or junction.
+      if (!readOnly && distribution && (yield* Effect.promise(() => distribution.contains(file)))) return
+      const data = yield* loadFile(file, readOnly)
       if (Object.keys(data).length) {
         appliedOrder += 1
         yield* Effect.logInfo("applying tui config", { path: file, order: appliedOrder })
@@ -170,7 +195,8 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
 
   // Every config dir we may read from: global config dir, any `.opencode`
   // folders between cwd and home, and OPENCODE_CONFIG_DIR.
-  const directories = yield* ConfigPaths.directories(ctx.directory)
+  const sources = yield* ConfigPaths.sources(ctx.directory)
+  const directories = sources.filter((source) => !source.readOnly).map((source) => source.path)
   yield* Effect.promise(() => migrateTuiConfig({ directories, cwd: ctx.directory }))
 
   const projectFiles = Flag.OPENCODE_DISABLE_PROJECT_CONFIG ? [] : yield* ConfigPaths.files("tui", ctx.directory)
@@ -178,6 +204,12 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
   const acc: Acc = {
     result: {},
     plugin_origins: [],
+  }
+
+  for (const source of sources.filter((source) => source.readOnly)) {
+    for (const file of ConfigPaths.fileInDirectory(source.path, "tui")) {
+      yield* mergeFile(acc, file, true)
+    }
   }
 
   // 1. Global tui config (lowest precedence).

@@ -57,7 +57,7 @@ async function generate() {
     await Bun.write(schema, await formatTypescript(renderSchema(await generatedSql(full))))
     await Bun.write(registry, await formatTypescript(renderRegistry(await typescriptMigrations())))
   } finally {
-    await fs.rm(temporary, { recursive: true, force: true })
+    await cleanupTemporary(temporary)
   }
 }
 
@@ -87,8 +87,17 @@ async function check() {
       throw new Error("Database migration registry is stale. Run `bun script/migration.ts` from packages/core.")
     }
   } finally {
-    await fs.rm(temporary, { recursive: true, force: true })
+    await cleanupTemporary(temporary)
   }
+}
+
+async function cleanupTemporary(directory: string) {
+  const target = path.resolve(directory)
+  const relative = path.relative(path.resolve(os.tmpdir()), target)
+  if (!/^opencode-core-migration-(?:check-)?[^\\/]+$/.test(relative))
+    throw new Error("Refusing to clean a migration directory outside the temporary directory")
+  if ((await fs.lstat(target)).isSymbolicLink()) throw new Error("Migration temporary directory became a symbolic link")
+  await fs.rm(target, { recursive: true, force: true })
 }
 
 async function drizzle(temporary: string, output: string, name?: string) {
@@ -107,8 +116,7 @@ export default { ...config, out: ${JSON.stringify(output)} }
 
 async function generatedMigrations(directory: string) {
   return (await Array.fromAsync(new Bun.Glob("*/migration.sql").scan({ cwd: directory })))
-    .map((file) => file.split("/")[0])
-    .filter((name): name is string => name !== undefined)
+    .map((file) => path.basename(path.dirname(file)))
     .sort()
 }
 

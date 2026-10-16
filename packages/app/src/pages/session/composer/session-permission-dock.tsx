@@ -19,6 +19,22 @@ export function SessionPermissionDock(props: {
     return value
   }
 
+  const mcpDetails = () => {
+    if (!props.request.permission.startsWith("mcp.")) return ""
+    const metadata = props.request.metadata ?? {}
+    const details = {
+      ...(typeof metadata.server === "string" ? { server: metadata.server } : {}),
+      ...(typeof metadata.tool === "string" ? { tool: metadata.tool } : {}),
+      ...(Array.isArray(metadata.tools)
+        ? { tools: metadata.tools.filter((value): value is string => typeof value === "string") }
+        : {}),
+      ...(Array.isArray(metadata.servers)
+        ? { servers: metadata.servers.filter((value): value is string => typeof value === "string") }
+        : {}),
+    }
+    return JSON.stringify({ action: props.request.permission.slice("mcp.".length), ...details })
+  }
+
   return (
     <DockPrompt
       kind="permission"
@@ -56,6 +72,15 @@ export function SessionPermissionDock(props: {
         <div data-slot="permission-row">
           <span data-slot="permission-spacer" aria-hidden="true" />
           <div data-slot="permission-hint">{toolDescription()}</div>
+        </div>
+      </Show>
+
+      <Show when={mcpDetails()}>
+        <div data-slot="permission-row">
+          <span data-slot="permission-spacer" aria-hidden="true" />
+          <code data-slot="permission-mcp-details" class="text-12-regular text-text-base break-all">
+            {mcpDetails()}
+          </code>
         </div>
       </Show>
 

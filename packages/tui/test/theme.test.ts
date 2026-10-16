@@ -3,8 +3,34 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { TerminalColors } from "@opentui/core"
 import { DEFAULT_THEMES, addTheme, allThemes, hasTheme, resolveTheme, terminalMode } from "../src/theme"
-import { discoverThemes } from "../src/context/theme"
+import { discoverThemes, themeDirectories } from "../src/context/theme"
 import { tmpdir } from "./fixture/fixture"
+
+test("distribution themes load from external cwd below user and project themes", async () => {
+  await using tmp = await tmpdir()
+  const defaults = path.join(tmp.path, "defaults")
+  const project = path.join(tmp.path, "project")
+  const user = path.join(tmp.path, "user")
+  for (const dir of [defaults, user, path.join(project, ".opencode")])
+    await mkdir(path.join(dir, "themes"), { recursive: true })
+  await writeFile(path.join(defaults, "themes/shared.json"), JSON.stringify({ source: "packaged" }))
+  await writeFile(path.join(defaults, "themes/only-packaged.json"), JSON.stringify({ source: "packaged" }))
+  await writeFile(path.join(user, "themes/shared.json"), JSON.stringify({ source: "user" }))
+  await writeFile(path.join(project, ".opencode/themes/shared.json"), JSON.stringify({ source: "project" }))
+  const previous = process.env.CUDIA_DISTRIBUTION_DIR
+  process.env.CUDIA_DISTRIBUTION_DIR = defaults
+  try {
+    const directories = await themeDirectories(project)
+    expect(directories[0]).toBe(defaults)
+    expect((await discoverThemes([directories[0], user])).shared).toEqual({ source: "user" })
+    const themes = await discoverThemes([directories[0], user, directories[2]])
+    expect(themes.shared).toEqual({ source: "project" })
+    expect(themes["only-packaged"]).toEqual({ source: "packaged" })
+  } finally {
+    if (previous === undefined) delete process.env.CUDIA_DISTRIBUTION_DIR
+    else process.env.CUDIA_DISTRIBUTION_DIR = previous
+  }
+})
 
 test("addTheme writes into module theme store", () => {
   const name = `plugin-theme-${Date.now()}`

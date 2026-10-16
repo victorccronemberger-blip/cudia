@@ -2,17 +2,41 @@ export * as ReadToolFileSystem from "./read-filesystem"
 
 import path from "path"
 import { pathToFileURL } from "url"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, Effect, Layer, Option, Schema, Stream } from "effect"
 import { FileSystem } from "../filesystem"
 import { FSUtil } from "../fs-util"
 import { makeLocationNode } from "../effect/app-node"
-import { AbsolutePath, PositiveInt, RelativePath } from "../schema"
+import { AbsolutePath, NonNegativeInt, PositiveInt, RelativePath } from "../schema"
+import { BoundedFile } from "../util/bounded-file"
+import { OutputBudget } from "../util/output-budget"
+import { DecodeError, MAX_BYTES, MAX_UNITS, format, hash, snapshot } from "../util/text-page"
 
 export const MAX_READ_LINES = 2_000
 export const MAX_READ_BYTES = 50 * 1024
 export const MAX_MEDIA_INGEST_BYTES = 20 * 1024 * 1024
 const MAX_LINE_LENGTH = 2_000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
+export const DEFAULT_BUDGET = { maxBytes: MAX_READ_BYTES, maxLines: MAX_READ_LINES }
+
+export class BudgetError extends Schema.TaggedErrorClass<BudgetError>()("ReadTool.BudgetError", {}) {
+  override get message() {
+    return "Read response cannot fit the output budget; use textPage for a smaller text window"
+  }
+}
+
+export class SnapshotError extends Schema.TaggedErrorClass<SnapshotError>()("ReadTool.SnapshotError", {}) {
+  override get message() {
+    return "Directory snapshot is missing or changed; restart at offset 1 and continue with its snapshot"
+  }
+}
+
+export class TextPageError extends Schema.TaggedErrorClass<TextPageError>()("ReadTool.TextPageError", {
+  reason: Schema.String,
+}) {
+  override get message() {
+    return `Cannot read exact text page: ${this.reason}`
+  }
+}
 
 export class BinaryFileError extends Schema.TaggedErrorClass<BinaryFileError>()("ReadTool.BinaryFileError", {
   resource: Schema.String,
@@ -68,12 +92,35 @@ export type ReadError =
   | MalformedUtf8Error
   | OffsetOutOfRangeError
   | PathKindError
+  | BoundedFile.SourceError
+  | BudgetError
+  | SnapshotError
+  | TextPageError
 
 export const PageInput = Schema.Struct({
   offset: PositiveInt.pipe(Schema.optional),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_READ_LINES)).pipe(Schema.optional),
+  snapshot: Schema.String.check(Schema.isPattern(/^[\da-f]{64}$/)).pipe(Schema.optional),
 })
 export type PageInput = typeof PageInput.Type
+
+export const ExactInput = Schema.Struct({
+  offset: NonNegativeInt.pipe(Schema.optional),
+  limit: PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_UNITS)).pipe(Schema.optional),
+  contentHash: Schema.String.check(Schema.isPattern(/^[\da-f]{64}$/)).pipe(Schema.optional),
+})
+export type ExactInput = typeof ExactInput.Type
+
+export class ExactPage extends Schema.Class<ExactPage>("ReadTool.ExactPage")({
+  path: Schema.String,
+  text: Schema.String,
+  contentHash: Schema.String,
+  offset: NonNegativeInt,
+  nextOffset: Schema.NullOr(NonNegativeInt),
+  totalLength: NonNegativeInt,
+  complete: Schema.Boolean,
+  offsetUnit: Schema.Literal("utf16_code_units"),
+}) {}
 
 export class TextPage extends Schema.Class<TextPage>("ReadTool.TextPage")({
   type: Schema.Literal("text-page"),
@@ -82,12 +129,15 @@ export class TextPage extends Schema.Class<TextPage>("ReadTool.TextPage")({
   offset: PositiveInt,
   truncated: Schema.Boolean,
   next: PositiveInt.pipe(Schema.optional),
+  lineTruncated: Schema.Boolean.pipe(Schema.optional),
+  recovery: Schema.Struct({ textPage: Schema.Struct({}) }).pipe(Schema.optional),
 }) {}
 
 export class ListPage extends Schema.Class<ListPage>("ReadTool.ListPage")({
   entries: Schema.Array(FileSystem.Entry),
   truncated: Schema.Boolean,
   next: PositiveInt.pipe(Schema.optional),
+  snapshot: Schema.String.pipe(Schema.optional),
 }) {}
 
 export interface Interface {
@@ -96,8 +146,19 @@ export interface Interface {
     path: AbsolutePath,
     resource: string,
     page?: PageInput,
+    budget?: OutputBudget.Limits,
   ) => Effect.Effect<FileSystem.Content | TextPage, ReadError>
-  readonly list: (path: AbsolutePath, page?: PageInput) => Effect.Effect<ListPage, FSUtil.Error>
+  readonly exact: (
+    path: AbsolutePath,
+    resource: string,
+    page?: ExactInput,
+    budget?: OutputBudget.Limits,
+  ) => Effect.Effect<ExactPage, ReadError>
+  readonly list: (
+    path: AbsolutePath,
+    page?: PageInput,
+    budget?: OutputBudget.Limits,
+  ) => Effect.Effect<ListPage, ReadError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ReadToolFileSystem") {}
@@ -173,13 +234,24 @@ export const read = Effect.fn("ReadTool.read")(function* (
   input: string,
   resource: string,
   page: PageInput = {},
+  budget: OutputBudget.Limits = DEFAULT_BUDGET,
 ) {
+  if (page.snapshot !== undefined) return yield* new SnapshotError()
   const real = yield* fs.realPath(input)
+  if (path.resolve(real) !== path.resolve(input)) return yield* new BoundedFile.SourceError({ reason: "changed" })
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const file = yield* fs.open(real, { flag: "r" })
       const info = yield* file.stat
       if (info.type !== "File") return yield* Effect.fail(new PathKindError({ resource, expected: "a file" }))
+      const verify = Effect.gen(function* () {
+        if (
+          (yield* fs.realPath(input)) !== real ||
+          !BoundedFile.unchanged(info, yield* file.stat) ||
+          !BoundedFile.unchanged(info, yield* fs.stat(real))
+        )
+          return yield* new BoundedFile.SourceError({ reason: "changed" })
+      })
       const first = Option.getOrElse(
         yield* file.readAlloc(Math.min(64 * 1024, Number(info.size) || 4 * 1024)),
         () => new Uint8Array(),
@@ -198,6 +270,7 @@ export const read = Effect.fn("ReadTool.read")(function* (
         }
         if (total > MAX_MEDIA_INGEST_BYTES)
           return yield* Effect.fail(new MediaIngestLimitError({ resource, maximumBytes: MAX_MEDIA_INGEST_BYTES }))
+        yield* verify
         return {
           uri: pathToFileURL(real).href,
           name: path.basename(real),
@@ -216,19 +289,26 @@ export const read = Effect.fn("ReadTool.read")(function* (
         if (binary(resource, first)) return yield* Effect.fail(new BinaryFileError({ resource }))
         const decoder = new TextDecoder("utf-8", { fatal: true })
         const text = [yield* decodeUtf8(resource, decoder, first)]
+        let total = first.length
         while (true) {
-          const chunk = yield* file.readAlloc(64 * 1024)
+          const chunk = yield* file.readAlloc(Math.min(64 * 1024, MAX_READ_BYTES + 1 - total))
           if (Option.isNone(chunk)) break
+          total += chunk.value.length
+          if (total > MAX_READ_BYTES) return yield* new BoundedFile.SourceError({ reason: "changed" })
           text.push(yield* decodeChunk(resource, decoder, chunk.value))
         }
         text.push(yield* decodeUtf8(resource, decoder))
-        return {
+        const content = {
           uri: pathToFileURL(real).href,
           name: path.basename(real),
           content: text.join(""),
           encoding: "utf8" as const,
           mime: FSUtil.mimeType(real),
         }
+        yield* verify
+        if (OutputBudget.fits(JSON.stringify(content), budget)) return content
+        // Reuse the opened source for a smaller line page when metadata/escaping makes Content too large.
+        yield* file.seek(first.length, "start")
       }
       const offset = page.offset ?? 1
       const limit = Math.min(page.limit ?? MAX_READ_LINES, MAX_READ_LINES)
@@ -239,6 +319,8 @@ export const read = Effect.fn("ReadTool.read")(function* (
       let line = 1
       let bytes = 0
       let next: number | undefined
+      let partialLine = false
+      const abbreviated: boolean[] = []
       const append = (input: string) => {
         if (line < offset) {
           line++
@@ -248,13 +330,21 @@ export const read = Effect.fn("ReadTool.read")(function* (
           next = line
           return false
         }
-        const text = input.length > MAX_LINE_LENGTH ? input.slice(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : input
+        const end =
+          input.charCodeAt(MAX_LINE_LENGTH - 1) >= 0xd800 &&
+          input.charCodeAt(MAX_LINE_LENGTH - 1) <= 0xdbff &&
+          input.charCodeAt(MAX_LINE_LENGTH) >= 0xdc00 &&
+          input.charCodeAt(MAX_LINE_LENGTH) <= 0xdfff
+            ? MAX_LINE_LENGTH - 1
+            : MAX_LINE_LENGTH
+        const text = input.length > MAX_LINE_LENGTH ? input.slice(0, end) + MAX_LINE_SUFFIX : input
         const size = Buffer.byteLength(text, "utf-8") + (lines.length > 0 ? 1 : 0)
         if (bytes + size > MAX_READ_BYTES) {
           next = line
           return false
         }
         lines.push(text)
+        abbreviated.push(input.length > MAX_LINE_LENGTH)
         bytes += size
         line++
         return true
@@ -269,6 +359,12 @@ export const read = Effect.fn("ReadTool.read")(function* (
               if (pending.length > MAX_LINE_LENGTH) {
                 pending = pending.slice(0, MAX_LINE_LENGTH + 1)
                 discard = true
+                if (line >= offset) {
+                  const count = lines.length
+                  append(pending)
+                  partialLine = lines.length > count
+                  return false
+                }
               }
             }
             break
@@ -309,21 +405,109 @@ export const read = Effect.fn("ReadTool.read")(function* (
         if (pending) append(pending.endsWith("\r") ? pending.slice(0, -1) : pending)
       }
       if (lines.length === 0 && offset !== 1) return yield* Effect.fail(new OffsetOutOfRangeError({ offset }))
-      return new TextPage({
-        type: "text-page",
-        content: lines.join("\n"),
-        mime: FSUtil.mimeType(real),
-        offset,
-        truncated: next !== undefined,
-        ...(next === undefined ? {} : { next }),
-      })
+      yield* verify
+      const makePage = (count: number) => {
+        const lineTruncated = abbreviated.slice(0, count).some(Boolean)
+        const more = count < lines.length ? offset + count : next
+        return new TextPage({
+          type: "text-page",
+          content: lines.slice(0, count).join("\n"),
+          mime: FSUtil.mimeType(real),
+          offset,
+          truncated: more !== undefined || lineTruncated || partialLine,
+          ...(more === undefined ? {} : { next: more }),
+          ...(lineTruncated ? { lineTruncated: true, recovery: { textPage: {} } } : {}),
+        })
+      }
+      let count = lines.length
+      while (count > 0 && !OutputBudget.fits(JSON.stringify(makePage(count)), budget)) count--
+      const result = makePage(count)
+      if ((count === 0 && lines.length > 0) || !OutputBudget.fits(JSON.stringify(result), budget))
+        return yield* new BudgetError()
+      return result
     }),
   )
 })
 
-export const list = Effect.fn("ReadTool.list")(function* (fs: FSUtil.Interface, input: string, page: PageInput = {}) {
+export const exact = Effect.fn("ReadTool.exact")(function* (
+  fs: FSUtil.Interface,
+  input: string,
+  resource: string,
+  page: ExactInput = {},
+  budget: OutputBudget.Limits = DEFAULT_BUDGET,
+) {
+  const offset = page.offset ?? 0
+  const limit = page.limit ?? MAX_UNITS
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_UNITS)
+    return yield* new TextPageError({ reason: "invalid offset or limit" })
+  if (offset > 0 && page.contentHash === undefined)
+    return yield* new TextPageError({ reason: "contentHash is required for nonzero offsets" })
   const real = yield* fs.realPath(input)
-  const items = yield* fs.readDirectoryEntries(real)
+  if (path.resolve(real) !== path.resolve(input)) return yield* new BoundedFile.SourceError({ reason: "changed" })
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* fs.open(real, { flag: "r" })
+      const info = yield* file.stat
+      if (info.type !== "File") return yield* new PathKindError({ resource, expected: "a file" })
+      const sample = Option.getOrElse(yield* file.readAlloc(Math.min(4096, Number(info.size))), () => new Uint8Array())
+      if (imageMime(sample) || startsWith(sample, [0x25, 0x50, 0x44, 0x46]) || binary(resource, sample))
+        return yield* new BinaryFileError({ resource })
+      yield* file.seek(0, "start")
+      const source = Stream.unfold(Number(info.size), (remaining) =>
+        Effect.gen(function* () {
+          if (remaining === 0) return undefined
+          const chunk = yield* file.readAlloc(Math.min(64 * 1024, remaining))
+          if (Option.isNone(chunk)) return yield* new BoundedFile.SourceError({ reason: "changed" })
+          if (chunk.value.includes(0)) return yield* new BinaryFileError({ resource })
+          return [chunk.value, remaining - chunk.value.length] as const
+        }),
+      )
+      const result = yield* snapshot(source, { offset, limit, fatal: true }).pipe(
+        Effect.mapError((error) => (error instanceof DecodeError ? new MalformedUtf8Error({ resource }) : error)),
+      )
+      if (
+        (yield* fs.realPath(input)) !== real ||
+        !BoundedFile.unchanged(info, yield* file.stat) ||
+        !BoundedFile.unchanged(info, yield* fs.stat(real))
+      )
+        return yield* new BoundedFile.SourceError({ reason: "changed" })
+      if (page.contentHash !== undefined && page.contentHash !== result.contentHash)
+        return yield* new TextPageError({ reason: "content changed; restart at offset 0" })
+      if (offset > result.totalLength) return yield* new OffsetOutOfRangeError({ offset })
+      const local = offset - result.start
+      const makePage = (end: number) =>
+        new ExactPage({
+          path: resource,
+          text: result.text.slice(local, end),
+          contentHash: result.contentHash,
+          offset,
+          nextOffset: result.start + end < result.totalLength ? result.start + end : null,
+          totalLength: result.totalLength,
+          complete: result.start + end >= result.totalLength,
+          offsetUnit: "utf16_code_units",
+        })
+      const formatted = format(
+        result.text,
+        { offset: local, limit, maxBytes: Math.min(MAX_BYTES, budget.maxBytes) },
+        (end) => JSON.stringify(makePage(end)),
+      )
+      if (!formatted.ok) return yield* new TextPageError({ reason: formatted.error })
+      const selected = makePage(formatted.end)
+      if (!OutputBudget.fits(JSON.stringify(selected), budget)) return yield* new BudgetError()
+      return selected
+    }),
+  )
+})
+
+export const list = Effect.fn("ReadTool.list")(function* (
+  fs: FSUtil.Interface,
+  input: string,
+  page: PageInput = {},
+  budget: OutputBudget.Limits = DEFAULT_BUDGET,
+) {
+  const real = yield* fs.realPath(input)
+  if (path.resolve(real) !== path.resolve(input)) return yield* new BoundedFile.SourceError({ reason: "changed" })
+  const items = yield* fs.readDirectoryEntriesBounded(real)
   const offset = page.offset ?? 1
   const limit = Math.min(page.limit ?? MAX_READ_LINES, MAX_READ_LINES)
   const entries = yield* Effect.forEach(
@@ -346,9 +530,27 @@ export const list = Effect.fn("ReadTool.list")(function* (fs: FSUtil.Interface, 
   const visible = entries
     .filter((item): item is FileSystem.Entry => item !== undefined)
     .sort((a, b) => (a.type === b.type ? a.path.localeCompare(b.path) : a.type === "directory" ? -1 : 1))
+  if ((yield* fs.realPath(input)) !== real) return yield* new BoundedFile.SourceError({ reason: "changed" })
+  const snapshot = hash(JSON.stringify([real, visible]))
+  if ((offset > 1 && page.snapshot === undefined) || (page.snapshot !== undefined && page.snapshot !== snapshot))
+    return yield* new SnapshotError()
+  if (offset - 1 > visible.length) return yield* new OffsetOutOfRangeError({ offset })
   const selected = visible.slice(offset - 1, offset - 1 + limit)
-  const truncated = offset - 1 + selected.length < visible.length
-  return new ListPage({ entries: selected, truncated, ...(truncated ? { next: offset + selected.length } : {}) })
+  const makePage = (count: number) => {
+    const truncated = offset - 1 + count < visible.length
+    return new ListPage({
+      entries: selected.slice(0, count),
+      truncated,
+      snapshot,
+      ...(truncated ? { next: offset + count } : {}),
+    })
+  }
+  let count = selected.length
+  while (count > 0 && !OutputBudget.fits(JSON.stringify(makePage(count)), budget)) count--
+  const result = makePage(count)
+  if ((count === 0 && selected.length > 0) || !OutputBudget.fits(JSON.stringify(result), budget))
+    return yield* new BudgetError()
+  return result
 })
 
 const layer = Layer.effect(
@@ -357,8 +559,9 @@ const layer = Layer.effect(
     const fs = yield* FSUtil.Service
     return Service.of({
       inspect: (path) => inspect(fs, path),
-      read: (path, resource, page) => read(fs, path, resource, page),
-      list: (path, page) => list(fs, path, page),
+      read: (path, resource, page, budget) => read(fs, path, resource, page, budget),
+      exact: (path, resource, page, budget) => exact(fs, path, resource, page, budget),
+      list: (path, page, budget) => list(fs, path, page, budget),
     })
   }),
 )

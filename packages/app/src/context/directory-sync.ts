@@ -147,6 +147,10 @@ export const createDirSyncContext = (
     },
     mcp: {
       toggle: (name: string) => serverSync.mcp.toggle(directory, name),
+      beginOAuth: (name: string) => serverSync.mcp.beginOAuth(directory, name),
+      attemptStatus: (attemptID: string) => serverSync.mcp.attemptStatus(directory, attemptID),
+      completeOAuth: (attemptID: string, code?: string) => serverSync.mcp.completeOAuth(directory, attemptID, code),
+      cancelOAuth: (attemptID: string) => serverSync.mcp.cancelOAuth(directory, attemptID),
     },
     absolute,
     get directory() {

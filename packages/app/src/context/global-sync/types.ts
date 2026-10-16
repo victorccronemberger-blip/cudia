@@ -14,8 +14,10 @@ import type {
   VcsInfo,
 } from "@opencode-ai/sdk/v2/client"
 import type { FileDiffInfo } from "@opencode-ai/client/promise"
+import type { LspStatusOutput } from "@opencode-ai/runtime-client"
 import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
-import type { CommandInfo, McpResource, McpServer, SessionMessageInfo } from "@opencode-ai/client/promise"
+import type { CommandInfo, McpResource, SessionMessageInfo } from "@opencode-ai/client/promise"
+import type { McpPresentation } from "@/utils/native-mcp"
 import type { Accessor } from "solid-js"
 import type { SetStoreFunction, Store } from "solid-js/store"
 
@@ -29,6 +31,7 @@ export type ProjectMeta = {
     start?: string
   }
 }
+export type LspPresentation = LspStatus | LspStatusOutput["data"][number]
 
 export type State = {
   status: "loading" | "partial" | "complete"
@@ -62,13 +65,13 @@ export type State = {
   }
   mcp_ready: boolean
   mcp: {
-    [name: string]: McpServer["status"]
+    [name: string]: McpPresentation
   }
   mcp_resource: {
     [key: string]: McpResource
   }
   lsp_ready: boolean
-  lsp: LspStatus[]
+  lsp: readonly LspPresentation[]
   vcs: VcsInfo | undefined
   limit: number
   message: {

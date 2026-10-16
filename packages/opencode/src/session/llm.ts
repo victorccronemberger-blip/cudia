@@ -16,11 +16,6 @@ import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
-import { Permission } from "@/permission"
-import { EventV2Bridge } from "@/event-v2-bridge"
-import { EventV2 } from "@opencode-ai/core/event"
-import { Wildcard } from "@/util/wildcard"
-import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -29,6 +24,10 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { WorkflowSessions } from "./llm/workflow"
+import { HarnessPolicy } from "@opencode-ai/core/harness/policy"
+import { ContextAudit } from "@opencode-ai/core/harness/audit"
+import { ContextTrace } from "@opencode-ai/core/harness/trace"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -45,6 +44,7 @@ export type StreamInput = {
   tools: Record<string, Tool>
   retries?: number
   toolChoice?: "auto" | "required" | "none"
+  contextTrace?: ContextTrace.Collector
 }
 
 export type StreamRequest = StreamInput & {
@@ -66,10 +66,11 @@ const live: Layer.Layer<
   | Config.Service
   | Provider.Service
   | Plugin.Service
-  | Permission.Service
-  | EventV2Bridge.Service
+  | WorkflowSessions.Service
   | LLMClientService
   | RuntimeFlags.Service
+  | HarnessPolicy.Service
+  | ContextAudit.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -77,12 +78,13 @@ const live: Layer.Layer<
     const config = yield* Config.Service
     const provider = yield* Provider.Service
     const plugin = yield* Plugin.Service
-    const perm = yield* Permission.Service
-    const events = yield* EventV2Bridge.Service
+    const workflows = yield* WorkflowSessions.Service
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
+    const policy = yield* HarnessPolicy.Service
+    const audit = yield* ContextAudit.Service
 
-    const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
+    const run = Effect.fn("LLM.run")(function* (input: StreamRequest, controller: AbortController) {
       yield* Effect.logInfo("stream", {
         providerID: input.model.providerID,
         modelID: input.model.id,
@@ -92,7 +94,7 @@ const live: Layer.Layer<
         mode: input.agent.mode,
       })
 
-      const [language, cfg, item, info] = yield* Effect.all(
+      const [template, cfg, item, info] = yield* Effect.all(
         [
           provider.getLanguage(input.model),
           config.get(),
@@ -102,7 +104,14 @@ const live: Layer.Layer<
         { concurrency: "unbounded" },
       )
 
-      const isWorkflow = language instanceof GitLabWorkflowLanguageModel
+      const workflow =
+        template instanceof GitLabWorkflowLanguageModel
+          ? yield* workflows.acquire({ sessionID: input.sessionID, model: input.model, template, controller })
+          : undefined
+      const language = workflow?.model ?? template
+      const isWorkflow = !!workflow
+      const contextTrace =
+        audit.enabled && !input.small && !isWorkflow ? (input.contextTrace ?? ContextTrace.create()) : undefined
       const prepared = yield* LLMRequestPrep.prepare({
         ...input,
         provider: item,
@@ -110,99 +119,45 @@ const live: Layer.Layer<
         plugin,
         flags,
         isWorkflow,
+        contextMode: policy.contextMode,
+        contextTrace,
       })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
       // and results sent back over the WebSocket.
       const bridge = yield* EffectBridge.make()
-      if (language instanceof GitLabWorkflowLanguageModel) {
-        const workflowModel = language as GitLabWorkflowLanguageModel & {
-          sessionID?: string
-          sessionPreapprovedTools?: string[]
-          approvalHandler?: (approvalTools: { name: string; args: string }[]) => Promise<{ approved: boolean }>
-        }
+      if (workflow) {
+        const workflowModel = workflow.model
         workflowModel.sessionID = input.sessionID
         workflowModel.systemPrompt = prepared.system.join("\n")
-        workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
+        workflowModel.toolExecutor = async (toolName, argsJson, requestID) => {
+          if (!workflow.current()) throw new DOMException("Workflow call is no longer active", "AbortError")
           const t = prepared.tools[toolName]
-          if (!t || !t.execute) {
-            return { result: "", error: `Unknown tool: ${toolName}` }
-          }
+          if (!t || !t.execute) return { result: "", error: `Unknown tool: ${toolName}` }
           try {
-            const result = await t.execute!(JSON.parse(argsJson), {
-              toolCallId: _requestID,
+            const result = await t.execute(JSON.parse(argsJson), {
+              toolCallId: requestID,
               messages: input.messages,
               abortSignal: input.abort,
             })
+            if (!workflow.current()) throw new DOMException("Workflow call is no longer active", "AbortError")
             const output = typeof result === "string" ? result : (result?.output ?? JSON.stringify(result))
             return {
               result: output,
               metadata: typeof result === "object" ? result?.metadata : undefined,
               title: typeof result === "object" ? result?.title : undefined,
             }
-          } catch (e: any) {
-            return { result: "", error: e.message ?? String(e) }
+          } catch (e: unknown) {
+            if (!workflow.current()) throw new DOMException("Workflow call is no longer active", "AbortError")
+            return { result: "", error: e instanceof Error ? e.message : String(e) }
           }
         }
-
-        const ruleset = Permission.merge(input.agent.permission ?? [], input.permission ?? [])
-        workflowModel.sessionPreapprovedTools = Object.keys(prepared.tools).filter((name) => {
-          const match = ruleset.findLast((rule) => Wildcard.match(name, rule.permission))
-          return !match || match.action !== "ask"
-        })
-
-        const approvedToolsForSession = new Set<string>()
-        workflowModel.approvalHandler = bridge.bind(async (approvalTools) => {
-          const uniqueNames = [...new Set(approvalTools.map((t: { name: string }) => t.name))] as string[]
-          // Auto-approve tools that were already approved in this session
-          // (prevents infinite approval loops for server-side MCP tools)
-          if (uniqueNames.every((name) => approvedToolsForSession.has(name))) {
-            return { approved: true }
-          }
-
-          const id = PermissionV1.ID.ascending()
-          let unsub: EventV2.Unsubscribe | undefined
-          try {
-            unsub = await bridge.promise(
-              events.listen((event) => {
-                if (event.type !== Permission.Event.Replied.type) return Effect.void
-                const data = event.data as EventV2.Data<typeof Permission.Event.Replied>
-                if (data.requestID !== id) return Effect.void
-                void data.reply
-                return Effect.void
-              }),
-            )
-            const toolPatterns = approvalTools.map((t: { name: string; args: string }) => {
-              try {
-                const parsed = JSON.parse(t.args) as Record<string, unknown>
-                const title = (parsed?.title ?? parsed?.name ?? "") as string
-                return title ? `${t.name}: ${title}` : t.name
-              } catch {
-                return t.name
-              }
-            })
-            const uniquePatterns = [...new Set(toolPatterns)] as string[]
-            await bridge.promise(
-              perm.ask({
-                id,
-                sessionID: SessionID.make(input.sessionID),
-                permission: "workflow_tool_approval",
-                patterns: uniquePatterns,
-                metadata: { tools: approvalTools },
-                always: uniquePatterns,
-                ruleset: [],
-              }),
-            )
-            for (const name of uniqueNames) approvedToolsForSession.add(name)
-            workflowModel.sessionPreapprovedTools = [...(workflowModel.sessionPreapprovedTools ?? []), ...uniqueNames]
-            return { approved: true }
-          } catch {
-            return { approved: false }
-          } finally {
-            if (unsub) await bridge.promise(unsub)
-          }
-        })
+        workflowModel.sessionPreapprovedTools = Object.keys(prepared.tools)
+        workflowModel.approvalHandler = async () => {
+          if (!workflow.current()) throw new DOMException("Workflow call is no longer active", "AbortError")
+          return { approved: true }
+        }
       }
 
       const tracer = cfg.experimental?.openTelemetry
@@ -239,6 +194,29 @@ const live: Layer.Layer<
           providerOptions: prepared.params.options,
           headers: prepared.headers,
           abort: input.abort,
+          onRequest:
+            audit.enabled && !input.small
+              ? (request) =>
+                  audit.record({
+                    runtime: "v1-native",
+                    sessionID: input.sessionID,
+                    agent: input.agent.name,
+                    model: { provider: request.model.provider, id: request.model.id },
+                    instructions: [
+                      ...request.system.map((part) => ({ source: "system", text: part.text })),
+                      ...request.messages.flatMap((message) =>
+                        message.role === "system"
+                          ? message.content.flatMap((part) =>
+                              part.type === "text" ? [{ source: "system-message", text: part.text }] : [],
+                            )
+                          : [],
+                      ),
+                    ],
+                    messages: request.messages,
+                    tools: request.tools,
+                    ...(contextTrace ? { trace: contextTrace.capture() } : {}),
+                  })
+              : undefined,
         })
         if (native.type === "supported") {
           yield* Effect.logInfo("llm runtime selected", {
@@ -249,6 +227,7 @@ const live: Layer.Layer<
           return {
             type: "native" as const,
             stream: native.stream,
+            workflow,
           }
         }
         yield* Effect.logInfo("llm runtime selected", {
@@ -277,6 +256,7 @@ const live: Layer.Layer<
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
       return {
         type: "ai-sdk" as const,
+        workflow,
         result: streamText({
           onError(error) {
             bridge.fork(
@@ -329,12 +309,54 @@ const live: Layer.Layer<
                 specificationVersion: "v3" as const,
                 async transformParams(args) {
                   if (args.type === "stream") {
-                    // @ts-expect-error
-                    args.params.prompt = ProviderTransform.message(
-                      args.params.prompt,
-                      input.model,
-                      prepared.messageTransformOptions,
+                    const finish = contextTrace?.start(
+                      {
+                        stage: "ProviderTransform.message",
+                        projection: "normalized-model-messages",
+                        source: { kind: "runtime", id: "provider-message-transform", ordinal: 0 },
+                      },
+                      () => args.params.prompt,
                     )
+                    try {
+                      // @ts-expect-error
+                      args.params.prompt = ProviderTransform.message(
+                        args.params.prompt,
+                        input.model,
+                        prepared.messageTransformOptions,
+                      )
+                      finish?.("success")
+                    } catch (error) {
+                      finish?.("failure")
+                      throw error
+                    }
+                    if (audit.enabled && !input.small && !isWorkflow) {
+                      await bridge.promise(
+                        audit.record({
+                          runtime: "v1-ai-sdk",
+                          sessionID: input.sessionID,
+                          agent: input.agent.name,
+                          model: { provider: input.model.providerID, id: input.model.api.id },
+                          instructions: [
+                            ...args.params.prompt.flatMap((message) =>
+                              message.role === "system" ? [{ source: "system", text: message.content }] : [],
+                            ),
+                            ...Object.entries(args.params.providerOptions ?? {}).flatMap(([namespace, options]) =>
+                              typeof options.instructions === "string"
+                                ? [{ source: `provider-instructions:${namespace}`, text: options.instructions }]
+                                : [],
+                            ),
+                          ],
+                          messages: args.params.prompt,
+                          tools: (args.params.tools ?? []).map((tool) => ({
+                            name: tool.name,
+                            ...(tool.type === "function"
+                              ? { description: tool.description, inputSchema: tool.inputSchema }
+                              : {}),
+                          })),
+                          ...(contextTrace ? { trace: contextTrace.capture() } : {}),
+                        }),
+                      )
+                    }
                   }
                   return args.params
                 },
@@ -363,19 +385,32 @@ const live: Layer.Layer<
               (ctrl) => Effect.sync(() => ctrl.abort()),
             )
 
-            const result = yield* run({ ...input, abort: ctrl.signal })
-
-            if (result.type === "native") return result.stream
+            const result = yield* run({ ...input, abort: ctrl.signal }, ctrl)
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
             const state = LLMAISDK.adapterState()
-            return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
-              e instanceof Error ? e : new Error(String(e)),
-            ).pipe(
-              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
-              Stream.flatMap((events) => Stream.fromIterable(events)),
-            )
+            const output =
+              result.type === "native"
+                ? result.stream
+                : Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+                    e instanceof Error ? e : new Error(String(e)),
+                  ).pipe(
+                    Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+                    Stream.flatMap((events) => Stream.fromIterable(events)),
+                  )
+            if (!result.workflow) return output
+            const workflow = result.workflow
+            const aborted = Effect.callback<never>((resume) => {
+              const abort = () => resume(Effect.interrupt)
+              if (ctrl.signal.aborted) {
+                abort()
+                return
+              }
+              ctrl.signal.addEventListener("abort", abort, { once: true })
+              return Effect.sync(() => ctrl.signal.removeEventListener("abort", abort))
+            })
+            return output.pipe(Stream.onEnd(Effect.sync(workflow.complete)), Stream.interruptWhen(aborted))
           }),
         ),
       )
@@ -394,10 +429,11 @@ export const node = LayerNode.make({
     Config.node,
     Provider.node,
     Plugin.node,
-    Permission.node,
-    EventV2Bridge.node,
+    WorkflowSessions.node,
     llmClient,
     RuntimeFlags.node,
+    HarnessPolicy.node,
+    ContextAudit.node,
   ],
 })
 

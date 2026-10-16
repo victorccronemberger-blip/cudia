@@ -229,8 +229,15 @@ describe("tool parameters", () => {
     test("accepts name", () => {
       expect(parse(Skill, { name: "foo" }).name).toBe("foo")
     })
-    test("rejects missing name", () => {
-      expect(accepts(Skill, {})).toBe(false)
+    test("accepts query-only metadata search", () => {
+      expect(parse(Skill, { query: "image" }).query).toBe("image")
+    })
+    test("accepts paginated metadata search", () => {
+      expect(parse(Skill, { query: "image", offset: 2, limit: 5 })).toEqual({
+        query: "image",
+        offset: 2,
+        limit: 5,
+      })
     })
   })
 

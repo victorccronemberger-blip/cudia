@@ -8,6 +8,7 @@ import { TestInstance } from "../fixture/fixture"
 import { markPluginDependenciesReady } from "../fixture/plugin"
 import { testEffect } from "../lib/effect"
 import { httpApiLayer, request } from "./httpapi-layer"
+import { Auth } from "../../src/auth"
 
 const testStateLayer = Layer.effectDiscard(
   Effect.acquireRelease(
@@ -125,7 +126,7 @@ function writeProviderAuthPlugin(dir: string) {
         `            url: "${oauthURL}",`,
         '            method: "code",',
         `            instructions: "${oauthInstructions}",`,
-        "            callback: async () => ({ type: 'success', key: 'token' }),",
+        "            callback: async () => ({ type: 'success', access: 'access', refresh: 'refresh', expires: 1000, metadata: { oauthMode: 'chatgpt', clientId: 'issued-client', subject: 'subject', hostId: 'host', idToken: 'signed', scopes: 'granted' } }),",
         "          }),",
         "        },",
         "      ],",
@@ -260,6 +261,38 @@ function setEnvScoped(key: string, value: string) {
   )
 }
 
+function writeBundledQwenDefaults(directory: string) {
+  return Effect.gen(function* () {
+    const defaults = path.join(directory, "cudia-defaults")
+    yield* FSUtil.use.writeWithDirs(
+      path.join(defaults, "opencode.json"),
+      JSON.stringify({
+        provider: {
+          qwencloud: {
+            name: "Bundled Qwen Cloud",
+            npm: "@ai-sdk/openai-compatible",
+            api: "https://qwen.example/v1",
+            env: ["CUDIA_TEST_BUNDLED_QWENCLOUD_KEY"],
+            models: { "bundled-model": { name: "Bundled model" } },
+          },
+        },
+      }),
+    )
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const previous = process.env.CUDIA_DISTRIBUTION_DIR
+        process.env.CUDIA_DISTRIBUTION_DIR = defaults
+        return previous
+      }),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.CUDIA_DISTRIBUTION_DIR
+          else process.env.CUDIA_DISTRIBUTION_DIR = previous
+        }),
+    )
+  })
+}
+
 describe("provider HttpApi", () => {
   it.instance.skip(
     "returns public v2 provider not found errors",
@@ -311,6 +344,39 @@ describe("provider HttpApi", () => {
   )
 
   it.instance(
+    "preserves OAuth metadata and consumes callbacks before they can restore stale tokens",
+    Effect.gen(function* () {
+      const directory = (yield* TestInstance).directory
+      const headers = { "x-opencode-directory": directory, "content-type": "application/json" }
+      const authorization = yield* requestAuthorize({ providerID, method: 1, headers })
+      expect(authorization.status).toBe(200)
+      const wrong = yield* requestCallback({ providerID, method: 0, headers, code: "code" })
+      expect(wrong.status).toBe(400)
+      const callback = yield* requestCallback({ providerID, method: 1, headers, code: "code" })
+      expect(callback.status).toBe(200)
+      const saved = (yield* Effect.promise(Auth.readStored))[providerID]
+      expect(saved?.type).toBe("oauth")
+      if (saved?.type !== "oauth") throw new Error("OAuth credentials missing")
+      expect(saved.metadata?.clientId).toBe("issued-client")
+      yield* Effect.promise(() =>
+        Auth.mutateStored((data) => ({ ...data, [providerID]: { ...saved, access: "renewed", refresh: "rotated" } })),
+      )
+      const replay = yield* requestCallback({ providerID, method: 1, headers, code: "code" })
+      expect(replay.status).toBe(400)
+      const current = (yield* Effect.promise(Auth.readStored))[providerID]
+      expect(current?.type === "oauth" && current.access).toBe("renewed")
+      yield* Effect.promise(() =>
+        Auth.mutateStored((data) => {
+          delete data[providerID]
+          return data
+        }),
+      )
+    }),
+    { ...projectOptions, init: writeProviderAuthPlugin },
+    30000,
+  )
+
+  it.instance(
     "returns declared provider auth validation errors",
     Effect.gen(function* () {
       const directory = (yield* TestInstance).directory
@@ -349,6 +415,29 @@ describe("provider HttpApi", () => {
     }),
     projectOptions,
     30000,
+  )
+
+  it.instance(
+    "lists bundled provider models in the catalog without reporting them connected",
+    Effect.gen(function* () {
+      const directory = (yield* TestInstance).directory
+      const headers = { "x-opencode-directory": directory }
+      const providerResponse = yield* request("/provider", { headers })
+      const configResponse = yield* request("/config/providers", { headers })
+
+      expect(providerResponse.status).toBe(200)
+      expect(configResponse.status).toBe(200)
+      const providerBody = yield* providerResponse.json
+      const configBody = yield* configResponse.json
+      expect(providerByID(providerBody, "all", "qwencloud")).toBeDefined()
+      expect(isRecord(providerBody) && providerBody.connected).not.toContain("qwencloud")
+      expect(providerByID(configBody, "providers", "qwencloud")).toBeUndefined()
+    }),
+    {
+      ...projectOptions,
+      config: { formatter: false, lsp: false, enabled_providers: ["qwencloud"] },
+      init: writeBundledQwenDefaults,
+    },
   )
 
   it.instance(

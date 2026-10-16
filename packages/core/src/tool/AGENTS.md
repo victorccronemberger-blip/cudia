@@ -35,8 +35,12 @@ Both are scoped:
 
 - The latest active same-placement registration wins.
 - Closing any registration removes only that registration and reveals the next active one.
-- Location registrations take precedence over application registrations.
+- `Tools.Service.register(tools, { sessionID })` optionally creates Session-owned entries in the Location registry. With a Session ID, selection prefers the latest matching Session registration, then the latest unscoped Location registration, then the application registration. Without a Session ID, Session-owned entries are invisible.
+- Session registrations for different IDs never fall back to one another. Closing a Session registration removes only its own token; the next visible registration is selected using the same precedence.
+- Materialized definitions and settlement use the same Session-aware selection. Settlement rechecks the selected registration identity so a snapshot captured for another Session or an older registration is stale.
 - An invocation captures the effective tool once settlement starts.
+
+Session-owned producers must register with the owning Session ID and close the registration scope when that Session is deleted. The MCP manager uses this canonical path and the existing Session deletion event; its Location scope closes all remaining registrations and transports.
 
 `ApplicationTools.Service` is process-scoped and shared by all Locations. `ToolRegistry.Service` is Location-scoped. Do not make the registry process-global or construct a separate application-tool service for each Location.
 
@@ -55,5 +59,4 @@ Producer capture limits are separate. For example, Bash keeps `AppProcess.maxOut
 ## Current Gaps
 
 - Plugin boot has not been redesigned to register canonical tools through `Tools.Service`; do not redesign it as part of leaf migrations.
-- MCP and future Session-scoped registrations still need an explicit canonical registration design.
 - The public Session result shape currently exposes managed `outputPaths`; full storage encapsulation requires a future opaque managed-output reference design.

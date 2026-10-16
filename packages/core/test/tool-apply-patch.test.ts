@@ -8,6 +8,7 @@ import { FileMutation } from "@opencode-ai/core/file-mutation"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Location } from "@opencode-ai/core/location"
 import { LocationMutation } from "@opencode-ai/core/location-mutation"
+import { LSPMutation } from "@opencode-ai/core/lsp/mutation"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
@@ -33,6 +34,7 @@ let afterEditApproval = (): Effect.Effect<void> => Effect.void
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
+    check: () => Effect.die("unused"),
     assert: (input) =>
       Effect.sync(() => {
         assertions.push(input)
@@ -107,6 +109,10 @@ const withTool = <A, E, R>(directory: string, body: (registry: ToolRegistry.Inte
           [FSUtil.node, filesystem],
           [Location.node, activeLocation],
           [PermissionV2.node, permission],
+          [
+            LSPMutation.node,
+            Layer.succeed(LSPMutation.Service, LSPMutation.Service.of({ after: () => Effect.succeed(undefined) })),
+          ],
           [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
         ],
       ),

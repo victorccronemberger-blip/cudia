@@ -14,6 +14,7 @@ import { writeHeapSnapshot } from "v8"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+import { AmbientInstructions } from "@opencode-ai/core/harness/ambient-instructions"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -213,6 +214,7 @@ export const TuiThreadCommand = cmd({
         ),
       })
       const client = Rpc.client<typeof rpc>(worker)
+      await client.call("instructions", AmbientInstructions.current().automatic)
       const reload = () => {
         client.call("reload", undefined).catch(() => {})
       }
@@ -303,7 +305,7 @@ export const TuiThreadCommand = cmd({
         unguard?.()
       } catch {}
     }
-    process.exit(0)
+    process.exit()
   },
 })
 // scratch

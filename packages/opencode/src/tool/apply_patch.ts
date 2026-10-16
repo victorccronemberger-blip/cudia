@@ -198,7 +198,7 @@ export const ApplyPatchTool = Tool.define(
         patch: change.diff,
         additions: change.additions,
         deletions: change.deletions,
-        movePath: change.movePath,
+        ...(change.movePath ? { movePath: change.movePath } : {}),
       }))
 
       // Check permissions if needed
@@ -289,7 +289,7 @@ export const ApplyPatchTool = Tool.define(
         const block = LSP.Diagnostic.report(target, diagnostics[FSUtil.normalizePath(target)] ?? [])
         if (!block) continue
         const rel = path.relative(instance.worktree, target).replaceAll("\\", "/")
-        output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
+        output += `\n\nLSP errors detected in ${rel}:\n${block}`
       }
 
       return {

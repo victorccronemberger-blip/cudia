@@ -1,0 +1,328 @@
+diff --git a/dist/index.js b/dist/index.js
+index 01ea670300f2a05644ad8f1511bfa66348a58466..8507de5118ac153ca4f3141d3b4813c6af36fa20 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -4303,8 +4303,10 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+   // LanguageModelV3 — doStream (streaming)
+   // ---------------------------------------------------------------------------
+   async doStream(options) {
++    options.abortSignal?.throwIfAborted();
+     const goal = this.extractGoalFromPrompt(options.prompt);
+     const modelRef = await this.resolveModelRef();
++    options.abortSignal?.throwIfAborted();
+     const mcpTools = this.extractMcpTools(options);
+     const preapprovedTools = [
+       ...this.workflowOptions.preapprovedTools ?? mcpTools.map((t) => t.name),
+@@ -4322,7 +4324,9 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       callWorkflowDefinition ?? DEFAULT_WORKFLOW_DEFINITION,
+       this.workflowOptions.rootNamespaceId
+     );
++    options.abortSignal?.throwIfAborted();
+     const projectId = await this.resolveProjectId();
++    options.abortSignal?.throwIfAborted();
+     const effectiveDefinition = callFlowConfig ?? callWorkflowDefinition ?? DEFAULT_WORKFLOW_DEFINITION;
+     const sessionKey = this.sessionID;
+     let sess = this.sessionWorkflows.get(sessionKey);
+@@ -4348,6 +4352,7 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+         agentPrivileges: this.workflowOptions.agentPrivileges,
+         aiCatalogItemVersionId: callAiCatalogItemVersionId
+       });
++      options.abortSignal?.throwIfAborted();
+       if (useLegacy) {
+         this.currentWorkflowId = workflowId;
+         this.currentWorkflowDefinition = effectiveDefinition;
+@@ -4378,7 +4383,8 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       processedRequestIDs: /* @__PURE__ */ new Set(),
+       emittedToolEntries: new Set(sess?.toolEntries),
+       emittedToolKeys: /* @__PURE__ */ new Set(),
+-      sessionKey
++      sessionKey,
++      abortSignal: options.abortSignal
+     };
+     for (const msg of options.prompt) {
+       if (msg.role === "system") {
+@@ -4392,9 +4398,12 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       }
+     }
+     let startReq;
++    let streamController;
+     const stream = new ReadableStream({
+       start: async (controller) => {
++        streamController = controller;
+         try {
++          options.abortSignal?.throwIfAborted();
+           await wsClient.connect(
+             {
+               instanceUrl: this.config.instanceUrl,
+@@ -4423,9 +4432,13 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+               );
+             }
+           );
++          options.abortSignal?.throwIfAborted();
++          if (ss.streamClosed) return;
+           const workflowDef = callWorkflowDefinition ?? DEFAULT_WORKFLOW_DEFINITION;
+           const capabilities = this.workflowOptions.clientCapabilities ?? DEFAULT_CLIENT_CAPABILITIES;
+           const workflowMetadata = await this.buildWorkflowMetadata();
++          options.abortSignal?.throwIfAborted();
++          if (ss.streamClosed) return;
+           const metadataStr = JSON.stringify(workflowMetadata);
+           const basePayload = {
+             workflowID: workflowId,
+@@ -4473,6 +4486,7 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+             modelId: modelRef
+           });
+         } catch (error) {
++          this.cleanupClient(ss, true);
+           if (!ss.streamClosed) {
+             controller.enqueue({
+               type: "error",
+@@ -4490,33 +4504,19 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+         if (abortListener && options.abortSignal) {
+           options.abortSignal.removeEventListener("abort", abortListener);
+         }
+-        wsClient.stop();
+-        wsClient.close();
+-        this.activeClients.delete(wsClient);
+-        ss.activeClient = null;
+-        if (!ss.streamClosed) {
+-          if (ss.sessionKey) {
+-            this.sessionWorkflows.delete(ss.sessionKey);
+-          } else {
+-            this.currentWorkflowId = null;
+-          }
+-        }
++        ss.activeClient?.stop();
++        this.cleanupClient(ss, !ss.streamClosed);
++        ss.streamClosed = true;
+       }
+     });
+     let abortListener = null;
+     if (options.abortSignal) {
+       abortListener = () => {
+-        wsClient.stop();
+-        wsClient.close();
+-        this.activeClients.delete(wsClient);
+-        ss.activeClient = null;
++        ss.activeClient?.stop();
++        this.cleanupClient(ss, !ss.streamClosed);
+         if (!ss.streamClosed) {
+           ss.streamClosed = true;
+-          if (ss.sessionKey) {
+-            this.sessionWorkflows.delete(ss.sessionKey);
+-          } else {
+-            this.currentWorkflowId = null;
+-          }
++          streamController?.error(options.abortSignal.reason ?? new DOMException("Workflow aborted", "AbortError"));
+         }
+       };
+       if (options.abortSignal.aborted) {
+@@ -4963,6 +4963,7 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+     }
+   }
+   async approveAndResume(ss, tools, startReq, controller, toolExecutor, nextTextId, availableToolNames, wsExtras) {
++    if (ss.streamClosed || ss.abortSignal?.aborted) return;
+     const handler = this.workflowOptions.approvalHandler;
+     if (!handler || !startReq) {
+       ss.approvalPending = false;
+@@ -4981,6 +4982,7 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       if (!ss.streamClosed) controller.error(err);
+       return;
+     }
++    if (ss.streamClosed || ss.abortSignal?.aborted) return;
+     ss.approvalPending = false;
+     ss.deferredClose = null;
+     const approval = decision.approved ? { approval: { tool_name: tools[0]?.name, tool_args_json: tools[0]?.args } } : { rejection: { message: decision.message ?? "User rejected" } };
+@@ -4990,12 +4992,17 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       preapproved_tools: decision.approved ? [...startReq.preapproved_tools ?? [], ...tools.map((t) => t.name)] : startReq.preapproved_tools ?? []
+     };
+     const reconnect = async () => {
+-      if (ss.streamClosed) return;
++      if (ss.streamClosed || ss.abortSignal?.aborted) return;
+       await this.closeClientAndWait(ss);
++      if (ss.streamClosed || ss.abortSignal?.aborted) return;
+       const client = new GitLabWorkflowClient();
+       this.activeClients.add(client);
+       ss.activeClient = client;
+       const modelRef = await this.resolveModelRef();
++      if (ss.streamClosed || ss.abortSignal?.aborted) {
++        this.cleanupClient(ss, true);
++        return;
++      }
+       await client.connect(
+         {
+           instanceUrl: this.config.instanceUrl,
+@@ -5025,6 +5032,10 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+           );
+         }
+       );
++      if (ss.streamClosed || ss.abortSignal?.aborted) {
++        this.cleanupClient(ss, true);
++        return;
++      }
+       client.sendStartRequest(newStartReq);
+     };
+     let lockRetries = 0;
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 480bea5c340b3d1dfc375bd3f6ad0e35a642afe1..0f9d7a25fe1180b7c554a118e307f21909ea5f8b 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -4224,8 +4224,10 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+   // LanguageModelV3 — doStream (streaming)
+   // ---------------------------------------------------------------------------
+   async doStream(options) {
++    options.abortSignal?.throwIfAborted();
+     const goal = this.extractGoalFromPrompt(options.prompt);
+     const modelRef = await this.resolveModelRef();
++    options.abortSignal?.throwIfAborted();
+     const mcpTools = this.extractMcpTools(options);
+     const preapprovedTools = [
+       ...this.workflowOptions.preapprovedTools ?? mcpTools.map((t) => t.name),
+@@ -4243,7 +4245,9 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       callWorkflowDefinition ?? DEFAULT_WORKFLOW_DEFINITION,
+       this.workflowOptions.rootNamespaceId
+     );
++    options.abortSignal?.throwIfAborted();
+     const projectId = await this.resolveProjectId();
++    options.abortSignal?.throwIfAborted();
+     const effectiveDefinition = callFlowConfig ?? callWorkflowDefinition ?? DEFAULT_WORKFLOW_DEFINITION;
+     const sessionKey = this.sessionID;
+     let sess = this.sessionWorkflows.get(sessionKey);
+@@ -4269,6 +4273,7 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+         agentPrivileges: this.workflowOptions.agentPrivileges,
+         aiCatalogItemVersionId: callAiCatalogItemVersionId
+       });
++      options.abortSignal?.throwIfAborted();
+       if (useLegacy) {
+         this.currentWorkflowId = workflowId;
+         this.currentWorkflowDefinition = effectiveDefinition;
+@@ -4299,7 +4304,8 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       processedRequestIDs: /* @__PURE__ */ new Set(),
+       emittedToolEntries: new Set(sess?.toolEntries),
+       emittedToolKeys: /* @__PURE__ */ new Set(),
+-      sessionKey
++      sessionKey,
++      abortSignal: options.abortSignal
+     };
+     for (const msg of options.prompt) {
+       if (msg.role === "system") {
+@@ -4313,9 +4319,12 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       }
+     }
+     let startReq;
++    let streamController;
+     const stream = new ReadableStream({
+       start: async (controller) => {
++        streamController = controller;
+         try {
++          options.abortSignal?.throwIfAborted();
+           await wsClient.connect(
+             {
+               instanceUrl: this.config.instanceUrl,
+@@ -4344,9 +4353,13 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+               );
+             }
+           );
++          options.abortSignal?.throwIfAborted();
++          if (ss.streamClosed) return;
+           const workflowDef = callWorkflowDefinition ?? DEFAULT_WORKFLOW_DEFINITION;
+           const capabilities = this.workflowOptions.clientCapabilities ?? DEFAULT_CLIENT_CAPABILITIES;
+           const workflowMetadata = await this.buildWorkflowMetadata();
++          options.abortSignal?.throwIfAborted();
++          if (ss.streamClosed) return;
+           const metadataStr = JSON.stringify(workflowMetadata);
+           const basePayload = {
+             workflowID: workflowId,
+@@ -4394,6 +4407,7 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+             modelId: modelRef
+           });
+         } catch (error) {
++          this.cleanupClient(ss, true);
+           if (!ss.streamClosed) {
+             controller.enqueue({
+               type: "error",
+@@ -4411,33 +4425,19 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+         if (abortListener && options.abortSignal) {
+           options.abortSignal.removeEventListener("abort", abortListener);
+         }
+-        wsClient.stop();
+-        wsClient.close();
+-        this.activeClients.delete(wsClient);
+-        ss.activeClient = null;
+-        if (!ss.streamClosed) {
+-          if (ss.sessionKey) {
+-            this.sessionWorkflows.delete(ss.sessionKey);
+-          } else {
+-            this.currentWorkflowId = null;
+-          }
+-        }
++        ss.activeClient?.stop();
++        this.cleanupClient(ss, !ss.streamClosed);
++        ss.streamClosed = true;
+       }
+     });
+     let abortListener = null;
+     if (options.abortSignal) {
+       abortListener = () => {
+-        wsClient.stop();
+-        wsClient.close();
+-        this.activeClients.delete(wsClient);
+-        ss.activeClient = null;
++        ss.activeClient?.stop();
++        this.cleanupClient(ss, !ss.streamClosed);
+         if (!ss.streamClosed) {
+           ss.streamClosed = true;
+-          if (ss.sessionKey) {
+-            this.sessionWorkflows.delete(ss.sessionKey);
+-          } else {
+-            this.currentWorkflowId = null;
+-          }
++          streamController?.error(options.abortSignal.reason ?? new DOMException("Workflow aborted", "AbortError"));
+         }
+       };
+       if (options.abortSignal.aborted) {
+@@ -4884,6 +4884,7 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+     }
+   }
+   async approveAndResume(ss, tools, startReq, controller, toolExecutor, nextTextId, availableToolNames, wsExtras) {
++    if (ss.streamClosed || ss.abortSignal?.aborted) return;
+     const handler = this.workflowOptions.approvalHandler;
+     if (!handler || !startReq) {
+       ss.approvalPending = false;
+@@ -4902,6 +4903,7 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       if (!ss.streamClosed) controller.error(err);
+       return;
+     }
++    if (ss.streamClosed || ss.abortSignal?.aborted) return;
+     ss.approvalPending = false;
+     ss.deferredClose = null;
+     const approval = decision.approved ? { approval: { tool_name: tools[0]?.name, tool_args_json: tools[0]?.args } } : { rejection: { message: decision.message ?? "User rejected" } };
+@@ -4911,12 +4913,17 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+       preapproved_tools: decision.approved ? [...startReq.preapproved_tools ?? [], ...tools.map((t) => t.name)] : startReq.preapproved_tools ?? []
+     };
+     const reconnect = async () => {
+-      if (ss.streamClosed) return;
++      if (ss.streamClosed || ss.abortSignal?.aborted) return;
+       await this.closeClientAndWait(ss);
++      if (ss.streamClosed || ss.abortSignal?.aborted) return;
+       const client = new GitLabWorkflowClient();
+       this.activeClients.add(client);
+       ss.activeClient = client;
+       const modelRef = await this.resolveModelRef();
++      if (ss.streamClosed || ss.abortSignal?.aborted) {
++        this.cleanupClient(ss, true);
++        return;
++      }
+       await client.connect(
+         {
+           instanceUrl: this.config.instanceUrl,
+@@ -4946,6 +4953,10 @@ var GitLabWorkflowLanguageModel = class _GitLabWorkflowLanguageModel {
+           );
+         }
+       );
++      if (ss.streamClosed || ss.abortSignal?.aborted) {
++        this.cleanupClient(ss, true);
++        return;
++      }
+       client.sendStartRequest(newStartReq);
+     };
+     let lockRetries = 0;

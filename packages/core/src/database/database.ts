@@ -25,7 +25,8 @@ const layer = Layer.effect(
     const db = yield* makeDatabase
 
     yield* db.run("PRAGMA journal_mode = WAL")
-    yield* db.run("PRAGMA synchronous = NORMAL")
+    // Persist refresh claims before sending a potentially rotating token to a provider.
+    yield* db.run("PRAGMA synchronous = FULL")
     yield* db.run("PRAGMA busy_timeout = 5000")
     yield* db.run("PRAGMA cache_size = -64000")
     yield* db.run("PRAGMA foreign_keys = ON")
@@ -54,4 +55,9 @@ export function path() {
   return join(Global.Path.data, `opencode-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
 }
 
-export const node = makeGlobalNode({ service: Service, layer: layerFromPath(path()), deps: [] })
+// Resolve placement when this runtime opens, not when another host first imports the module.
+export const node = makeGlobalNode({
+  service: Service,
+  layer: Layer.unwrap(Effect.sync(() => layerFromPath(path()))),
+  deps: [],
+})

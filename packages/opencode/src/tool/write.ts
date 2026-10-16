@@ -20,7 +20,7 @@ const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
   filePath: Schema.String.annotate({
-    description: "The absolute path to the file to write (must be absolute, not relative)",
+    description: "File path, absolute or relative to the active workspace directory",
   }),
 })
 
@@ -82,7 +82,7 @@ export const WriteTool = Tool.define(
             const block = LSP.Diagnostic.report(current ? filepath : file, issues)
             if (!block) continue
             if (current) {
-              output += `\n\nLSP errors detected in this file, please fix:\n${block}`
+              output += `\n\nLSP errors detected in this file:\n${block}`
               continue
             }
             projectDiagnosticsCount++

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "product": "cudia",
+  "repository": "victorccronemberger-blip/cudia",
+  "channel": "preview",
+  "version": "1.2.3-preview.7",
+  "sequence": 7,
+  "tag": "cudia-preview-20261016-example",
+  "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "title": "CUDIA Preview 1.2.3-preview.7",
+  "notesFile": "C:\\REPLACE\\release-notes.md",
+  "keyId": "cudia-release-key-id",
+  "privateKeyFile": "C:\\REPLACE\\release-ed25519-private.pem",
+  "publicKeysFile": "C:\\REPLACE\\trusted-public-keys.json",
+  "ledgerFile": "C:\\REPLACE\\release-ledger.json",
+  "journalFile": "C:\\REPLACE\\release-seq-7-journal.json",
+  "issuedAt": "2026-10-16T12:00:00.000Z",
+  "expiresAt": "2026-11-15T12:00:00.000Z",
+  "service": {
+    "branch": "codex/update-service",
+    "expectedParent": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "qualificationFile": "C:\\REPLACE\\qualification.json",
+  "artifacts": [
+    { "kind": "archive", "variant": "normal", "path": "C:\\REPLACE\\cudia-normal.zip", "receiptFile": "C:\\REPLACE\\cudia-normal.json" },
+    { "kind": "archive", "variant": "baseline", "path": "C:\\REPLACE\\cudia-baseline.zip", "receiptFile": "C:\\REPLACE\\cudia-baseline.json" },
+    { "kind": "installer", "variant": "normal", "path": "C:\\REPLACE\\cudia-normal-setup.exe", "receiptFile": "C:\\REPLACE\\cudia-normal-build-info.json" },
+    { "kind": "installer", "variant": "baseline", "path": "C:\\REPLACE\\cudia-baseline-setup.exe", "receiptFile": "C:\\REPLACE\\cudia-baseline-build-info.json" }
+  ]
+}

@@ -4,7 +4,7 @@ import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
-import { PermissionNotFoundError, SessionNotFoundError } from "@opencode-ai/protocol/errors"
+import { InvalidRequestError, PermissionNotFoundError, SessionNotFoundError } from "@opencode-ai/protocol/errors"
 import { response } from "../location"
 
 function missingRequest(id: PermissionV2.ID) {
@@ -37,6 +37,14 @@ export const PermissionHandler = HttpApiBuilder.group(Api, "server.permission", 
                 agent: ctx.payload.agent,
               })
               .pipe(
+                Effect.catchTag(
+                  "PermissionV2.AgentNotFoundError",
+                  (error) =>
+                    new InvalidRequestError({
+                      message: `Agent not found: ${error.agent ?? "default"}`,
+                      field: "agent",
+                    }),
+                ),
                 Effect.catchTag(
                   "Session.NotFoundError",
                   (error) =>

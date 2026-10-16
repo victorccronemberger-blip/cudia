@@ -25,6 +25,7 @@ import { createFileViewCache } from "./file/view-cache"
 import { useServerSDK } from "./server-sdk"
 import { SessionRouteKey, SessionStateKey } from "@/utils/server-scope"
 import { createFileTreeStore } from "./file/tree-store"
+import { presentNativeFileNodes } from "@/utils/native-files"
 import { invalidateFromWatcher } from "./file/watcher"
 import {
   selectionFromLines,
@@ -64,12 +65,13 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const layout = useLayout()
 
     const scope = createMemo(() => sdk().directory)
-    const path = createPathHelpers(scope)
+    const path = createPathHelpers(scope, { literalPaths: () => serverSDK().protocolKind() === "v2" })
     const tabs = layout.tabs(() =>
       SessionStateKey.from(serverSDK().scope, SessionRouteKey.fromRoute(base64Encode(sdk().directory), params.id)),
     )
 
     const inflight = new Map<string, Promise<void>>()
+    const controllers = new Map<string, AbortController>()
     const [store, setStore] = createStore<{
       file: Record<string, FileState>
     }>({
@@ -79,10 +81,16 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const tree = createFileTreeStore({
       scope,
       normalizeDir: path.normalizeDir,
-      list: (dir) =>
-        sdk()
-          .client.file.list({ path: dir })
-          .then((x) => x.data ?? []),
+      list: (dir) => {
+        const server = serverSDK()
+        const client = sdk().client
+        const directory = scope()
+        return server.protocol.then(async (protocol) => {
+          if (protocol === "v1") return (await client.file.list({ path: dir })).data ?? []
+          const result = await server.nativeWorkspace.files.list({ location: { directory }, path: dir || "." })
+          return presentNativeFileNodes(directory, result.data)
+        })
+      },
       onError: (message) => {
         showToast({
           variant: "error",
@@ -108,6 +116,8 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
 
     createEffect(() => {
       scope()
+      for (const controller of controllers.values()) controller.abort()
+      controllers.clear()
       inflight.clear()
       resetFileContentLru()
       batch(() => {
@@ -179,12 +189,21 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       if (pending) return pending
 
       setLoading(file)
-
-      const promise = sdk()
-        .client.file.read({ path: file })
-        .then((x) => {
-          if (scope() !== directory) return
-          const content = x.data
+      const server = serverSDK()
+      const client = sdk().client
+      const controller = new AbortController()
+      controllers.set(key, controller)
+      const promise = server.protocol
+        .then(async (protocol) => {
+          controller.signal.throwIfAborted()
+          if (protocol === "v1") return (await client.file.read({ path: file }, { signal: controller.signal })).data
+          return server.nativeWorkspace.files.read(
+            { location: { directory }, path: file },
+            { signal: controller.signal },
+          )
+        })
+        .then((content) => {
+          if (controller.signal.aborted || scope() !== directory) return
           setLoaded(file, content)
 
           if (!content) return
@@ -192,35 +211,47 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
           evictContent(new Set([file]))
         })
         .catch((e) => {
-          if (scope() !== directory) return
+          if (controller.signal.aborted || scope() !== directory) return
           setLoadError(file, errorMessage(e, language.t("error.chain.unknown")))
         })
         .finally(() => {
-          inflight.delete(key)
+          if (inflight.get(key) === promise) inflight.delete(key)
+          if (controllers.get(key) === controller) controllers.delete(key)
         })
 
       inflight.set(key, promise)
       return promise
     }
 
-    const search = (query: string, dirs: "true" | "false", options?: { limit?: number; signal?: AbortSignal }) =>
-      serverSDK()
-        .api.file.find(
-          {
-            location: { directory: sdk().directory },
-            query,
-            type: dirs === "true" ? "directory" : "file",
-            limit: options?.limit,
-          },
-          { signal: options?.signal },
-        )
+    const search = (query: string, dirs: "true" | "false", options?: { limit?: number; signal?: AbortSignal }) => {
+      const server = serverSDK()
+      const directory = scope()
+      return server.protocol
+        .then((protocol) => {
+          options?.signal?.throwIfAborted()
+          const input = { location: { directory }, query, limit: options?.limit }
+          if (protocol === "v1")
+            return server.api.file.find(
+              { ...input, type: dirs === "true" ? "directory" : "file" },
+              { signal: options?.signal },
+            )
+          return server.nativeWorkspace.files.find(
+            { ...input, type: dirs === "true" ? undefined : "file" },
+            { signal: options?.signal },
+          )
+        })
         .then(
-          (x) => x.data.map((entry) => path.normalize(entry.path)),
+          (x) => {
+            options?.signal?.throwIfAborted()
+            if (scope() !== directory) return []
+            return x.data.map((entry) => path.normalize(entry.path))
+          },
           (error) => {
             if (options?.signal?.aborted) throw error
             return []
           },
         )
+    }
 
     const stop = sdk().event.listen((e) => {
       invalidateFromWatcher(e.details, {
@@ -264,6 +295,8 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
 
     onCleanup(() => {
       stop()
+      for (const controller of controllers.values()) controller.abort()
+      controllers.clear()
       viewCache.clear()
     })
 

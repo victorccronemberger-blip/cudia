@@ -181,13 +181,16 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 }),
               ),
             ),
-            Effect.catchTag("Session.OperationUnavailableError", (error) =>
-              Effect.fail(
-                new ServiceUnavailableError({
-                  message: `Session ${error.operation} is not available yet`,
-                  service: `session.${error.operation}`,
-                }),
-              ),
+            Effect.mapError((error) =>
+              error._tag === "SessionNotFoundError"
+                ? error
+                : new ServiceUnavailableError({
+                    message:
+                      error._tag === "Session.CompactionError"
+                        ? error.message
+                        : "Session compaction could not complete",
+                    service: "session.compact",
+                  }),
             ),
           )
           return HttpApiSchema.NoContent.make()

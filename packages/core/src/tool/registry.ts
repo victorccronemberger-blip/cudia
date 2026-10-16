@@ -7,7 +7,7 @@ import { PermissionV2 } from "../permission"
 import { SessionMessage } from "../session/message"
 import { SessionSchema } from "../session/schema"
 import { ToolOutputStore } from "../tool-output-store"
-import { Wildcard } from "../util/wildcard"
+import { ToolPolicy } from "../harness/tool-policy"
 import { ApplicationTools } from "./application-tools"
 import { definition, permission, settle, validateName, type AnyTool, type RegistrationError } from "./tool"
 import { Tools } from "./tools"
@@ -21,9 +21,16 @@ export type ExecuteInput = {
 }
 
 export interface Interface {
-  readonly materialize: (permissions?: PermissionV2.Ruleset) => Effect.Effect<Materialization>
+  readonly materialize: (
+    permissions?: PermissionV2.Ruleset,
+    sessionID?: SessionSchema.ID,
+    options?: { readonly omit?: ReadonlyArray<string> },
+  ) => Effect.Effect<Materialization>
   /** Internal registration capability exposed publicly only through Tools.Service. */
-  readonly register: (tools: Readonly<Record<string, AnyTool>>) => Effect.Effect<void, RegistrationError, Scope.Scope>
+  readonly register: (
+    tools: Readonly<Record<string, AnyTool>>,
+    options?: { readonly sessionID?: SessionSchema.ID },
+  ) => Effect.Effect<void, RegistrationError, Scope.Scope>
 }
 
 export interface Materialization {
@@ -44,12 +51,23 @@ const registryLayer = Layer.effect(
   Effect.gen(function* () {
     const applications = yield* ApplicationTools.Service
     const resources = yield* ToolOutputStore.Service
-    type Registration = { readonly identity: object; readonly tool: AnyTool }
+    type Registration = {
+      readonly identity: object
+      readonly tool: AnyTool
+      readonly sessionID?: SessionSchema.ID
+    }
     const local = new Map<string, Array<{ readonly token: object; readonly registration: Registration }>>()
 
+    const select = (name: string, sessionID?: SessionSchema.ID): Registration | undefined => {
+      const entries = local.get(name) ?? []
+      const session =
+        sessionID === undefined ? undefined : entries.findLast((entry) => entry.registration.sessionID === sessionID)
+      const location = entries.findLast((entry) => entry.registration.sessionID === undefined)
+      return session?.registration ?? location?.registration ?? applications.entries().get(name)
+    }
+
     const settleWith = Effect.fn("ToolRegistry.settle")(function* (input: ExecuteInput, advertised?: object) {
-      const registration =
-        local.get(input.call.name)?.at(-1)?.registration ?? applications.entries().get(input.call.name)
+      const registration = select(input.call.name, input.sessionID)
       if (!registration)
         return {
           result: {
@@ -72,7 +90,12 @@ const registryLayer = Layer.effect(
       )
       if ("result" in pending) return pending
       const output = pending.output
-      const bounded = yield* resources.bound({ sessionID: input.sessionID, toolCallID: input.call.id, output })
+      const bounded = yield* resources.bound({
+        sessionID: input.sessionID,
+        assistantMessageID: input.assistantMessageID,
+        toolCallID: input.call.id,
+        output,
+      })
       const result = ToolOutput.toResultValue(bounded.output)
       if (result.type === "error")
         return bounded.outputPaths.length > 0 ? { result, outputPaths: bounded.outputPaths } : { result }
@@ -82,7 +105,7 @@ const registryLayer = Layer.effect(
     })
 
     return Service.of({
-      register: Effect.fn("ToolRegistry.register")(function* (tools) {
+      register: Effect.fn("ToolRegistry.register")(function* (tools, options) {
         const entries = Object.entries(tools)
         if (entries.length === 0) return
         yield* Effect.forEach(entries, ([name]) => validateName(name), { discard: true })
@@ -90,7 +113,10 @@ const registryLayer = Layer.effect(
           Effect.gen(function* () {
             const token = {}
             for (const [name, tool] of entries)
-              local.set(name, [...(local.get(name) ?? []), { token, registration: { identity: {}, tool } }])
+              local.set(name, [
+                ...(local.get(name) ?? []),
+                { token, registration: { identity: {}, tool, sessionID: options?.sessionID } },
+              ])
             yield* Effect.addFinalizer(() =>
               Effect.sync(() => {
                 for (const [name] of entries) {
@@ -103,14 +129,15 @@ const registryLayer = Layer.effect(
           }),
         )
       }),
-      materialize: Effect.fn("ToolRegistry.materialize")(function* (permissions = []) {
-        const registrations = new Map(applications.entries())
-        for (const [name, entries] of local) {
-          const registration = entries.at(-1)?.registration
+      materialize: Effect.fn("ToolRegistry.materialize")(function* (permissions = [], sessionID, options) {
+        const registrations = new Map<string, Registration>()
+        for (const name of new Set([...applications.entries().keys(), ...local.keys()])) {
+          const registration = select(name, sessionID)
           if (registration) registrations.set(name, registration)
         }
         for (const [name, registration] of registrations)
-          if (whollyDisabled(permission(registration.tool, name), permissions)) registrations.delete(name)
+          if (options?.omit?.includes(name) || whollyDisabled(permission(registration.tool, name), permissions))
+            registrations.delete(name)
         return {
           definitions: Array.from(registrations, ([name, registration]) => definition(name, registration.tool)),
           settle: (input) => {
@@ -130,8 +157,7 @@ const layer = Layer.effect(
 ).pipe(Layer.provideMerge(registryLayer))
 
 function whollyDisabled(action: string, rules: PermissionV2.Ruleset) {
-  const rule = rules.findLast((rule) => Wildcard.match(action, rule.action))
-  return rule?.resource === "*" && rule.effect === "deny"
+  return ToolPolicy.hidden()
 }
 
 export const node = makeLocationNode({

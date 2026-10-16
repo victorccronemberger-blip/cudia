@@ -6,6 +6,9 @@ import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { FSUtil } from "../fs-util"
 import { SkillV2 } from "../skill"
+import { SkillCatalog } from "../skill/catalog"
+import { AgentV2 } from "../agent"
+import { NonNegativeInt, PositiveInt } from "../schema"
 import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -15,22 +18,26 @@ export const name = "skill"
 const FILE_LIMIT = 10
 
 export const Input = Schema.Struct({
-  name: Schema.String.annotate({ description: "The name of the skill from the available skills list" }),
+  name: Schema.optional(Schema.String.annotate({ description: "Load this exact skill name" })),
+  query: Schema.optional(
+    Schema.String.annotate({ description: "Search names and descriptions; empty string browses" }),
+  ),
+  offset: Schema.optional(NonNegativeInt),
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(SkillCatalog.MAX_PAGE_SIZE))),
 })
 
-export const Output = Schema.Struct({
-  name: Schema.String,
-  directory: Schema.String,
-  output: Schema.String,
-})
+export const Output = Schema.Union([
+  Schema.Struct({ name: Schema.String, directory: Schema.String, output: Schema.String }),
+  Schema.Struct({
+    matches: Schema.Array(Schema.Struct({ name: Schema.String, description: Schema.optional(Schema.String) })),
+    total: NonNegativeInt,
+    nextOffset: Schema.optional(NonNegativeInt),
+    omitted: Schema.optional(NonNegativeInt),
+  }),
+])
 
-export const description = [
-  "Load a specialized skill when the task at hand matches one of the available skills in the system context.",
-  "",
-  "Use this tool to inject the skill's instructions and resources into the current conversation. The output may contain detailed workflow guidance as well as references to scripts, files, etc. in the same directory as the skill.",
-  "",
-  "The skill name must match one of the available skills in the system context.",
-].join("\n")
+export const description =
+  'Use name to load a skill\'s instructions and resource paths, or query to search names and descriptions with offset/limit pagination. query: "" browses. Search does not load skill bodies. Loading by name and searching are mutually exclusive; offset/limit apply to search.'
 
 export const toModelOutput = (skill: SkillV2.Info, files: ReadonlyArray<string>) => {
   const directory = path.dirname(skill.location)
@@ -59,6 +66,7 @@ const layer = Layer.effectDiscard(
     const tools = yield* Tools.Service
     const fs = yield* FSUtil.Service
     const skills = yield* SkillV2.Service
+    const agents = yield* AgentV2.Service
     const permission = yield* PermissionV2.Service
     yield* tools
       .register({
@@ -66,12 +74,29 @@ const layer = Layer.effectDiscard(
           description,
           input: Input,
           output: Output,
-          toModelOutput: ({ output }) => [{ type: "text", text: output.output }],
+          toModelOutput: ({ output }) => [
+            { type: "text", text: "output" in output ? output.output : JSON.stringify(output) },
+          ],
           execute: (input, context) =>
             Effect.gen(function* () {
               const current = yield* skills.list()
+              if (input.name === undefined) {
+                if (input.query === undefined)
+                  return yield* new ToolFailure({ message: "Provide a skill name or metadata query." })
+                const agent = yield* agents.get(context.agent)
+                return SkillCatalog.search(agent ? SkillV2.available(current, agent) : [], {
+                  query: input.query,
+                  offset: input.offset,
+                  limit: input.limit,
+                })
+              }
+              if (input.query !== undefined || input.offset !== undefined || input.limit !== undefined)
+                return yield* new ToolFailure({
+                  message: "Use name to load, or query with pagination to search, not both.",
+                })
+              const selected = input.name
               const skill = current.find((skill) => skill.name === input.name)
-              if (!skill) return yield* unableToLoad(input.name)
+              if (!skill) return yield* unableToLoad(selected)
               return yield* Effect.gen(function* () {
                 yield* permission.assert({
                   action: name,
@@ -94,7 +119,7 @@ const layer = Layer.effectDiscard(
                   directory,
                   output: toModelOutput(skill, files),
                 }
-              }).pipe(Effect.mapError((error) => unableToLoad(input.name, error)))
+              }).pipe(Effect.mapError((error) => unableToLoad(selected, error)))
             }),
         }),
       })
@@ -105,5 +130,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/skill",
   layer,
-  deps: [ToolRegistry.node, FSUtil.node, SkillV2.node, PermissionV2.node],
+  deps: [ToolRegistry.node, FSUtil.node, SkillV2.node, PermissionV2.node, AgentV2.node],
 })

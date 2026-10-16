@@ -87,6 +87,24 @@ describe("Config", () => {
     }),
   )
 
+  it.effect("preserves compaction aliases in mixed v1 files with explicit legacy settings taking precedence", () =>
+    Effect.sync(() => {
+      for (const input of [
+        { provider: {}, compaction: { keep: { tokens: 256 }, buffer: 0 } },
+        {
+          snapshot: false,
+          compaction: { preserve_recent_tokens: 0, reserved: 100, keep: { tokens: 256 }, buffer: 500 },
+        },
+      ]) {
+        expect(ConfigMigrateV1.isV1(input)).toBe(true)
+        const decoded = Schema.decodeUnknownSync(ConfigV1.Info)(input)
+        const migrated = Schema.decodeUnknownSync(Config.Info)(ConfigMigrateV1.migrate(decoded))
+        expect(migrated.compaction?.keep?.tokens).toBe(input.compaction.preserve_recent_tokens ?? 256)
+        expect(migrated.compaction?.buffer).toBe(input.compaction.reserved ?? 0)
+      }
+    }),
+  )
+
   it.effect("migrates v1 provider setup options into AISDK settings", () =>
     Effect.sync(() => {
       const migrated = ConfigMigrateV1.migrate({
@@ -565,7 +583,11 @@ describe("Config", () => {
                   remote: {
                     type: "remote",
                     url: "https://mcp.example.com",
-                    oauth: { clientId: "client", callbackPort: 19876 },
+                    oauth: {
+                      clientId: "client",
+                      clientMetadataUrl: "https://client.example.com/oauth.json",
+                      callbackPort: 19876,
+                    },
                     timeout: 20000,
                   },
                 },
@@ -650,13 +672,17 @@ describe("Config", () => {
                   type: "local",
                   command: ["node", "server.js"],
                   disabled: true,
-                  timeout: { request: 10000 },
+                  timeout: { startup: 10000, request: 10000 },
                 },
                 remote: {
                   type: "remote",
                   url: "https://mcp.example.com",
-                  oauth: { client_id: "client", callback_port: 19876 },
-                  timeout: { request: 20000 },
+                  oauth: {
+                    client_id: "client",
+                    client_metadata_url: "https://client.example.com/oauth.json",
+                    callback_port: 19876,
+                  },
+                  timeout: { startup: 20000, request: 20000 },
                 },
               },
             })

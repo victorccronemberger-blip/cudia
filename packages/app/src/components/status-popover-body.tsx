@@ -17,6 +17,7 @@ import { useGlobal } from "@/context/global"
 import { useSettings } from "@/context/settings"
 import { useMcpToggle } from "@/context/mcp"
 import { useServerProtocol } from "@/context/server-sdk"
+import { lspStatusDotClass } from "./status-popover-indicator"
 
 const pluginEmptyMessage = (value: string, file: string): JSXElement => {
   const parts = value.split(file)
@@ -289,7 +290,7 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
   const mcpNames = createMemo(() => Object.keys(sync().data.mcp ?? {}).sort((a, b) => a.localeCompare(b)))
   const mcpStatus = (name: string) => sync().data.mcp?.[name]?.status
   const mcpConnected = createMemo(() => mcpNames().filter((name) => mcpStatus(name) === "connected").length)
-  const lspItems = createMemo(() => sync().data.lsp ?? [])
+  const lspItems = createMemo(() => (protocol() !== undefined ? (sync().data.lsp ?? []) : []))
   const lspCount = createMemo(() => lspItems().length)
   const plugins = createMemo(() =>
     (sync().data.config.plugin ?? []).map((item) => (typeof item === "string" ? item : item[0])),
@@ -318,10 +319,12 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
             {mcpConnected() > 0 ? `${mcpConnected()} ` : ""}
             {language.t("status.popover.tab.mcp")}
           </Tabs.Trigger>
-          <Tabs.Trigger value="lsp" data-slot="tab" class="text-12-regular">
-            {lspCount() > 0 ? `${lspCount()} ` : ""}
-            {language.t("status.popover.tab.lsp")}
-          </Tabs.Trigger>
+          <Show when={protocol() !== undefined}>
+            <Tabs.Trigger value="lsp" data-slot="tab" class="text-12-regular">
+              {lspCount() > 0 ? `${lspCount()} ` : ""}
+              {language.t("status.popover.tab.lsp")}
+            </Tabs.Trigger>
+          </Show>
           <Show when={protocol() === "v1"}>
             <Tabs.Trigger value="plugins" data-slot="tab" class="text-12-regular">
               {pluginCount() > 0 ? `${pluginCount()} ` : ""}
@@ -409,48 +412,71 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
                 <For each={mcpNames()}>
                   {(name) => {
                     const status = () => mcpStatus(name)
+                    const nativeStatus = () => sync().data.mcp?.[name]?.nativeStatus
                     const enabled = () => status() === "connected"
                     return (
-                      <button
-                        type="button"
-                        class="flex items-center gap-2 w-full min-h-8 pl-3 pr-2 py-1 rounded-md hover:bg-surface-raised-base-hover transition-colors text-left"
-                        onClick={() => {
-                          if (toggleMcp.isPending) return
-                          toggleMcp.mutate(name)
-                        }}
-                        disabled={toggleMcp.isPending && toggleMcp.variables === name}
-                      >
-                        <div
-                          classList={{
-                            "size-1.5 rounded-full shrink-0": true,
-                            "bg-icon-success-base": status() === "connected",
-                            "bg-icon-critical-base": status() === "failed",
-                            "bg-border-weak-base": status() === "disabled",
-                            "bg-icon-warning-base":
-                              status() === "needs_auth" || status() === "needs_client_registration",
+                      <div class="flex items-center gap-2 w-full min-h-8 pl-3 pr-2 py-1 rounded-md hover:bg-surface-raised-base-hover transition-colors">
+                        <button
+                          type="button"
+                          class="flex items-center gap-2 min-w-0 flex-1 text-left"
+                          disabled={!!nativeStatus() || (toggleMcp.isPending && toggleMcp.variables === name)}
+                          onClick={() => {
+                            if (toggleMcp.isPending || nativeStatus()) return
+                            toggleMcp.mutate(name)
                           }}
-                        />
-                        <span class="flex flex-col min-w-0 flex-1">
-                          <span class="flex items-center gap-2 min-w-0">
-                            <span class="text-14-regular text-text-base truncate">{name}</span>
-                          </span>
-                          <Show when={status() === "needs_auth"}>
-                            <span class="text-11-regular text-text-weaker truncate">
-                              {language.t("mcp.auth.clickToAuthenticate")}
-                            </span>
-                          </Show>
-                        </span>
-                        <div onClick={(event) => event.stopPropagation()}>
-                          <Switch
-                            checked={enabled()}
-                            disabled={toggleMcp.isPending && toggleMcp.variables === name}
-                            onChange={() => {
-                              if (toggleMcp.isPending) return
-                              toggleMcp.mutate(name)
+                        >
+                          <div
+                            classList={{
+                              "size-1.5 rounded-full shrink-0": true,
+                              "bg-icon-success-base": status() === "connected",
+                              "bg-icon-critical-base": status() === "failed",
+                              "bg-border-weak-base": status() === "disabled",
+                              "bg-icon-warning-base":
+                                status() === "needs_auth" || status() === "needs_client_registration",
                             }}
                           />
-                        </div>
-                      </button>
+                          <span class="flex flex-col min-w-0 flex-1">
+                            <span class="flex items-center gap-2 min-w-0">
+                              <span class="text-14-regular text-text-base truncate">{name}</span>
+                            </span>
+                            <Show when={status() === "needs_auth" && !nativeStatus()}>
+                              <span class="text-11-regular text-text-weaker truncate">
+                                {language.t("mcp.auth.clickToAuthenticate")}
+                              </span>
+                            </Show>
+                          </span>
+                        </button>
+                        <Show
+                          when={nativeStatus()}
+                          fallback={
+                            <div onClick={(event) => event.stopPropagation()}>
+                              <Switch
+                                checked={enabled()}
+                                disabled={toggleMcp.isPending && toggleMcp.variables === name}
+                                onChange={() => {
+                                  if (toggleMcp.isPending) return
+                                  toggleMcp.mutate(name)
+                                }}
+                              />
+                            </div>
+                          }
+                        >
+                          <Button
+                            variant="secondary"
+                            class="h-7 px-2"
+                            disabled={
+                              nativeStatus() === "connecting" || (toggleMcp.isPending && toggleMcp.variables === name)
+                            }
+                            onClick={() => toggleMcp.mutate(name)}
+                          >
+                            {nativeStatus() === "authentication_required"
+                              ? language.t("mcp.auth.clickToAuthenticate")
+                              : enabled()
+                                ? language.t("common.disconnect")
+                                : language.t("common.connect")}
+                          </Button>
+                        </Show>
+                      </div>
                     )
                   }}
                 </For>
@@ -459,33 +485,31 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="lsp">
-          <div class="flex flex-col px-2 pb-2">
-            <div class="flex flex-col p-3 bg-background-base rounded-sm min-h-14">
-              <Show
-                when={lspItems().length > 0}
-                fallback={
-                  <div class="text-14-regular text-text-base text-center my-auto">{language.t("dialog.lsp.empty")}</div>
-                }
-              >
-                <For each={lspItems()}>
-                  {(item) => (
-                    <div class="flex items-center gap-2 w-full px-2 py-1">
-                      <div
-                        classList={{
-                          "size-1.5 rounded-full shrink-0": true,
-                          "bg-icon-success-base": item.status === "connected",
-                          "bg-icon-critical-base": item.status === "error",
-                        }}
-                      />
-                      <span class="text-14-regular text-text-base truncate">{item.name || item.id}</span>
+        <Show when={protocol() !== undefined}>
+          <Tabs.Content value="lsp">
+            <div class="flex flex-col px-2 pb-2">
+              <div class="flex flex-col p-3 bg-background-base rounded-sm min-h-14">
+                <Show
+                  when={lspItems().length > 0}
+                  fallback={
+                    <div class="text-14-regular text-text-base text-center my-auto">
+                      {protocol() === "v2" ? language.t("lsp.tooltip.none") : language.t("dialog.lsp.empty")}
                     </div>
-                  )}
-                </For>
-              </Show>
+                  }
+                >
+                  <For each={lspItems()}>
+                    {(item) => (
+                      <div class="flex items-center gap-2 w-full px-2 py-1">
+                        <div class={`size-1.5 rounded-full shrink-0 ${lspStatusDotClass(item.status)}`} />
+                        <span class="text-14-regular text-text-base truncate">{item.name || item.id}</span>
+                      </div>
+                    )}
+                  </For>
+                </Show>
+              </div>
             </div>
-          </div>
-        </Tabs.Content>
+          </Tabs.Content>
+        </Show>
 
         <Show when={protocol() === "v1"}>
           <Tabs.Content value="plugins">

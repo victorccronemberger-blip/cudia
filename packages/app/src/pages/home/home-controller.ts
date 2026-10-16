@@ -5,6 +5,9 @@ import { useServerSync } from "@/context/server-sync"
 import { useTabs } from "@/context/tabs"
 import { toggleHomeProjectSelection } from "@/pages/layout/helpers"
 import { createEffect, createMemo } from "solid-js"
+import { formatServerError } from "@/utils/server-errors"
+import { showToast } from "@/utils/toast"
+import { useLanguage } from "@/context/language"
 
 export function createHomeController() {
   const sync = useServerSync()
@@ -12,6 +15,7 @@ export function createHomeController() {
   const server = useServer()
   const global = useGlobal()
   const tabs = useTabs()
+  const language = useLanguage()
   const selection = layout.home.selection
   const focusedServer = createMemo(
     () => global.servers.list().find((conn) => ServerConnection.key(conn) === selection().server) ?? server.current,
@@ -90,9 +94,48 @@ export function createHomeController() {
         const directory = directories[0]
         if (!directory) return
         const ctx = global.ensureServerCtx(conn)
-        directories.forEach((item) => ctx.projects.open(item))
-        ctx.projects.touch(directory)
-        setSelection({ server: ServerConnection.key(conn), directory })
+        void (async () => {
+          if ((await ctx.sdk.protocol) === "v1") {
+            directories.forEach((item) => {
+              if (ctx.projects.list().some((project) => project.worktree === item)) return
+              const location = { directory: item }
+              void ctx.sdk.api.file
+                .list({ path: ".", location })
+                .then(async (files) => {
+                  if (files.data.length > 0) return ctx.sdk.api.project.current({ location })
+                  const result = await ctx.sdk.client.project.initGit({ directory: item })
+                  return result.data ?? ctx.sdk.api.project.current({ location })
+                })
+                .then((project) => ctx.sync.child(item, { bootstrap: false })[1]("project", project.id))
+                .catch(() => undefined)
+              ctx.projects.open(item)
+            })
+            ctx.projects.touch(directory)
+            setSelection({ server: ServerConnection.key(conn), directory })
+            return
+          }
+
+          let canSelect = ctx.projects.list().some((project) => project.worktree === directory)
+          for (const item of directories) {
+            if (ctx.projects.list().some((project) => project.worktree === item)) continue
+            try {
+              await ctx.sdk.nativeWorkspace.files.list({ location: { directory: item }, path: "." })
+              const location = await ctx.sdk.nativeWorkspace.location.get({ location: { directory: item } })
+              ctx.sync.child(item, { bootstrap: false })[1]("project", location.project.id)
+              ctx.projects.open(item)
+              if (item === directory) canSelect = true
+            } catch (error) {
+              showToast({
+                variant: "error",
+                title: language.t("common.requestFailed"),
+                description: formatServerError(error, language.t),
+              })
+            }
+          }
+          if (!canSelect) return
+          ctx.projects.touch(directory)
+          setSelection({ server: ServerConnection.key(conn), directory })
+        })()
       },
       openNewSession: () => {
         const conn = focusedServer()

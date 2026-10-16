@@ -3,17 +3,18 @@ import path from "path"
 import { pathToFileURL } from "url"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Global } from "@opencode-ai/core/global"
 import { Config } from "@/config/config"
 import { ConfigPlugin } from "@/config/plugin"
 import { CurrentWorkingDirectory } from "@/config/tui-cwd"
 import { TuiConfig } from "../../src/config/tui"
-import { TestInstance } from "../fixture/fixture"
+import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
-const it = testEffect(LayerNode.compile(LayerNode.group([Config.node, FSUtil.node])))
+const it = testEffect(LayerNode.compile(LayerNode.group([Config.node, FSUtil.node, CrossSpawnSpawner.node])))
 const winIt = process.platform === "win32" ? it.instance : it.instance.skip
 
 const globalConfigFiles = ["opencode.json", "opencode.jsonc", "tui.json", "tui.jsonc"].map((file) =>
@@ -82,6 +83,83 @@ const getTuiPluginOrigins = (directory: string) =>
       AppNodeBuilder.build(TuiConfig.node).pipe(Layer.provide(Layer.succeed(CurrentWorkingDirectory, directory))),
     ),
   )
+
+it.instance("loads distribution TUI defaults below global and project without migrating packaged files", () =>
+  withCleanState(
+    Effect.gen(function* () {
+      const fs = yield* FSUtil.Service
+      const test = yield* TestInstance
+      const defaults = yield* tmpdirScoped()
+      const server = JSON.stringify({ theme: "legacy-must-not-migrate" })
+      const tui = JSON.stringify({ theme: "packaged" })
+      yield* fs.writeWithDirs(path.join(defaults, "opencode.json"), server)
+      yield* fs.writeWithDirs(path.join(defaults, "tui.json"), tui)
+      yield* withEnv(
+        "CUDIA_DISTRIBUTION_DIR",
+        defaults,
+        Effect.gen(function* () {
+          expect((yield* getTuiConfig(test.directory)).theme).toBe("packaged")
+          yield* fs.writeWithDirs(path.join(Global.Path.config, "tui.json"), JSON.stringify({ theme: "global" }))
+          expect((yield* getTuiConfig(test.directory)).theme).toBe("global")
+          yield* fs.writeWithDirs(path.join(test.directory, "tui.json"), JSON.stringify({ theme: "project" }))
+          expect((yield* getTuiConfig(test.directory)).theme).toBe("project")
+          expect(yield* getTuiPluginOrigins(test.directory)).toEqual([])
+        }),
+      )
+      expect(yield* fs.readFileString(path.join(defaults, "opencode.json"))).toBe(server)
+      expect(yield* fs.readFileString(path.join(defaults, "tui.json"))).toBe(tui)
+      expect(yield* fs.existsSafe(path.join(defaults, "opencode.json.bak"))).toBe(false)
+      expect(yield* fs.existsSafe(path.join(defaults, ".gitignore"))).toBe(false)
+      expect(yield* fs.existsSafe(path.join(defaults, "node_modules"))).toBe(false)
+    }),
+  ),
+)
+
+it.instance("surfaces forbidden distribution TUI plugins before resolving specs", () =>
+  withCleanState(
+    Effect.gen(function* () {
+      const fs = yield* FSUtil.Service
+      const test = yield* TestInstance
+      const defaults = yield* tmpdirScoped()
+      for (const config of [
+        { plugin: ["never-install"] },
+        { plugins: ["never-install"] },
+        { tui: { plugin: ["never-install"] } },
+      ]) {
+        yield* fs.writeWithDirs(path.join(defaults, "tui.json"), JSON.stringify(config))
+        const exit = yield* withEnv("CUDIA_DISTRIBUTION_DIR", defaults, getTuiConfig(test.directory).pipe(Effect.exit))
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit))
+          expect(Cause.pretty(exit.cause)).toContain("Distribution defaults cannot declare plugins")
+      }
+    }),
+  ),
+)
+
+it.instance("surfaces malformed and unknown distribution TUI settings", () =>
+  withCleanState(
+    Effect.gen(function* () {
+      const fs = yield* FSUtil.Service
+      const test = yield* TestInstance
+      const defaults = yield* tmpdirScoped()
+      for (const config of [
+        null,
+        [],
+        true,
+        "theme",
+        { tui: null },
+        { theme: false },
+        { unknown_setting: true },
+        { keybinds: { unknown_action: "ctrl+x" } },
+      ]) {
+        yield* fs.writeWithDirs(path.join(defaults, "tui.json"), JSON.stringify(config))
+        const exit = yield* withEnv("CUDIA_DISTRIBUTION_DIR", defaults, getTuiConfig(test.directory).pipe(Effect.exit))
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Invalid distribution TUI")
+      }
+    }),
+  ),
+)
 
 it.instance("keeps server and tui plugin merge semantics aligned", () =>
   withCleanState(

@@ -1,11 +1,12 @@
 {
   "name": "@opencode-ai/app",
-  "version": "1.18.11",
+  "version": "1.18.35",
   "description": "",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./desktop-menu": "./src/desktop-menu.ts",
+    "./i18n/desktop-native": "./src/i18n/desktop-native.ts",
     "./updater": "./src/updater.ts",
     "./wsl/types": "./src/wsl/types.ts",
     "./vite": "./vite.js",
@@ -31,7 +32,7 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "@happy-dom/global-registrator": "20.0.11",
+    "@happy-dom/global-registrator": "20.12.0",
     "@playwright/test": "catalog:",
     "@sentry/vite-plugin": "catalog:",
     "@tailwindcss/vite": "catalog:",
@@ -55,6 +56,7 @@
     "@kobalte/core": "catalog:",
     "@opencode-ai/client": "file:vendor/opencode-ai-client-1.17.13-v2.tgz",
     "@opencode-ai/core": "workspace:*",
+    "@opencode-ai/runtime-client": "file:../client",
     "@opencode-ai/schema": "workspace:*",
     "@opencode-ai/sdk": "workspace:*",
     "@opencode-ai/session-ui": "workspace:*",

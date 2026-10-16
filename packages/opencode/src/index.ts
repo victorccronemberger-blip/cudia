@@ -29,6 +29,7 @@ import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
+import { AmbientInstructions } from "@opencode-ai/core/harness/ambient-instructions"
 
 const args = hideBin(process.argv)
 
@@ -63,7 +64,19 @@ const cli = yargs(args)
     describe: "run without external plugins",
     type: "boolean",
   })
+  .option("load-instructions", {
+    describe: "automatically apply project, global and configured instruction documents for this process",
+    type: "boolean",
+    default: false,
+  })
+  .option("context-audit", {
+    describe: "capture prepared-request instruction origins; content explicitly includes instruction text",
+    choices: ["off", "summary", "content"] as const,
+    type: "string",
+  })
   .middleware(async (opts) => {
+    AmbientInstructions.configure(opts.loadInstructions === true)
+    if (opts.contextAudit) process.env.CUDIA_CONTEXT_AUDIT = opts.contextAudit
     if (opts.printLogs) process.env.OPENCODE_PRINT_LOGS = "1"
     if (opts.logLevel) process.env.OPENCODE_LOG_LEVEL = opts.logLevel
     if (opts.pure) {

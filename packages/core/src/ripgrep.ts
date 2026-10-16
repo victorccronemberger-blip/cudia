@@ -56,6 +56,7 @@ export interface FindInput {
   readonly follow?: boolean
   readonly signal?: AbortSignal
   readonly onEntry?: (entry: Entry) => Effect.Effect<void>
+  readonly failOnPartial?: boolean
 }
 
 export interface GlobInput {
@@ -128,7 +129,7 @@ const layer = Layer.effect(
             Effect.map((chunk) => [...chunk]),
           )
           const truncated = rows.length > input.limit
-          if (truncated) return { items: rows.slice(0, input.limit), truncated, partial: false }
+          if (truncated) return { items: rows.slice(0, input.limit), truncated, partial: false, stderr: "" }
 
           const code = yield* handle.exitCode
           const stderr = yield* Fiber.join(stderrFiber)
@@ -138,7 +139,7 @@ const layer = Layer.effect(
           if (code !== 0 && code !== 1 && code !== 2) {
             return yield* failure(stderr.trim() || `ripgrep failed with code ${code}`)
           }
-          return { items: code === 1 ? [] : rows, truncated: false, partial: code === 2 }
+          return { items: code === 1 ? [] : rows, truncated: false, partial: code === 2, stderr }
         }),
       )
       const abortable = input.signal ? program.pipe(Effect.raceFirst(waitForAbort(input.signal))) : program
@@ -212,7 +213,11 @@ const layer = Layer.effect(
           },
           onItem: input.onEntry,
         }).pipe(
-          Effect.map((result) => result.items),
+          Effect.flatMap((result) =>
+            input.failOnPartial && result.partial
+              ? Effect.fail(failure(result.stderr.trim() || "ripgrep returned an incomplete filesystem scan"))
+              : Effect.succeed(result.items),
+          ),
           Effect.catchTag("Ripgrep.InvalidPatternError", (cause) => Effect.fail(failure(cause.message, cause))),
         ),
       grep: (input) =>
@@ -264,7 +269,10 @@ const layer = Layer.effect(
                 }),
                 line: match.line_number,
                 offset: match.absolute_offset,
-                text: match.lines.text.length > 2_000 ? match.lines.text.slice(0, 2_000) + "..." : match.lines.text,
+                text:
+                  match.lines.text.length > 2_000
+                    ? match.lines.text.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/, "") + "..."
+                    : match.lines.text,
                 submatches: match.submatches.map((submatch) => ({
                   text: submatch.match.text,
                   start: submatch.start,

@@ -22,6 +22,7 @@ import { Cause, Effect, Exit, Layer } from "effect"
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
 const SERVER = "fixtures"
+const GUIDANCE = "Use add for arithmetic and get_text for greetings."
 
 const ctx: Tool.Context = {
   sessionID: SessionID.make("ses_code-mode-int"),
@@ -38,6 +39,7 @@ const ctx: Tool.Context = {
 class RawJsonRpcClient {
   private nextId = 1
   private pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>()
+  private instructions = ""
 
   constructor(private transport: InMemoryTransport) {}
 
@@ -52,11 +54,12 @@ class RawJsonRpcClient {
       else entry.resolve(msg.result)
     }
     await this.transport.start()
-    await this.request("initialize", {
+    const initialized = await this.request("initialize", {
       protocolVersion: LATEST_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "test-client", version: "1.0.0" },
     })
+    this.instructions = initialized.instructions ?? ""
     await this.transport.send({ jsonrpc: "2.0", method: "notifications/initialized" })
   }
 
@@ -69,6 +72,10 @@ class RawJsonRpcClient {
 
   listTools() {
     return this.request("tools/list", {})
+  }
+
+  getInstructions() {
+    return this.instructions
   }
 
   callTool(params: { name: string; arguments?: Record<string, unknown> }, _schema?: unknown, _options?: unknown) {
@@ -119,13 +126,16 @@ function handleCall(name: string, args: Record<string, unknown>) {
 
 let tool: Awaited<ReturnType<typeof buildTool>>["tool"]
 let description: string
+let calls: string[]
 
 async function buildTool() {
-  const server = new Server({ name: SERVER, version: "1.0.0" }, { capabilities: { tools: {} } })
+  const server = new Server({ name: SERVER, version: "1.0.0" }, { capabilities: { tools: {} }, instructions: GUIDANCE })
+  const calls: string[] = []
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
-  server.setRequestHandler(CallToolRequestSchema, async (req) =>
-    handleCall(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>),
-  )
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    calls.push(req.params.name)
+    return handleCall(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>)
+  })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -138,6 +148,7 @@ async function buildTool() {
     mcpTools[McpCatalog.toolName(SERVER, def.name)] = { def, client: client as unknown as Client }
   }
 
+  const instructions = [{ name: SERVER, instructions: client.getInstructions(), tools: Object.keys(mcpTools) }]
   const layer = Layer.mergeAll(
     Layer.mock(Plugin.Service, {
       trigger: ((_name: unknown, _input: unknown, output: unknown) =>
@@ -151,11 +162,14 @@ async function buildTool() {
     Layer.mock(MCP.Service, {
       tools: () => Effect.succeed(mcpTools),
       clients: () => Effect.succeed({ [SERVER]: {} as any }),
+      status: () => Effect.succeed({ [SERVER]: { status: "connected" as const } }),
+      instructions: () => Effect.succeed(instructions),
     }),
   )
   return {
     tool: await Effect.runPromise(CodeModeTool.pipe(Effect.flatMap(Tool.init), Effect.provide(layer))),
-    description: describeCatalog(mcpTools, [SERVER]),
+    description: describeCatalog(mcpTools, [SERVER], instructions),
+    calls,
   }
 }
 
@@ -171,22 +185,38 @@ beforeAll(async () => {
   const built = await buildTool()
   tool = built.tool
   description = built.description
+  calls = built.calls
 })
 
 describe("code mode integration (real MCP server)", () => {
-  test("the appended catalog inlines full signatures with real MCP schemas", () => {
-    expect(description).toContain("Available tools (COMPLETE list")
-    expect(description).toContain("- fixtures (4 tools)")
-    expect(description).toContain(
-      "tools.fixtures.add(input: {\n  a: number,\n  b: number,\n}): Promise<{\n  sum: number,\n}>",
-    )
-    expect(description).toContain("tools.fixtures.get_text(input: {\n  name: string,\n}): Promise<unknown>")
-    expect(description).toContain("// Add two numbers and return the structured sum")
-    expect(description).not.toContain("$codemode")
+  test("real MCP schemas appear only in explicitly requested discovery", async () => {
+    expect(description).toContain("Available tools (PARTIAL - 0 of 5 shown")
+    expect(description).toContain("- fixtures (4 tools, none shown)")
+    expect(description).not.toContain("tools.fixtures.add(")
+    expect(description).not.toContain("tools.fixtures.get_text(")
+    expect(description).not.toContain("Add two numbers and return the structured sum")
+    expect(description).toContain("tools.$codemode.search(")
     expect(description).toContain("## Workflow")
     expect(description).toContain("Do not infer or normalize tool names")
-    expect(description).toContain("bracket notation and quotes are part of the path")
     expect(description).not.toContain("total_count")
+    const output = await run("return await tools.$codemode.search({ query: 'fixtures.add' })")
+    const result = JSON.parse(output.output)
+    expect(result.items).toMatchObject([{ path: "tools.fixtures.add" }])
+    expect(result.items[0].signature).toBe(
+      "tools.fixtures.add(input: {\n  a: number,\n  b: number,\n}): Promise<{\n  sum: number,\n}>",
+    )
+    expect(result.items[0].description).toBe("Add two numbers and return the structured sum")
+  })
+
+  test("reads cached initialization instructions without an MCP call", async () => {
+    const before = calls.length
+    const output = await run("return await tools.$mcp.instructions({ server: 'fixtures' })")
+    expect(description).not.toContain(GUIDANCE)
+    expect(output.output).toBe(GUIDANCE)
+    expect(calls.length).toBe(before)
+    expect(output.metadata.toolCalls).toEqual([
+      { tool: "$mcp.instructions", status: "completed", input: { server: "fixtures" } },
+    ])
   })
 
   test("calls a text tool and receives its text as the native result", async () => {

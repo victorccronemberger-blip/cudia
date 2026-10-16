@@ -1,6 +1,8 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as TestClock from "effect/testing/TestClock"
+import fs from "fs/promises"
+import path from "path"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Location } from "@opencode-ai/core/location"
@@ -11,11 +13,11 @@ import { SystemContext } from "@opencode-ai/core/system-context"
 import { SystemContextBuiltIns } from "@opencode-ai/core/system-context/builtins"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { location } from "../fixture/location"
+import { tmpdir } from "../fixture/tmpdir"
 import { testEffect } from "../lib/effect"
 
 const directory = AbsolutePath.make(FSUtil.resolve("/repo/packages/core"))
 const projectDirectory = AbsolutePath.make(FSUtil.resolve("/repo"))
-const instructionFile = FSUtil.resolve("/repo/AGENTS.md")
 const timestamp = Date.parse("2026-06-03T12:00:00.000Z")
 const localDate = (time: number) => new Date(time).toDateString()
 const locationLayer = Layer.succeed(
@@ -34,25 +36,7 @@ const it = testEffect(
     [Global.node, Global.layerWith({ config: "/global" })],
   ]),
 )
-const instructionFS = Layer.effect(
-  FSUtil.Service,
-  FSUtil.Service.pipe(
-    Effect.map((fs) =>
-      FSUtil.Service.of({
-        ...fs,
-        up: () => Effect.succeed([instructionFile]),
-        readFileStringSafe: (path) => Effect.succeed(path === instructionFile ? "Be precise." : undefined),
-      }),
-    ),
-  ),
-).pipe(Layer.provide(LayerNode.compile(FSUtil.node)))
-const itWithInstructions = testEffect(
-  AppNodeBuilder.build(builtInsNode, [
-    [Location.node, locationLayer],
-    [FSUtil.node, instructionFS],
-    [Global.node, Global.layerWith({ config: "/global" })],
-  ]),
-)
+const itWithInstructions = testEffect(Layer.empty)
 
 describe("SystemContextBuiltIns", () => {
   it.effect("loads location-scoped environment and host-local date context", () =>
@@ -105,25 +89,64 @@ describe("SystemContextBuiltIns", () => {
   )
 
   itWithInstructions.effect("composes ambient instructions after built-in context", () =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(timestamp)
-      const context = yield* SystemContextRegistry.Service
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (temporaryDirectory) => Effect.promise(() => temporaryDirectory[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((temporaryDirectory) =>
+        Effect.gen(function* () {
+          yield* TestClock.setTime(timestamp)
+          const global = path.join(temporaryDirectory.path, "global")
+          const project = path.join(temporaryDirectory.path, "repo")
+          const workingDirectory = path.join(project, "packages", "core")
+          const instructionFile = path.join(project, "AGENTS.md")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(workingDirectory, { recursive: true })
+            await fs.mkdir(global, { recursive: true })
+            await fs.writeFile(instructionFile, "Be precise.")
+          })
+          const temporaryDirectoryPath = AbsolutePath.make(project)
+          const temporaryWorkingDirectory = AbsolutePath.make(workingDirectory)
+          const layer = AppNodeBuilder.build(builtInsNode, [
+            [
+              Location.node,
+              Layer.succeed(
+                Location.Service,
+                Location.Service.of(
+                  location(
+                    { directory: temporaryWorkingDirectory },
+                    {
+                      projectDirectory: temporaryDirectoryPath,
+                      vcs: { type: "git", store: AbsolutePath.make(path.join(project, ".git")) },
+                    },
+                  ),
+                ),
+              ),
+            ],
+            [Global.node, Global.layerWith({ config: global })],
+          ])
+          const context = yield* SystemContextRegistry.Service.pipe(
+            Effect.flatMap((registry) => registry.load()),
+            Effect.provide(layer),
+          )
 
-      expect((yield* SystemContext.initialize(yield* context.load())).baseline).toBe(
-        [
-          "Here is some useful information about the environment you are running in:",
-          "<env>",
-          `  Working directory: ${directory}`,
-          `  Workspace root folder: ${projectDirectory}`,
-          "  Is directory a git repo: yes",
-          `  Platform: ${process.platform}`,
-          "</env>",
-          "",
-          `Today's date: ${localDate(timestamp)}`,
-          "",
-          `Instructions from: ${instructionFile}\nBe precise.`,
-        ].join("\n"),
-      )
-    }),
+          expect((yield* SystemContext.initialize(context)).baseline).toBe(
+            [
+              "Here is some useful information about the environment you are running in:",
+              "<env>",
+              `  Working directory: ${temporaryWorkingDirectory}`,
+              `  Workspace root folder: ${temporaryDirectoryPath}`,
+              "  Is directory a git repo: yes",
+              `  Platform: ${process.platform}`,
+              "</env>",
+              "",
+              `Today's date: ${localDate(timestamp)}`,
+              "",
+              `Instructions from: ${instructionFile}\nBe precise.`,
+            ].join("\n"),
+          )
+        }),
+      ),
+    ),
   )
 })

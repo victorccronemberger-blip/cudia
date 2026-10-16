@@ -118,6 +118,18 @@ export function currentPickerSuggestions<T>(result: { query: string; items: read
   return result.items
 }
 
+export function skipDirectoryPickerClientFilter(item: { group: "recent" | "folders" }) {
+  return item.group === "folders"
+}
+
+export function mergeDirectoryPickerProjects<
+  T extends { worktree: string },
+  U extends { worktree: string; vcs?: "git" },
+>(opened: T[], canonical: U[]) {
+  const known = new Set(opened.map((project) => project.worktree))
+  return [...opened, ...canonical.filter((project) => project.vcs === "git" && !known.has(project.worktree))]
+}
+
 export function preloadTreeDirectories(
   parent: string,
   nodes: ReadonlyArray<{ name: string; type: "file" | "directory" }>,
@@ -321,7 +333,12 @@ export function displayPickerPath(path: string, input: string, home: string) {
   return pickerTilde(value, home) || value
 }
 
-export function createDirectorySearch(args: { sdk: ServerSDK; base: () => string | undefined; home: () => string }) {
+export function createDirectorySearch(args: {
+  sdk: ServerSDK
+  base: () => string | undefined
+  home: () => string
+  onError?: (error: unknown) => void
+}) {
   const cache = new Map<string, Promise<Array<{ name: string; absolute: string }>>>()
   let current = 0
 
@@ -342,10 +359,19 @@ export function createDirectorySearch(args: { sdk: ServerSDK; base: () => string
     const key = trimPickerPath(directory)
     const existing = cache.get(key)
     if (existing) return existing
-    const request = args.sdk.api.file
-      .list({ location: { directory: key } })
+    const request = Promise.resolve(args.sdk.protocol)
+      .then(async (protocol) => {
+        if (protocol !== "v1" && args.sdk.nativeWorkspace) {
+          return args.sdk.nativeWorkspace.files.list({ location: { directory: key }, path: "." })
+        }
+        return args.sdk.api.file.list({ location: { directory: key } })
+      })
       .then((result) => result.data)
-      .catch(() => [])
+      .catch(async (error) => {
+        cache.delete(key)
+        if ((await args.sdk.protocol) !== "v1" && args.sdk.nativeWorkspace) args.onError?.(error)
+        return []
+      })
       .then((nodes) =>
         nodes
           .filter((node) => node.type === "directory")
@@ -374,12 +400,37 @@ export function createDirectorySearch(args: { sdk: ServerSDK; base: () => string
     const pathInput = raw.startsWith("~") || !!pickerRoot(raw) || raw.includes("/")
     const query = normalizePickerDrive(input.path)
     if (!pathInput) {
-      const results = await args.sdk.api.file
-        .find({ location: { directory: input.directory }, query, type: "directory", limit: 50 })
+      const results = await Promise.resolve(args.sdk.protocol)
+        .then(async (protocol) => {
+          if (protocol !== "v1" && args.sdk.nativeWorkspace) {
+            return args.sdk.nativeWorkspace.files.find({
+              location: { directory: input.directory },
+              query,
+              type: "directory",
+              limit: 50,
+            })
+          }
+          return args.sdk.api.file.find({
+            location: { directory: input.directory },
+            query,
+            type: "directory",
+            limit: 50,
+          })
+        })
         .then((result) => result.data.map((entry) => entry.path))
-        .catch(() => [])
+        .catch(async (error) => {
+          if ((await args.sdk.protocol) !== "v1" && args.sdk.nativeWorkspace) args.onError?.(error)
+          return []
+        })
       if (!active()) return []
-      return results.map((path) => joinPickerPath(input.directory, path)).slice(0, 50)
+      if (results.length) {
+        return results.map((path) => joinPickerPath(input.directory, path)).slice(0, 50)
+      }
+      const fallback = query
+        ? await match(input.directory, query, 50)
+        : (await directories(input.directory)).map((item) => item.absolute)
+      if (!active()) return []
+      return fallback
     }
     const segments = query.replace(/^\/+/, "").split("/")
     const head = segments.slice(0, -1).filter((part) => part && part !== ".")

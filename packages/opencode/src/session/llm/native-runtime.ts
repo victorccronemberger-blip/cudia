@@ -41,6 +41,7 @@ type StreamInput = {
   readonly providerOptions?: Record<string, any>
   readonly headers: Record<string, string>
   readonly abort: AbortSignal
+  readonly onRequest?: (request: LLMRequest) => Effect.Effect<void>
 }
 
 export function status(input: Pick<StreamInput, "model" | "provider" | "auth">): RuntimeStatus {
@@ -105,35 +106,31 @@ export function stream(input: StreamInput): StreamResult {
       Effect.gen(function* () {
         const settlements = yield* FiberSet.make<void>()
         const results = yield* Queue.unbounded<LLMEvent, Cause.Done>()
-        const provider = input.llmClient
-          .stream(
-            LLMRequest.update(request, {
-              tools: [...request.tools, ...toDefinitions(tools)],
-            }),
-          )
-          .pipe(
-            Stream.flatMap((event) =>
-              event.type !== "tool-call" || event.providerExecuted
-                ? Stream.make(event)
-                : Stream.make(event).pipe(
-                    Stream.concat(
-                      Stream.fromEffectDrain(
-                        ToolRuntime.dispatch(tools, event).pipe(
-                          Effect.flatMap((dispatched) => Queue.offerAll(results, dispatched.events)),
-                          Effect.catchCause((cause) => Queue.failCause(results, cause)),
-                          Effect.asVoid,
-                          FiberSet.run(settlements, { startImmediately: true }),
-                        ),
+        const prepared = LLMRequest.update(request, { tools: [...request.tools, ...toDefinitions(tools)] })
+        if (input.onRequest) yield* input.onRequest(prepared)
+        const provider = input.llmClient.stream(prepared).pipe(
+          Stream.flatMap((event) =>
+            event.type !== "tool-call" || event.providerExecuted
+              ? Stream.make(event)
+              : Stream.make(event).pipe(
+                  Stream.concat(
+                    Stream.fromEffectDrain(
+                      ToolRuntime.dispatch(tools, event).pipe(
+                        Effect.flatMap((dispatched) => Queue.offerAll(results, dispatched.events)),
+                        Effect.catchCause((cause) => Queue.failCause(results, cause)),
+                        Effect.asVoid,
+                        FiberSet.run(settlements, { startImmediately: true }),
                       ),
                     ),
                   ),
+                ),
+          ),
+          Stream.concat(
+            Stream.fromEffectDrain(
+              FiberSet.awaitEmpty(settlements).pipe(Effect.andThen(Queue.end(results)), Effect.asVoid),
             ),
-            Stream.concat(
-              Stream.fromEffectDrain(
-                FiberSet.awaitEmpty(settlements).pipe(Effect.andThen(Queue.end(results)), Effect.asVoid),
-              ),
-            ),
-          )
+          ),
+        )
         return provider.pipe(Stream.concat(Stream.fromQueue(results)))
       }),
     ),

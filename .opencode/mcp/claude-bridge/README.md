@@ -1,25 +1,30 @@
-# Codex + Claude Code collaboration
+# Claude Code consultation bridge
 
-This setup connects the two subscription-authenticated CLIs in both directions:
+This optional MCP server exposes `ask_claude` and `reply_claude` for independent
+analysis and review in the current workspace. It is disabled by default in
+the cudia configuration.
 
-- Claude Code sees Codex through the official `codex mcp-server` command.
-- Codex sees Claude through the local `claude-collab` MCP bridge.
+Workspace installation includes this server's Node dependencies. Install and
+authenticate Claude Code separately, then set `mcp.claude-bridge.enabled` to
+`true` in `.opencode/opencode.json` when you want to use it. `CLAUDE_CLI_PATH`
+can select an executable instead of `claude` from `PATH`.
 
-The reverse bridge deliberately runs Claude in safe, read-only mode. It disables
-all nested MCP servers to prevent Codex -> Claude -> Codex recursion, removes API
+The bridge runs Claude in read-only mode for consultation. It disables
+nested MCP servers to prevent recursion, removes API
 and third-party provider overrides from the child environment, and exposes only
 `Read`, `Glob`, and `Grep` to Claude.
 
-## Tools
+The configured startup command resolves the server under
+`OPENCODE_CONFIG_DIR`, which the cudia launcher supplies, while retaining the
+operator's working directory for the consultation. This also handles native
+Windows paths without inserting them into JSON configuration text. If starting
+OpenCode directly, supply that environment variable or run from this checkout.
 
-- In Claude Code: `mcp__codex__codex` and `mcp__codex__codex-reply`.
-- In Codex: `ask_claude` and `reply_claude` from the `claude-collab` server.
+## Validation
 
-Restart an already-open client after changing MCP configuration. Use `/mcp` in
-Claude Code or `codex mcp list` to inspect connection state.
+Run `node test.mjs` from this directory. The contract test checks the configured
+startup command and tool catalog from another working directory, without
+calling Claude's service. Restart the client after changing MCP configuration.
 
-## Billing note
-
-Both CLIs are authenticated with their consumer subscriptions. Claude's
-non-interactive `-p` mode can draw from the separate Agent SDK allowance attached
-to a Claude subscription; it does not use an Anthropic API key in this bridge.
+Service access, model behavior, quotas, and billing remain governed by the
+Claude account and CLI. The bridge does not configure those services.

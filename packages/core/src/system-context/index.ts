@@ -1,6 +1,8 @@
 export * as SystemContext from "./index"
 
 import { Effect, Option, Schema } from "effect"
+import { ContextManifestSchema } from "@opencode-ai/schema/context-manifest"
+import { ContextManifest } from "../harness/context-manifest"
 
 /**
  * Models privileged system context as independently refreshable typed sources.
@@ -33,9 +35,10 @@ export interface Source<A> {
   readonly key: Key
   readonly codec: Schema.Codec<A, Schema.Json, never, never>
   readonly load: Effect.Effect<A | Unavailable>
-  readonly baseline: (current: A) => string
-  readonly update: (previous: A, current: A) => string
-  readonly removed?: (previous: A) => string
+  readonly baseline: (current: A) => string | ContextManifest.Rendered
+  readonly update: (previous: A, current: A) => string | ContextManifest.Rendered
+  /** Only notice text is persisted; removals are producer framing with no renewed content-origin claim. */
+  readonly removed?: (previous: A) => string | ContextManifest.Rendered
 }
 
 const ContextTypeId: unique symbol = Symbol.for("@opencode/SystemContext")
@@ -59,12 +62,14 @@ export type Snapshot = Readonly<Record<string, SourceSnapshot>>
 export interface Generation {
   readonly baseline: string
   readonly snapshot: Snapshot
+  readonly manifest: ContextManifestSchema.Manifest
 }
 
 export interface Updated {
   readonly _tag: "Updated"
   readonly text: string
   readonly snapshot: Snapshot
+  readonly manifest: ContextManifestSchema.Manifest
 }
 
 export interface ReplacementReady {
@@ -108,6 +113,7 @@ interface Loaded {
 
 interface Rendered {
   readonly text: string
+  readonly origins: ReadonlyArray<ContextManifestSchema.Origin>
   readonly snapshot: SourceSnapshot
 }
 
@@ -144,11 +150,11 @@ export function make<A>(source: Source<A>): SystemContext {
           if (isUnavailable(value)) return value
           const snapshot = (): SourceSnapshot => ({
             value: encode(value),
-            ...(source.removed ? { removed: requireText(source.key, "removal", source.removed(value)) } : {}),
+            ...(source.removed ? { removed: requireText(source.key, "removal", source.removed(value)).text } : {}),
           })
           return {
             baseline: (): Rendered => ({
-              text: requireText(source.key, "baseline", source.baseline(value)),
+              ...requireText(source.key, "baseline", source.baseline(value)),
               snapshot: snapshot(),
             }),
             compare: (previous): Compared =>
@@ -160,7 +166,7 @@ export function make<A>(source: Source<A>): SystemContext {
                     : {
                         _tag: "Updated",
                         render: () => ({
-                          text: requireText(source.key, "update", source.update(decoded, value)),
+                          ...requireText(source.key, "update", source.update(decoded, value)),
                           snapshot: snapshot(),
                         }),
                       },
@@ -208,9 +214,13 @@ export function initialize(value: SystemContext): Effect.Effect<Generation, Init
 function initializeObservation(entries: ReadonlyArray<Entry>): Generation {
   const available = entries.filter((entry): entry is AvailableEntry => entry._tag === "Available")
   const rendered = available.map((entry) => [entry.key, entry.baseline()] as const)
+  const baseline = ContextManifest.create(
+    rendered.map(([producer, result]) => ({ producer, phase: "baseline", text: result.text, origins: result.origins })),
+  )
   return {
-    baseline: render(rendered.map(([, result]) => result.text)),
+    baseline: baseline.text,
     snapshot: Object.fromEntries(rendered.map(([key, result]) => [key, result.snapshot])),
+    manifest: baseline.manifest,
   }
 }
 
@@ -245,7 +255,7 @@ function reconcileObservation(
   }
 
   const snapshot: Record<string, SourceSnapshot> = {}
-  const updates: string[] = []
+  const updates: ContextManifest.Input[] = []
   for (const entry of entries) {
     const stored = getSnapshot(previous, entry.key)
     if (entry._tag === "Unavailable") {
@@ -254,7 +264,7 @@ function reconcileObservation(
     }
     if (!stored) {
       const rendered = entry.baseline()
-      updates.push(rendered.text)
+      updates.push({ producer: entry.key, phase: "baseline", text: rendered.text, origins: rendered.origins })
       snapshot[entry.key] = rendered.snapshot
       continue
     }
@@ -266,17 +276,19 @@ function reconcileObservation(
       continue
     }
     const rendered = compared.render()
-    updates.push(rendered.text)
+    updates.push({ producer: entry.key, phase: "update", text: rendered.text, origins: rendered.origins })
     snapshot[entry.key] = rendered.snapshot
   }
   for (const key of Object.keys(previous).sort()) {
     if (keys.has(Key.make(key))) continue
     const removed = previous[key].removed
     if (removed === undefined) throw new Error(`Missing removal rendering for system context source ${key}`)
-    updates.push(removed)
+    // Durable removal notices are generated framing, not another admission of the old source content.
+    updates.push({ producer: key, phase: "removed", text: removed })
   }
   if (updates.length === 0) return { _tag: "Unchanged" }
-  return { _tag: "Updated", text: render(updates), snapshot }
+  const rendered = ContextManifest.create(updates)
+  return { _tag: "Updated", text: rendered.text, snapshot, manifest: rendered.manifest }
 }
 
 /** Creates a complete replacement generation or blocks while admitted context is unavailable. */
@@ -294,10 +306,6 @@ function context(sources: ReadonlyArray<PackedSource>): SystemContext {
   return { [ContextTypeId]: sources }
 }
 
-function render(parts: ReadonlyArray<string>) {
-  return parts.join("\n\n")
-}
-
 function getSnapshot(snapshot: Snapshot, key: Key) {
   return Object.hasOwn(snapshot, key) ? snapshot[key] : undefined
 }
@@ -306,9 +314,10 @@ function isUnavailable(value: unknown): value is Unavailable {
   return value === unavailable
 }
 
-function requireText(key: Key, kind: string, text: string) {
-  if (text.length === 0) throw new Error(`System context source ${key} rendered an empty ${kind}`)
-  return text
+function requireText(key: Key, kind: string, value: string | ContextManifest.Rendered): ContextManifest.Rendered {
+  const rendered = typeof value === "string" ? { text: value, origins: [] } : value
+  if (rendered.text.length === 0) throw new Error(`System context source ${key} rendered an empty ${kind}`)
+  return rendered
 }
 
 function assertUniqueKeys(sources: ReadonlyArray<PackedSource>) {

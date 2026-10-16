@@ -5,6 +5,7 @@ import { LayerNode } from "../effect/layer-node"
 import { Node } from "../effect/app-node"
 import { SessionRunner } from "./runner/index"
 import { SessionSchema } from "./schema"
+import { SessionCompaction } from "./compaction"
 
 export interface Interface {
   /** Snapshots active execution owned by this process. */
@@ -13,6 +14,8 @@ export interface Interface {
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
   readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  /** Queues manual compaction at a settled boundary of this process-local execution. */
+  readonly compact: (sessionID: SessionSchema.ID, focus?: string) => Effect.Effect<void, SessionRunner.CompactError>
   /** Interrupt active work owned by this process. Idle interruption is a no-op. */
   readonly interrupt: (sessionID: SessionSchema.ID) => Effect.Effect<void>
 }
@@ -29,6 +32,8 @@ export const noopLayer = Layer.succeed(
     active: Effect.succeed(new Set()),
     resume: () => Effect.void,
     wake: () => Effect.void,
+    compact: () =>
+      Effect.fail(new SessionCompaction.Error({ reason: "unavailable", message: "Session execution is unavailable" })),
     interrupt: () => Effect.void,
   }),
 )

@@ -14,6 +14,8 @@ import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
 import type { Plugin } from "@/plugin"
 import { mergeDeep } from "remeda"
+import { HarnessPolicy } from "@opencode-ai/core/harness/policy"
+import { ContextTrace } from "@opencode-ai/core/harness/trace"
 
 const USER_AGENT = `opencode/${InstallationVersion}`
 
@@ -33,6 +35,8 @@ type PrepareInput = {
   readonly plugin: Plugin.Interface
   readonly flags: RuntimeFlags.Info
   readonly isWorkflow: boolean
+  readonly contextMode?: "standard" | "lean"
+  readonly contextTrace?: ContextTrace.Collector
 }
 
 export type Prepared = {
@@ -57,7 +61,11 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
   const system = [
     [
-      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
+      ...(input.agent.prompt
+        ? [input.agent.prompt]
+        : input.contextMode === "lean"
+          ? [HarnessPolicy.BASE]
+          : SystemPrompt.provider(input.model)),
       ...input.system,
       ...(input.user.system ? [input.user.system] : []),
     ]
@@ -70,6 +78,13 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     "experimental.chat.system.transform",
     { sessionID: input.sessionID, model: input.model },
     { system },
+    input.contextTrace
+      ? (source) =>
+          input.contextTrace!.start(
+            { stage: "experimental.chat.system.transform", projection: "consumed-system-array", source },
+            () => system,
+          )
+      : undefined,
   )
   if (system.length > 2 && system[0] === header) {
     const rest = system.slice(1)
@@ -129,6 +144,12 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       maxOutputTokens: ProviderTransform.maxOutputTokens(input.model, input.flags.outputTokenMax),
       options,
     },
+    input.contextTrace
+      ? (source, output) =>
+          input.contextTrace!.start({ stage: "chat.params", projection: "options.instructions", source }, () =>
+            ContextTrace.data(ContextTrace.data(output, "options"), "instructions"),
+          )
+      : undefined,
   )
 
   const { headers } = yield* input.plugin.trigger(
@@ -185,6 +206,8 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     params,
     messageTransformOptions: options,
     headers: {
+      "x-opencode-session-id": input.sessionID,
+      ...(input.parentSessionID ? { "x-opencode-parent-session-id": input.parentSessionID } : {}),
       ...(input.model.providerID.startsWith("opencode")
         ? {
             ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
@@ -196,9 +219,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
         : {
             "x-session-affinity": input.sessionID,
             "X-Session-Id": input.sessionID,
-            ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
             "User-Agent": USER_AGENT,
           }),
+      ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
       ...input.model.headers,
       ...headers,
     },

@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "product": "cudia",
+  "kind": "engine-build",
+  "identity": {
+    "version": "1.18.35+cudia.a1c9471a1874.34d5ef8b73ad",
+    "platform": "windows",
+    "arch": "x64",
+    "variant": "normal"
+  },
+  "output": {
+    "size": 138409984,
+    "sha256": "91087e50e5e55db1b0ab1a391f57788df25e4052d81f8c0a272a8c0812925463"
+  },
+  "build": {
+    "bunVersion": "1.3.14",
+    "bunExecutable": {
+      "size": 97757272,
+      "sha256": "9005d0d585d80425e9b715690de3e614651124c94458ef3d3a302ca1a6d3d813"
+    },
+    "recipe": {
+      "conditions": [
+        "bun",
+        "node"
+      ],
+      "tsconfig": "./tsconfig.json",
+      "plugins": [
+        "@opentui/solid/bun-plugin: fresh instance per pass"
+      ],
+      "external": [
+        "node-gyp"
+      ],
+      "format": "esm",
+      "minify": true,
+      "sourcemap": "none",
+      "splitting": true,
+      "compile": {
+        "autoloadBunfig": false,
+        "autoloadDotenv": false,
+        "autoloadTsconfig": true,
+        "autoloadPackageJson": true,
+        "target": "bun-windows-x64",
+        "outfile": "<target-executable>",
+        "execArgv": [
+          "--user-agent=opencode/1.18.35+cudia.a1c9471a1874.34d5ef8b73ad",
+          "--use-system-ca",
+          "--"
+        ],
+        "windows": {}
+      },
+      "files": {
+        "opentui-tree-sitter-worker.js": {
+          "size": 172396,
+          "sha256": "1d5268bf91c643bfda915e7c9a342f9197b9795a6662b6e8a40bf3aa17c88e7f"
+        }
+      },
+      "entrypoints": [
+        "./src/index.ts",
+        "./src/cli/tui/worker.ts",
+        "opentui-tree-sitter-worker.js"
+      ],
+      "define": {
+        "FFF_LIBC": "\"gnu\"",
+        "OPENCODE_VERSION": "'1.18.35+cudia.a1c9471a1874.34d5ef8b73ad'",
+        "OPENCODE_MODELS_DEV": {
+          "size": 5676881,
+          "sha256": "3e8067a6e807ddb72704ab41e767dda3d041612134097261d18df10aa98bd6f8"
+        },
+        "OTUI_TREE_SITTER_WORKER_PATH": "B:/~BUN/root/opentui-tree-sitter-worker.js",
+        "OPENCODE_WORKER_PATH": "./src/cli/tui/worker.ts",
+        "OPENCODE_CHANNEL": "'cudia'",
+        "OPENCODE_LIBC": ""
+      }
+    },
+    "settingsSha256": "ba58ef2c3b5f7868ddc79e08fcfda3c33d30bdbdf91698535ce1b75565365fd2",
+    "discoveryPass": true,
+    "repositoryHead": "a1c9471a18743db1a41f858e3e1a278c9516f5d5"
+  },
+  "inventory": {
+    "path": "engine-inputs.json",
+    "size": 2860008,
+    "sha256": "e14a2023bd3cbbbff30778fcd9d97e56a490baff05c48b55a90903c3607f5ecb"
+  },
+  "coverage": {
+    "repository": "git-listed paths in the declared source scope, checked before and after compilation",
+    "bundler": "discovered input set and file bytes checked before and after final compilation",
+    "generated": "explicit virtual files, model data and effective settings frozen for both passes",
+    "buildPlugins": "explicitly named entry files; transitive runtime reads are not fully inventoried",
+    "environment": "effective build settings only; unrestricted environment is not captured",
+    "targetRuntime": "managed by Bun; separate target runtime artifact is not inventoried",
+    "hermetic": false,
+    "reproducible": false,
+    "independentlyVerified": false
+  }
+}

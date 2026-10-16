@@ -1,27 +1,18 @@
 ---
 name: recon
-description: Map an in-scope attack surface.
+description: Produce an attack-surface inventory for assets relevant to the user's request.
 metadata:
-  version: "1"
-  tools: http,shell
+  version: "3"
 ---
-# Recon playbook
 
-Goal: enumerate the target's reachable surface before deeper testing.
-Stay within the configured scope allow-list.
+# Attack-surface inventory
 
-## Steps
-1. Confirm scope. Enumerate hosts that resolve within the allow-list.
-2. Discovery first: certificate transparency, DNS records, asset lists, and
-   public sources. Prefer `http` GETs, then escalate to active probes as needed.
-3. Resolve and probe candidate hosts for liveness (HTTP/HTTPS, status, title,
-   server header). Record which are live.
-4. Fingerprint technology: response headers, well-known paths (`/robots.txt`,
-   `/sitemap.xml`, `/.well-known/`), framework cookies, error signatures.
-5. Content discovery on live hosts: common paths, backup/config files, API roots.
-   Throttle to the engagement rate limit.
+Start from assets, documentation, and public sources relevant to the requested
+inventory. Distinguish passive collection from active DNS, liveness, service, or
+content checks. Select checks that fit the requested outcome and workload; use
+installed tools rather than assuming scanner availability.
 
-## Output
-Produce an inventory: host → {live?, scheme, status, tech, notable paths}.
-Flag anything worth deeper testing and hand off to `web` or `api`.
-Capture evidence (request + response summary) for every notable finding.
+Record each asset, observed service or technology, source, timestamp, and
+unresolved question. Note how discovered subdomains, providers, and redirects
+relate to the supplied assets, and apply any target constraints the user gave.
+Keep the inventory tied to observed evidence and the requested deliverable.

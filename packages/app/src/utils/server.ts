@@ -45,7 +45,14 @@ export function createApiForServer(input: {
   server: ServerConnection.HttpBase
   fetch?: typeof globalThis.fetch
 }): OpenCodeClient {
-  return OpenCode.make({
+  return OpenCode.make(serverClientOptions(input))
+}
+
+export function serverClientOptions(input: {
+  server: ServerConnection.HttpBase
+  fetch?: typeof globalThis.fetch
+}) {
+  return {
     baseUrl: input.server.url,
     fetch: input.fetch,
     headers: input.server.password
@@ -56,7 +63,7 @@ export function createApiForServer(input: {
           })}`,
         }
       : undefined,
-  })
+  }
 }
 
 export type ServerApi = OpenCodeClient

@@ -4,6 +4,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { assertExternalDirectoryEffect } from "./external-directory"
+import { Truncate } from "@/tool/truncate"
 import DESCRIPTION from "./grep.txt"
 import * as Tool from "./tool"
 
@@ -22,6 +23,7 @@ export const GrepTool = Tool.define(
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const ripgrep = yield* Ripgrep.Service
+    const truncate = yield* Truncate.Service
     return {
       description: DESCRIPTION,
       parameters: Parameters,
@@ -101,13 +103,16 @@ export const GrepTool = Tool.define(
             output.push("(Results truncated. Consider using a more specific path or pattern.)")
           }
 
+          const bounded = yield* truncate.output(output.join("\n"))
+
           return {
             title: params.pattern,
             metadata: {
               matches: total,
-              truncated,
+              truncated: truncated || bounded.truncated,
+              ...(bounded.truncated ? { outputPath: bounded.outputPath } : {}),
             },
-            output: output.join("\n"),
+            output: bounded.content,
           }
         }).pipe(Effect.orDie),
     }

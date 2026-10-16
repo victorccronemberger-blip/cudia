@@ -1,5 +1,6 @@
 import { Component, createMemo, Show } from "solid-js"
 import { useSync } from "@/context/sync"
+import { Button } from "@opencode-ai/ui/button"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { List } from "@opencode-ai/ui/list"
 import { Switch } from "@opencode-ai/ui/switch"
@@ -50,6 +51,7 @@ export const DialogSelectMcp: Component = () => {
         {(i) => {
           const mcpStatus = () => sync().data.mcp[i.name]
           const status = () => mcpStatus()?.status
+          const nativeStatus = () => mcpStatus()?.nativeStatus
           const statusLabel = () => {
             const key = status() ? statusLabels[status() as keyof typeof statusLabels] : undefined
             if (!key) return
@@ -73,15 +75,35 @@ export const DialogSelectMcp: Component = () => {
                   <span class="text-11-regular text-text-weaker truncate">{error()}</span>
                 </Show>
               </div>
-              <div onClick={(e) => e.stopPropagation()}>
-                <Switch
-                  checked={enabled()}
-                  disabled={status() === "pending" || (toggle.isPending && toggle.variables === i.name)}
-                  onChange={() => {
-                    if (toggle.isPending) return
-                    toggle.mutate(i.name)
-                  }}
-                />
+              <div onClick={(event) => event.stopPropagation()}>
+                <Show
+                  when={nativeStatus()}
+                  fallback={
+                    <Switch
+                      checked={enabled()}
+                      disabled={status() === "pending" || (toggle.isPending && toggle.variables === i.name)}
+                      onChange={() => {
+                        if (toggle.isPending) return
+                        toggle.mutate(i.name)
+                      }}
+                    />
+                  }
+                >
+                  <Button
+                    variant="secondary"
+                    class="h-7 px-2"
+                    disabled={
+                      nativeStatus() === "connecting" || (toggle.isPending && toggle.variables === i.name)
+                    }
+                    onClick={() => toggle.mutate(i.name)}
+                  >
+                    {nativeStatus() === "authentication_required"
+                      ? language.t("mcp.auth.clickToAuthenticate")
+                      : enabled()
+                        ? language.t("common.disconnect")
+                        : language.t("common.connect")}
+                  </Button>
+                </Show>
               </div>
             </div>
           )

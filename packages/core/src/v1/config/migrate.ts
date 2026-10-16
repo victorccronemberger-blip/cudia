@@ -55,9 +55,9 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
       auto: info.compaction.auto,
       prune: info.compaction.prune,
       keep: {
-        tokens: info.compaction.preserve_recent_tokens,
+        tokens: info.compaction.preserve_recent_tokens ?? info.compaction.keep?.tokens,
       },
-      buffer: info.compaction.reserved,
+      buffer: info.compaction.reserved ?? info.compaction.buffer,
     },
     skills: info.skills && [...(info.skills.paths ?? []), ...(info.skills.urls ?? [])],
     commands: info.command,
@@ -144,7 +144,7 @@ function migrateMcp(info: ConfigMCPV1.Info) {
       cwd: info.cwd,
       environment: info.environment,
       disabled,
-      timeout: info.timeout === undefined ? undefined : { request: info.timeout },
+      timeout: info.timeout === undefined ? undefined : { startup: info.timeout, request: info.timeout },
     }
   return {
     type: info.type,
@@ -153,12 +153,13 @@ function migrateMcp(info: ConfigMCPV1.Info) {
     oauth: info.oauth && {
       client_id: info.oauth.clientId,
       client_secret: info.oauth.clientSecret,
+      client_metadata_url: info.oauth.clientMetadataUrl,
       scope: info.oauth.scope,
       callback_port: info.oauth.callbackPort,
       redirect_uri: info.oauth.redirectUri,
     },
     disabled,
-    timeout: info.timeout === undefined ? undefined : { request: info.timeout },
+    timeout: info.timeout === undefined ? undefined : { startup: info.timeout, request: info.timeout },
   }
 }
 

@@ -40,3 +40,15 @@ export const LocationGroup = HttpApiGroup.make("server.location").add(
       }),
     ),
 )
+
+export const LocationPathsGroup = HttpApiGroup.make("server.locationPaths").add(
+  HttpApiEndpoint.get("locationPaths.get", "/api/location/paths", {
+    success: Location.Paths,
+  }).annotateMerge(
+    OpenApi.annotations({
+      identifier: "v2.locationPaths.get",
+      summary: "Get server paths",
+      description: "Retrieve the server home and process default directory, independent of the selected location.",
+    }),
+  ),
+)

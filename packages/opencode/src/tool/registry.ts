@@ -18,6 +18,7 @@ import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
+import { ConfigDistribution } from "@opencode-ai/core/config/distribution"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import type { JSONSchema7, JSONSchema7Definition } from "@ai-sdk/provider"
 import { Schema } from "effect"
@@ -54,10 +55,9 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
-
-export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
-  return providerID === ProviderV2.ID.opencode || flags.exa || flags.parallel
-}
+import { HarnessPolicy } from "@opencode-ai/core/harness/policy"
+import { AgentSearchTool } from "./agent-search"
+import { ToolResultTool } from "./tool-result"
 
 type TaskDef = Tool.InferDef<typeof TaskTool>
 type ReadDef = Tool.InferDef<typeof ReadTool>
@@ -92,6 +92,7 @@ const layer = Layer.effect(
     const truncate = yield* Truncate.Service
     const flags = yield* RuntimeFlags.Service
     const mcp = yield* MCP.Service
+    const harnessPolicy = yield* HarnessPolicy.Service
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
@@ -109,6 +110,8 @@ const layer = Layer.effect(
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
+    const agentSearch = yield* AgentSearchTool
+    const toolResult = yield* ToolResultTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -175,7 +178,13 @@ const layer = Layer.effect(
           }
         }
 
-        const dirs = yield* config.directories()
+        const distribution = yield* Effect.promise(() => ConfigDistribution.resolve())
+        const directories = yield* config.directories()
+        const dirs = distribution
+          ? yield* Effect.filter(directories, (dir) =>
+              Effect.promise(() => distribution.contains(dir)).pipe(Effect.map((readOnly) => !readOnly)),
+            )
+          : directories
         const matches = dirs.flatMap((dir) =>
           Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
         )
@@ -214,6 +223,8 @@ const layer = Layer.effect(
           todo: Tool.init(todo),
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
+          agent_search: Tool.init(agentSearch),
+          tool_result: Tool.init(toolResult),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
@@ -237,6 +248,8 @@ const layer = Layer.effect(
             tool.todo,
             tool.search,
             tool.skill,
+            tool.agent_search,
+            tool.tool_result,
             tool.patch,
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
@@ -258,18 +271,17 @@ const layer = Layer.effect(
     })
 
     const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
+      if (harnessPolicy.contextMode === "lean")
+        return "agent_search discovers available subagent names and descriptions."
       const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
       const filtered = items.filter(
         (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
       )
       const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
       const description = list
-        .map(
-          (item) =>
-            `- ${item.name}: ${item.description ?? "This subagent should only be called manually by the user."}`,
-        )
+        .map((item) => `- ${item.name}${item.description ? `: ${item.description}` : ""}`)
         .join("\n")
-      return ["Available agent types and the tools they have access to:", description].join("\n")
+      return ["Available agent types and descriptions:", description].join("\n")
     })
 
     const describeCodeMode = Effect.fn("ToolRegistry.describeCodeMode")(function* (input: {
@@ -278,29 +290,28 @@ const layer = Layer.effect(
     }) {
       if (!codeMode) return
       const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
+      if (Permission.disabled(["execute"], ruleset).has("execute")) return
       const tools = Permission.visibleTools(yield* mcp.tools(), ruleset)
-      if (Object.keys(tools).length === 0) return
-      return codeMode.describeCatalog(tools, Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize))
+      const instructions = (yield* mcp.instructions()).filter(
+        (item) => item.tools.length === 0 || Permission.disabled(item.tools, ruleset).size < item.tools.length,
+      )
+      const status = yield* mcp.status()
+      const servers = Object.entries(status).map(([name, item]) => ({ name, status: item.status }))
+      if (Object.keys(tools).length === 0 && instructions.length === 0 && servers.length === 0) return
+      return codeMode.describeCatalog(
+        tools,
+        Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize),
+        instructions,
+        servers,
+      )
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
-      const filtered = (yield* all()).filter((tool) => {
-        if (tool.id === WebSearchTool.id) {
-          return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
-        }
-
-        const usePatch =
-          input.modelID.includes("gpt-") && !input.modelID.includes("oss") && !input.modelID.includes("gpt-4")
-        if (tool.id === ApplyPatchTool.id) return usePatch
-        if (tool.id === EditTool.id || tool.id === WriteTool.id) return !usePatch
-
-        return true
-      })
-
-      const codeModeDescription = filtered.some((tool) => tool.id === "execute")
+      const registered = yield* all()
+      const codeModeDescription = registered.some((tool) => tool.id === "execute")
         ? yield* describeCodeMode(input)
         : undefined
-      const visible = filtered.filter((tool) => tool.id !== "execute" || codeModeDescription)
+      const visible = registered.filter((tool) => tool.id !== "execute" || codeModeDescription)
 
       return yield* Effect.forEach(
         visible,
@@ -442,6 +453,7 @@ export const node = LayerNode.make({
     Truncate.node,
     RuntimeFlags.node,
     MCP.node,
+    HarnessPolicy.node,
     Database.node,
     Ripgrep.node,
   ],

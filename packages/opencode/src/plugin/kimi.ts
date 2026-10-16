@@ -1,6 +1,7 @@
 import type { Hooks, PluginInput, ProviderHookContext } from "@opencode-ai/plugin"
 import type { Model, Provider } from "@opencode-ai/sdk/v2"
 import path from "path"
+import { mkdir, open, rename, unlink } from "node:fs/promises"
 import { Global } from "@opencode-ai/core/global"
 import { OAUTH_DUMMY_KEY } from "../auth"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
@@ -42,6 +43,7 @@ interface KimiAuthPluginOptions {
   oauthHost?: string
   apiBaseUrl?: string
   credentialsPath?: string
+  syncCredentials?: boolean
 }
 
 export interface DeviceCodeResponse {
@@ -239,20 +241,41 @@ interface RefreshResult {
   expires: number
 }
 
+interface RefreshState {
+  value: RefreshResult
+  pending?: Promise<RefreshResult>
+}
+
+// Providers are loaded once per project, but rotating refresh tokens belong to
+// the account. Share both the refresh and its result across project loaders.
+// Each loader retains its state so a disk outage cannot lose the rotated token.
+const refreshStates = new Map<string, RefreshState>()
+const MAX_REFRESH_STATES = 128
+
+function rememberRefresh(key: string, state: RefreshState) {
+  refreshStates.delete(key)
+  refreshStates.set(key, state)
+  if (refreshStates.size > MAX_REFRESH_STATES) {
+    const oldest = refreshStates.keys().next().value
+    if (oldest !== undefined) refreshStates.delete(oldest)
+  }
+}
+
+function syncCredentials(options: KimiAuthPluginOptions) {
+  return options.syncCredentials ?? process.env.KIMI_CODE_SYNC_CREDENTIALS === "1"
+}
+
 // The kimi-code CLI stores its OAuth session as
 // { access_token, refresh_token, expires_at, scope, token_type, expires_in }
-// under ~/.kimi-code/credentials/kimi-code.json. Importing that file lets
-// opencode reuse an existing `kimi login` session, and writing rotated tokens
-// back keeps both clients in sync — Kimi rotates refresh_token on every
-// refresh, so two processes sharing one session would otherwise invalidate
-// each other.
+// under ~/.kimi-code/credentials/kimi-code.json. Sharing is opt-in because
+// opaque tokens cannot establish that the two clients use the same account.
+// KIMI_CODE_SYNC_CREDENTIALS=1 explicitly pairs the clients; a login then
+// writes the new session and refresh only adopts a file with a later expiry.
 function kimiCredentialsPath(options: KimiAuthPluginOptions = {}) {
   return options.credentialsPath ?? path.join(Global.Path.home, ".kimi-code", "credentials", "kimi-code.json")
 }
 
-export async function readKimiCredentials(
-  options: KimiAuthPluginOptions = {},
-): Promise<RefreshResult | undefined> {
+export async function readKimiCredentials(options: KimiAuthPluginOptions = {}): Promise<RefreshResult | undefined> {
   try {
     const parsed = (await Bun.file(kimiCredentialsPath(options)).json()) as Record<string, unknown>
     if (typeof parsed.access_token !== "string" || parsed.access_token.length === 0) return
@@ -269,23 +292,39 @@ export async function readKimiCredentials(
 }
 
 export async function writeKimiCredentials(tokens: RefreshResult, options: KimiAuthPluginOptions = {}): Promise<void> {
+  const filePath = kimiCredentialsPath(options)
+  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
   try {
-    const filePath = kimiCredentialsPath(options)
-    const prev = (await Bun.file(filePath).json().catch(() => ({}))) as Record<string, unknown>
-    await Bun.write(
-      filePath,
-      JSON.stringify(
-        {
-          ...(typeof prev === "object" && prev !== null ? prev : {}),
-          access_token: tokens.access,
-          refresh_token: tokens.refresh,
-          expires_at: Math.floor(tokens.expires / 1000),
-        },
-        null,
-        2,
-      ),
-    )
-  } catch {}
+    const prev = (await Bun.file(filePath)
+      .json()
+      .catch(() => ({}))) as Record<string, unknown>
+    await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 })
+    const file = await open(temporary, "wx", 0o600)
+    try {
+      await file.writeFile(
+        JSON.stringify(
+          {
+            ...(typeof prev === "object" && prev !== null ? prev : {}),
+            access_token: tokens.access,
+            refresh_token: tokens.refresh,
+            expires_at: Math.floor(tokens.expires / 1000),
+          },
+          null,
+          2,
+        ),
+      )
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    // Readers see either complete version; new files never expose tokens with
+    // the default umask's broader permissions.
+    await rename(temporary, filePath)
+  } catch {
+    // The main auth store and in-memory session remain usable if sharing fails.
+  } finally {
+    await unlink(temporary).catch(() => {})
+  }
 }
 
 // Capabilities reported by the coding API's /models endpoint: reasoning-only
@@ -338,7 +377,8 @@ function codingModels(apiBaseUrl: string): Record<string, Model> {
 }
 
 export async function KimiAuthPlugin(input: PluginInput, options: KimiAuthPluginOptions = {}): Promise<Hooks> {
-  const { apiBaseUrl } = flowConfig(options)
+  const { apiBaseUrl, oauthHost } = flowConfig(options)
+  const sharing = syncCredentials(options)
 
   return {
     provider: {
@@ -355,17 +395,15 @@ export async function KimiAuthPlugin(input: PluginInput, options: KimiAuthPlugin
       provider: "moonshotai",
       async loader(getAuth) {
         const auth = await getAuth()
-        if (auth.type !== "oauth") return {}
+        if (auth?.type !== "oauth") return {}
 
-        // Single-flight refresh: collapse concurrent fetches from this loaded
-        // provider onto one HTTP call so we don't replay a rotating refresh_token.
-        let refreshPromise: Promise<RefreshResult> | undefined
+        let cached: { storedRefresh: string; state: RefreshState } | undefined
 
-        const persist = async (tokens: RefreshResult) => {
-          // Persist the rotated pair as best-effort. Kimi has already consumed
-          // the old refresh_token by the time we get here; a failure leaves the
-          // on-disk state stale but the in-memory result is still valid for
-          // this turn.
+        const persist = async (tokens: RefreshResult, storedRefresh: string) => {
+          // Do not replace credentials from a login that finished while this
+          // refresh was running. Keeping tokens in memory precedes disk I/O.
+          const latest = await getAuth()
+          if (latest?.type !== "oauth" || latest.refresh !== storedRefresh) return
           await input.client.auth
             .set({
               path: { id: "moonshotai" },
@@ -377,9 +415,7 @@ export async function KimiAuthPlugin(input: PluginInput, options: KimiAuthPlugin
               },
             })
             .catch(() => {})
-          // Keep the shared kimi-code credentials file in sync so the kimi CLI
-          // doesn't get invalidated by the rotation.
-          await writeKimiCredentials(tokens, options)
+          if (sharing) await writeKimiCredentials(tokens, options)
         }
 
         return {
@@ -388,46 +424,70 @@ export async function KimiAuthPlugin(input: PluginInput, options: KimiAuthPlugin
           apiKey: OAUTH_DUMMY_KEY,
           baseURL: apiBaseUrl,
           async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
-            let currentAuth = await getAuth()
-            // Auth can flip from oauth to api mid-session (user re-runs
-            // /connect with a pasted key). When that happens, pass the
-            // request through untouched so the AI SDK's own apiKey-based
-            // Authorization header reaches Moonshot unmodified.
-            if (currentAuth.type !== "oauth") return fetch(requestInput, init)
+            const stored = await getAuth()
+            // This SDK instance still has the OAuth model catalog and coding
+            // endpoint. Rebuild it instead of sending a dummy bearer or an API
+            // key to the old endpoint after a change of authentication method.
+            if (stored?.type !== "oauth") {
+              cached = undefined
+              throw new Error("Kimi authentication changed. Reconnect the provider before retrying.")
+            }
 
-            const expiresSoon =
-              !currentAuth.expires || currentAuth.expires - Date.now() <= ACCESS_TOKEN_REFRESH_SKEW_MS
-            if (expiresSoon) {
-              if (!refreshPromise) {
-                refreshPromise = (async () => {
-                  // If the kimi CLI logged in / refreshed after opencode did,
-                  // its credentials file holds a newer (rotated) session. Adopt
-                  // it before spending a round-trip on a dead refresh_token.
-                  const shared = await readKimiCredentials(options)
-                  const source = shared && shared.refresh !== currentAuth.refresh ? shared : currentAuth
-                  try {
-                    const tokens = await refreshAccessToken(source.refresh, options)
-                    const result = { access: tokens.access_token, refresh: tokens.refresh_token, expires: Date.now() + (tokens.expires_in ?? 900) * 1000 }
-                    await persist(result)
+            const key = `${oauthHost}\0${stored.refresh}`
+            const state: RefreshState =
+              cached?.storedRefresh === stored.refresh ? cached.state : (refreshStates.get(key) ?? { value: stored })
+            cached = { storedRefresh: stored.refresh, state }
+            rememberRefresh(key, state)
+            if (state.value.refresh === stored.refresh && stored.expires > state.value.expires) {
+              state.value = stored
+            }
+
+            if (!state.value.expires || state.value.expires - Date.now() <= ACCESS_TOKEN_REFRESH_SKEW_MS) {
+              if (!state.pending) {
+                state.pending = (async () => {
+                  const refresh = async (source: RefreshResult) => {
+                    // Reuse an access token a peer already renewed instead of
+                    // rotating its refresh token again unnecessarily.
+                    const tokens =
+                      source.expires - Date.now() > ACCESS_TOKEN_REFRESH_SKEW_MS
+                        ? undefined
+                        : await refreshAccessToken(source.refresh, options)
+                    const result = tokens
+                      ? {
+                          access: tokens.access_token,
+                          refresh: tokens.refresh_token,
+                          expires: Date.now() + (tokens.expires_in ?? 900) * 1000,
+                        }
+                      : source
+                    state.value = result
+                    rememberRefresh(`${oauthHost}\0${result.refresh}`, state)
+                    await persist(result, stored.refresh)
                     return result
+                  }
+                  const shared = sharing ? await readKimiCredentials(options) : undefined
+                  const source = shared && shared.expires > state.value.expires ? shared : state.value
+                  try {
+                    return await refresh(source)
                   } catch (error) {
-                    // The peer may have rotated the refresh_token while we were
-                    // refreshing. Adopt the file's fresher session and retry once.
-                    const fresh = await readKimiCredentials(options)
-                    if (fresh && fresh.refresh !== source.refresh) {
-                      const tokens = await refreshAccessToken(fresh.refresh, options)
-                      const result = { access: tokens.access_token, refresh: tokens.refresh_token, expires: Date.now() + (tokens.expires_in ?? 900) * 1000 }
-                      await persist(result)
-                      return result
+                    const fresh = sharing ? await readKimiCredentials(options) : undefined
+                    if (fresh && fresh.refresh !== source.refresh && fresh.expires > source.expires) {
+                      return refresh(fresh)
                     }
                     throw error
                   }
                 })().finally(() => {
-                  refreshPromise = undefined
+                  state.pending = undefined
                 })
               }
-              const refreshed = await refreshPromise
-              currentAuth = { ...currentAuth, ...refreshed }
+              await state.pending
+              const latest = await getAuth()
+              if (
+                latest?.type !== "oauth" ||
+                (latest.refresh !== stored.refresh && latest.refresh !== state.value.refresh)
+              ) {
+                cached = undefined
+                throw new Error("Kimi authentication changed during refresh. Reconnect the provider before retrying.")
+              }
             }
 
             // Copy the caller's headers into a fresh Headers (case-insensitive)
@@ -446,7 +506,7 @@ export async function KimiAuthPlugin(input: PluginInput, options: KimiAuthPlugin
                 if (value !== undefined) headers.set(key, String(value))
               }
             }
-            headers.set("authorization", `Bearer ${currentAuth.access}`)
+            headers.set("authorization", `Bearer ${state.value.access}`)
             headers.set("User-Agent", `opencode/${InstallationVersion}`)
 
             return fetch(requestInput, { ...init, headers })
@@ -467,12 +527,14 @@ export async function KimiAuthPlugin(input: PluginInput, options: KimiAuthPlugin
               callback: async () => {
                 try {
                   const tokens = await pollDeviceCodeToken(device, options)
-                  return {
+                  const result = {
                     type: "success" as const,
                     refresh: tokens.refresh_token,
                     access: tokens.access_token,
                     expires: Date.now() + (tokens.expires_in ?? 900) * 1000,
                   }
+                  if (sharing) await writeKimiCredentials(result, options)
+                  return result
                 } catch (err) {
                   return { type: "failed" as const }
                 }

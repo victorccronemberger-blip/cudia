@@ -198,7 +198,7 @@ export const EditTool = Tool.define(
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
           const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
-          if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
+          if (block) output += `\n\nLSP errors detected in this file:\n${block}`
 
           return {
             metadata: {

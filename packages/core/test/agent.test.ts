@@ -99,7 +99,7 @@ describe("AgentV2", () => {
     }),
   )
 
-  it.effect("does not ambiently opt built-in agents into bash", () =>
+  it.effect("gives every built-in role the same permissive tool policy", () =>
     Effect.gen(function* () {
       const agent = yield* AgentV2.Service
       yield* AgentPlugin.Plugin.effect(
@@ -124,7 +124,7 @@ describe("AgentV2", () => {
         "title",
       ])
       for (const item of agents) {
-        expect(item.permissions.some((rule) => rule.action === "bash" && rule.effect !== "deny")).toBe(false)
+        expect(item.permissions).toEqual([{ action: "*", resource: "*", effect: "allow" }])
       }
     }),
   )

@@ -4,6 +4,7 @@ import { Effect, Layer } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { ContextManifest } from "@opencode-ai/core/harness/context-manifest"
 import { SkillV2 } from "@opencode-ai/core/skill"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
@@ -48,13 +49,9 @@ describe("SkillGuidance", () => {
 
       expect(initialized.baseline).toBe(
         [
-          "Skills provide specialized instructions and workflows for specific tasks.",
-          "Use the skill tool to load a skill when a task matches its description.",
+          'Load a skill with skill({name: "..."}) when requested or useful for the task. Search metadata with skill({query: "keywords"}); query: "" browses. Only loading a name adds its instructions.',
           "<available_skills>",
-          "  <skill>",
-          "    <name>effect</name>",
-          "    <description>Build applications with Effect</description>",
-          "  </skill>",
+          "- effect: Build applications with Effect",
           "</available_skills>",
         ].join("\n"),
       )
@@ -83,6 +80,7 @@ describe("SkillGuidance", () => {
       ).toEqual({
         baseline: "",
         snapshot: {},
+        manifest: ContextManifest.create([]).manifest,
       })
     }).pipe(Effect.provide(layer(() => [effect])))
   })
@@ -102,6 +100,7 @@ describe("SkillGuidance", () => {
       ).toEqual({
         baseline: "",
         snapshot: {},
+        manifest: ContextManifest.create([]).manifest,
       })
     }).pipe(Effect.provide(layer(() => [effect])))
   })
@@ -118,7 +117,7 @@ describe("SkillGuidance", () => {
       const guidance = yield* SkillGuidance.Service
       expect(
         (yield* guidance.load({ id: agent.id, info: agent }).pipe(Effect.flatMap(SystemContext.initialize))).baseline,
-      ).toContain("<name>effect</name>")
+      ).toContain("- effect: Build applications with Effect")
     }).pipe(Effect.provide(layer(() => [effect])))
   })
 
@@ -138,6 +137,7 @@ describe("SkillGuidance", () => {
       ).toEqual({
         baseline: "",
         snapshot: {},
+        manifest: ContextManifest.create([]).manifest,
       })
     }).pipe(Effect.provide(layer(() => [effect])))
   })

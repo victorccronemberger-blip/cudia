@@ -1,29 +1,30 @@
-#!/usr/bin/env bash
-# cudia remover — removes the harness repo + launcher, optionally the opencode CLI.
-set -euo pipefail
+#!/usr/bin/env sh
+# Remove the registered launcher, preserving the checkout and OpenCode data.
+set -eu
 
-INSTALL_DIR="${CUDIA_DIR:-$HOME/cudia}"
-BIN_DIR="${CUDIA_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
+HERE=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd)
+. "$HERE/script/cudia-common.sh"
+INSTALL_DIR=${CUDIA_DIR:-$HERE}
+BIN_DIR=${CUDIA_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}
+LAUNCHER=$BIN_DIR/cudia
+INSTALL_DIR=$(CDPATH= cd -P -- "$INSTALL_DIR" && pwd)
 
-echo "This removes the cudia harness:"
-echo "  repo:      $INSTALL_DIR"
-echo "  launcher:  $BIN_DIR/cudia"
-read -r -p "Continue? [y/N] " ans
-case "$ans" in
-  y|Y|yes) ;;
-  *) echo "aborted."; exit 1 ;;
-esac
-
-rm -f "$BIN_DIR/cudia"
-rm -rf "$INSTALL_DIR"
-echo "==> harness removed."
-
-if command -v opencode >/dev/null 2>&1; then
-  read -r -p "Also uninstall the opencode CLI (and all its files)? [y/N] " ans2
-  case "$ans2" in
-    y|Y|yes) opencode uninstall ;;
-    *) echo "==> opencode CLI kept." ;;
-  esac
+if [ ! -L "$LAUNCHER" ]; then
+  [ ! -e "$LAUNCHER" ] || cudia_fail "Refusing to remove a file that is not the cudia symlink: $LAUNCHER"
+  printf '==> no cudia launcher found at %s\n' "$LAUNCHER"
+  exit 0
 fi
+[ "$(readlink -- "$LAUNCHER")" = "$INSTALL_DIR/run.sh" ] ||
+  cudia_fail "Refusing to remove a launcher pointing to a different checkout: $LAUNCHER"
 
-echo "==> done."
+case "${1:-}" in
+  --yes) ;;
+  "")
+    printf 'Remove launcher %s? Checkout and session data will be kept. [y/N] ' "$LAUNCHER"
+    read -r answer
+    case "$answer" in y|Y|yes) ;; *) printf 'aborted.\n'; exit 1 ;; esac
+    ;;
+  *) cudia_fail "Usage: remove.sh [--yes]" ;;
+esac
+rm -- "$LAUNCHER"
+printf '==> launcher removed. Checkout preserved at %s; OpenCode sessions and credentials preserved.\n' "$INSTALL_DIR"

@@ -6,7 +6,7 @@ import { Popover } from "@opencode-ai/ui/popover"
 import { Suspense, createMemo, createSignal, lazy, Show, type JSX } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { ServerConnection, useServer } from "@/context/server"
-import { useServerSDK } from "@/context/server-sdk"
+import { useServerProtocol, useServerSDK } from "@/context/server-sdk"
 import { useSync } from "@/context/sync"
 import { useGlobal } from "@/context/global"
 import {
@@ -21,11 +21,15 @@ const ServerBody = lazy(() => import("./status-popover-body").then((x) => ({ def
 export function StatusPopover() {
   const language = useLanguage()
   const server = useServer()
+  const protocol = useServerProtocol()
   const global = useGlobal()
   const sync = useSync()
   const [shown, setShown] = createSignal(false)
   const serverHealth = () => global.servers.health[server.key]?.healthy
-  const ready = createMemo(() => serverHealth() === false || (sync().data.mcp_ready && sync().data.lsp_ready))
+  const lspSupported = () => protocol() !== undefined
+  const ready = createMemo(
+    () => serverHealth() === false || (lspSupported() && sync().data.mcp_ready && sync().data.lsp_ready),
+  )
   const attention = createMemo(() =>
     hasServiceNeedingAttention({
       mcp: Object.values(sync().data.mcp ?? {}).map((item) => item.status),
@@ -34,7 +38,7 @@ export function StatusPopover() {
   const issue = createMemo(() =>
     hasNonBlockingServiceIssue({
       mcp: Object.values(sync().data.mcp ?? {}).map((item) => item.status),
-      lsp: (sync().data.lsp ?? []).map((item) => item.status),
+      lsp: lspSupported() ? (sync().data.lsp ?? []).map((item) => item.status) : [],
     }),
   )
 
@@ -90,11 +94,15 @@ export function StatusPopoverV2(props: { scope?: "server" }) {
 function DirectoryStatusPopover() {
   const language = useLanguage()
   const server = useServerSDK()
+  const protocol = useServerProtocol()
   const global = useGlobal()
   const sync = useSync()
   const [shown, setShown] = createSignal(false)
   const serverHealth = () => global.servers.health[ServerConnection.key(server().server)]?.healthy
-  const ready = createMemo(() => serverHealth() === false || (sync().data.mcp_ready && sync().data.lsp_ready))
+  const lspSupported = () => protocol() !== undefined
+  const ready = createMemo(
+    () => serverHealth() === false || (lspSupported() && sync().data.mcp_ready && sync().data.lsp_ready),
+  )
   const attention = createMemo(() =>
     hasServiceNeedingAttention({
       mcp: Object.values(sync().data.mcp ?? {}).map((item) => item.status),
@@ -103,7 +111,7 @@ function DirectoryStatusPopover() {
   const issue = createMemo(() =>
     hasNonBlockingServiceIssue({
       mcp: Object.values(sync().data.mcp ?? {}).map((item) => item.status),
-      lsp: (sync().data.lsp ?? []).map((item) => item.status),
+      lsp: lspSupported() ? (sync().data.lsp ?? []).map((item) => item.status) : [],
     }),
   )
   const state = createMemo<StatusPopoverState>(() => ({

@@ -26,6 +26,7 @@ type MessageResponse = {
   response: { headers: Headers }
 }
 type SingleMessageResponse = { data: MessageResponse["data"][number] }
+type CurrentMessagePage = { data: unknown[]; cursor: { previous: null; next: string | null } }
 
 const userMessage = (id: string, input: Partial<UserMessage> = {}): UserMessage => ({
   id,
@@ -70,6 +71,45 @@ const response = (data: MessageResponse["data"] = [], cursor?: string): MessageR
 const singleResponse = (info: Message, parts: Part[] = []): SingleMessageResponse => ({ data: { info, parts } })
 
 const deferredResponse = () => Promise.withResolvers<MessageResponse>()
+
+const currentUserMessage = (id: string, created: number) => ({
+  id,
+  type: "user" as const,
+  text: id,
+  time: { created },
+})
+
+const currentAssistantMessage = (id: string, created: number) => ({
+  id,
+  type: "assistant" as const,
+  agent: "build",
+  model: { id: "model", providerID: "provider" },
+  content: [],
+  time: { created, completed: created },
+})
+
+const currentPage = (data: unknown[], next: string | null): CurrentMessagePage => ({
+  data,
+  cursor: { previous: null, next },
+})
+
+function currentMessageClient(pages: CurrentMessagePage[]) {
+  const requests: unknown[] = []
+  const messageApi = {
+    list: async (input: unknown) => {
+      requests.push(input)
+      const page = pages.shift()
+      if (!page) throw new Error("Unexpected current message page request")
+      return page
+    },
+  }
+  const client = {
+    session: {
+      get: async () => ({ data: session("root") }),
+    },
+  } as unknown as OpencodeClient
+  return { client, messageApi: messageApi as unknown as MessageApi, requests }
+}
 
 function messageClient(...responses: Array<MessageResponse | Promise<MessageResponse>>) {
   let index = 0
@@ -264,6 +304,155 @@ describe("server session", () => {
 
     expect(requests).toEqual([{ sessionID: "root", limit: 20, order: "desc" }])
     expect(store.data.session_message.root.map((message) => message.id)).toEqual([user.id, assistant.id])
+    expect(store.data.message.root.map((message) => message.id)).toEqual([user.id, assistant.id])
+  })
+
+  test("uses the initial V2 window when a forced refresh follows an empty result", async () => {
+    const current = currentMessageClient([
+      currentPage([], null),
+      currentPage([currentUserMessage("message-1", 1)], null),
+    ])
+    const store = createServerSession(current.client, undefined, current.messageApi)
+    store.remember(session("root"))
+
+    await store.sync("root")
+    await store.sync("root", { force: true })
+
+    expect(current.requests).toEqual([
+      { sessionID: "root", limit: 20, order: "desc" },
+      { sessionID: "root", limit: 20, order: "desc" },
+    ])
+    expect(store.data.message.root.map((message) => message.id)).toEqual(["message-1"])
+  })
+
+  test("preserves an explicit zero message limit on V1", async () => {
+    const client = messageClient(response())
+    const store = createServerSession(client, undefined, undefined, { protocol: Promise.resolve("v1") })
+    store.remember(session("child"))
+
+    await store.sync("child", { force: true, messageLimit: 0 })
+
+    expect(client.requests).toEqual([{ sessionID: "child", limit: 0, before: undefined }])
+  })
+
+  test("loads a 201-message V2 window across a full page and its remainder", async () => {
+    const messages = Array.from({ length: 201 }, (_, index) =>
+      currentUserMessage(`message-${index}`, 1_000_000 + index),
+    )
+    const current = currentMessageClient([
+      currentPage(messages.slice(1).toReversed(), "cursor-1"),
+      currentPage([messages[0]], null),
+    ])
+    const store = createServerSession(current.client, undefined, current.messageApi)
+    store.remember(session("root"))
+
+    await store.sync("root", { force: true, messageLimit: 201 })
+
+    expect(current.requests).toEqual([
+      { sessionID: "root", limit: 200, order: "desc" },
+      { sessionID: "root", limit: 1, cursor: "cursor-1" },
+    ])
+    expect(store.data.message.root.map((message) => message.id)).toEqual(messages.map((message) => message.id))
+  })
+
+  test("retains a forced 450-message V2 window across three pages", async () => {
+    const messages = Array.from({ length: 450 }, (_, index) =>
+      currentUserMessage(`message-${index}`, 1_000_000 + index),
+    )
+    const initial = messages.slice(430).toReversed()
+    const current = currentMessageClient([
+      currentPage(initial, "initial-older"),
+      currentPage(messages.slice(250, 450).toReversed(), "cursor-1"),
+      currentPage(messages.slice(50, 250).toReversed(), "cursor-2"),
+      currentPage(messages.slice(0, 50).toReversed(), "older-than-window"),
+    ])
+    const store = createServerSession(current.client, undefined, current.messageApi)
+    store.remember(session("root"))
+
+    await store.sync("root")
+    await store.sync("root", { force: true, messageLimit: 450 })
+
+    expect(current.requests).toEqual([
+      { sessionID: "root", limit: 20, order: "desc" },
+      { sessionID: "root", limit: 200, order: "desc" },
+      { sessionID: "root", limit: 200, cursor: "cursor-1" },
+      { sessionID: "root", limit: 50, cursor: "cursor-2" },
+    ])
+    expect(store.data.message.root.map((message) => message.id)).toEqual(messages.map((message) => message.id))
+    expect(store.history.more("root")).toBe(true)
+  })
+
+  test("continues beyond the V2 logical window to include the current turn root", async () => {
+    const assistants = Array.from({ length: 20 }, (_, index) =>
+      currentAssistantMessage(`assistant-${index + 1}`, 1_000_001 + index),
+    )
+    const user = currentUserMessage("user-root", 1_000_000)
+    const current = currentMessageClient([
+      currentPage(assistants.toReversed(), "cursor-root"),
+      currentPage([user], "older"),
+    ])
+    const store = createServerSession(current.client, undefined, current.messageApi)
+    store.remember(session("root"))
+
+    await store.sync("root")
+
+    expect(current.requests).toEqual([
+      { sessionID: "root", limit: 20, order: "desc" },
+      { sessionID: "root", limit: 20, cursor: "cursor-root" },
+    ])
+    expect(store.data.message.root.map((message) => message.id)).toEqual([
+      user.id,
+      ...assistants.map((item) => item.id),
+    ])
+    expect(store.history.more("root")).toBe(true)
+  })
+
+  test("uses a normal V2 page size to finish a split turn after the window remainder", async () => {
+    const assistants = Array.from({ length: 201 }, (_, index) =>
+      currentAssistantMessage(`assistant-${index + 1}`, 1_000_001 + index),
+    )
+    const user = currentUserMessage("user-root", 1_000_000)
+    const current = currentMessageClient([
+      currentPage(assistants.slice(1).toReversed(), "cursor-remainder"),
+      currentPage([assistants[0]], "cursor-root"),
+      currentPage([user], "older"),
+    ])
+    const store = createServerSession(current.client, undefined, current.messageApi)
+    store.remember(session("root"))
+
+    await store.sync("root", { force: true, messageLimit: 201 })
+
+    expect(current.requests).toEqual([
+      { sessionID: "root", limit: 200, order: "desc" },
+      { sessionID: "root", limit: 1, cursor: "cursor-remainder" },
+      { sessionID: "root", limit: 200, cursor: "cursor-root" },
+    ])
+    expect(store.data.message.root.map((message) => message.id)).toEqual([
+      user.id,
+      ...assistants.map((item) => item.id),
+    ])
+    expect(store.history.more("root")).toBe(true)
+  })
+
+  test("marks V2 history complete when the cursor ends before the requested window", async () => {
+    const messages = Array.from({ length: 250 }, (_, index) =>
+      currentUserMessage(`message-${index}`, 1_000_000 + index),
+    )
+    const current = currentMessageClient([
+      currentPage(messages.slice(50, 250).toReversed(), "cursor-1"),
+      currentPage(messages.slice(0, 50).toReversed(), null),
+    ])
+    const store = createServerSession(current.client, undefined, current.messageApi)
+    store.remember(session("root"))
+
+    await store.sync("root", { force: true, messageLimit: 450 })
+
+    expect(current.requests).toEqual([
+      { sessionID: "root", limit: 200, order: "desc" },
+      { sessionID: "root", limit: 200, cursor: "cursor-1" },
+    ])
+    expect(store.data.message.root.map((message) => message.id)).toEqual(messages.map((message) => message.id))
+    expect(store.history.more("root")).toBe(false)
   })
 
   test("extends a current page to include the user for split assistant turns", async () => {
@@ -299,7 +488,7 @@ describe("server session", () => {
 
     expect(requests).toEqual([
       { sessionID: "root", limit: 20, order: "desc" },
-      { sessionID: "root", limit: 20, cursor: "older" },
+      { sessionID: "root", limit: 18, cursor: "older" },
     ])
     expect(store.data.message.root.map((message) => message.id)).toEqual([
       user.id,
@@ -1497,7 +1686,7 @@ describe("server session", () => {
 
     await store.sync("child", { force: true })
 
-    expect(store.data.message.child).toEqual([boundary, older])
+    expect(store.data.message.child).toEqual([older, boundary])
   })
 
   test("preserves a part update for a message being loaded from history", async () => {

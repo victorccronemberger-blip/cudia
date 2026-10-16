@@ -62,6 +62,7 @@ export default {
           \`integration_id\` text,
           \`label\` text NOT NULL,
           \`value\` text NOT NULL,
+          \`refresh_attempt\` text,
           \`connector_id\` text,
           \`method_id\` text,
           \`active\` integer,
@@ -149,6 +150,7 @@ export default {
         CREATE TABLE \`session_context_epoch\` (
           \`session_id\` text PRIMARY KEY,
           \`baseline\` text NOT NULL,
+          \`baseline_manifest\` text,
           \`snapshot\` text NOT NULL,
           \`baseline_seq\` integer NOT NULL,
           CONSTRAINT \`fk_session_context_epoch_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE

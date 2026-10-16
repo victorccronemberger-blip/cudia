@@ -52,7 +52,7 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { reply, TestLLMServer } from "../lib/llm-server"
+import { raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -107,6 +107,99 @@ function errorTool(parts: SessionV1.Part[]) {
   const part = toolPart(parts)
   expect(part?.state.status).toBe("error")
   return part?.state.status === "error" ? (part as ErrorToolPart) : undefined
+}
+
+function completedReadParts(messages: SessionV1.WithParts[]) {
+  return messages.flatMap((message) =>
+    message.parts.filter(
+      (part): part is CompletedToolPart =>
+        part.type === "tool" && part.tool === "read" && part.state.status === "completed",
+    ),
+  )
+}
+
+function readInstructionBatch(part: CompletedToolPart) {
+  const receipt = part.state.metadata.receipt
+  expect(receipt).toBeDefined()
+  if (!receipt) return undefined
+  return JSON.parse(part.state.output.slice(receipt.start, receipt.end)) as {
+    instructions: Array<{
+      filepath: string
+      contentHash: string
+      text: string
+      offset: number
+      nextOffset: number
+      totalLength: number
+    }>
+    pending: string[]
+    hasMore: boolean
+  }
+}
+
+function omitReadReceiptMessages() {
+  let omitted = 0
+  const plugin = Layer.mock(Plugin.Service)({
+    trigger: <Name extends string, Input, Output>(name: Name, _input: Input, output: Output) => {
+      if (name === "experimental.chat.messages.transform") {
+        const messages = (output as { messages: SessionV1.WithParts[] }).messages
+        for (let index = messages.length - 1; index >= 0; index--) {
+          if (
+            messages[index]?.parts.some(
+              (part) =>
+                part.type === "tool" &&
+                part.tool === "read" &&
+                part.state.status === "completed" &&
+                part.state.metadata.receipt !== undefined,
+            )
+          ) {
+            messages.splice(index, 1)
+            omitted++
+          }
+        }
+      }
+      return Effect.succeed(output)
+    },
+    list: () => Effect.succeed([]),
+    init: () => Effect.void,
+  })
+  return { plugin, omitted: () => omitted }
+}
+
+function clipReadReceiptOnce() {
+  let clipped = false
+  let receiptEnd: number | undefined
+  let projectedLength: number | undefined
+  const plugin = Layer.mock(Plugin.Service)({
+    trigger: <Name extends string, Input, Output>(name: Name, _input: Input, output: Output) => {
+      if (name === "experimental.chat.messages.transform" && !clipped) {
+        const messages = (output as { messages: SessionV1.WithParts[] }).messages
+        const part = messages
+          .flatMap((message) => message.parts)
+          .find(
+            (part): part is CompletedToolPart =>
+              part.type === "tool" &&
+              part.tool === "read" &&
+              part.state.status === "completed" &&
+              part.state.metadata.receipt !== undefined,
+          )
+        if (part) {
+          receiptEnd = part.state.metadata.receipt?.end
+          part.state.output = part.state.output.slice(0, -1)
+          projectedLength = part.state.output.length
+          clipped = true
+        }
+      }
+      return Effect.succeed(output)
+    },
+    list: () => Effect.succeed([]),
+    init: () => Effect.void,
+  })
+  return {
+    plugin,
+    clipped: () => clipped,
+    receiptEnd: () => receiptEnd,
+    projectedLength: () => projectedLength,
+  }
 }
 
 function makeMcp(instructions: MCP.ServerInstructions[] = []) {
@@ -208,6 +301,12 @@ const promptRoot = LayerNode.group([
   RuntimeFlags.node,
 ])
 
+type PromptLayerOptions = {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  plugin?: Layer.Layer<Plugin.Service>
+}
+
 function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
   const replacements = [
     [SessionSummary.node, summary],
@@ -221,7 +320,7 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
   return LayerNode.compile(promptRoot, replacements)
 }
 
-function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttp(input?: PromptLayerOptions) {
   const root = LayerNode.group([promptRoot, testLLMServerNode])
   const replacements = [
     [SessionSummary.node, summary],
@@ -230,8 +329,15 @@ function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processo
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
+    if (input.plugin)
+      return LayerNode.compile(root, [
+        ...replacements,
+        [Plugin.node, input.plugin],
+        [SessionProcessor.node, blockingProcessor],
+      ])
     return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]])
   }
+  if (input?.plugin) return LayerNode.compile(root, [...replacements, [Plugin.node, input.plugin]])
   return LayerNode.compile(root, replacements)
 }
 
@@ -240,6 +346,10 @@ function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[
 }
 
 const it = testEffect(makeHttp())
+const receiptOmission = omitReadReceiptMessages()
+const itWithoutReadReceipts = testEffect(makeHttp({ plugin: receiptOmission.plugin }))
+const receiptClip = clipReadReceiptOnce()
+const itWithClippedReadReceipt = testEffect(makeHttp({ plugin: receiptClip.plugin }))
 const noLLMServer = testEffect(makeHttpNoLLMServer())
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
 const withMcpInstructions = testEffect(
@@ -456,6 +566,46 @@ noLLMServer.instance(
       const result = yield* prompt.loop({ sessionID: chat.id })
       expect(result.info.role).toBe("assistant")
       if (result.info.role === "assistant") expect(result.info.finish).toBe("stop")
+    }),
+  { config: cfg },
+)
+
+noLLMServer.instance(
+  "loop exits for a completed parent turn with nonmonotonic message IDs",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const userID = MessageID.make("msg_z_user")
+      const assistantID = MessageID.make("msg_a_assistant")
+      yield* sessions.updateMessage({
+        id: userID,
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: 100 },
+      })
+      yield* sessions.updateMessage({
+        id: assistantID,
+        role: "assistant",
+        parentID: userID,
+        sessionID: chat.id,
+        mode: "build",
+        agent: "build",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: 200, completed: 201 },
+        finish: "stop",
+      })
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+
+      expect(result.info.id).toBe(assistantID)
     }),
   { config: cfg },
 )
@@ -810,6 +960,453 @@ it.instance("loop continues when finish is tool-calls", () =>
   }),
 )
 
+it.instance("loop continues when finish is unknown", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.push(reply())
+    yield* llm.text("second")
+
+    const result = yield* prompt.loop({ sessionID: session.id })
+    expect(yield* llm.calls).toBe(2)
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.parts.some((part) => part.type === "text" && part.text === "second")).toBe(true)
+      expect(result.info.finish).toBe("stop")
+    }
+  }),
+)
+
+it.instance("ambient instruction failure completes an errored assistant before provider work and permits repair", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), instructions: ["ambient-extra.md"] }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const events = yield* EventV2Bridge.Service
+    const run = yield* SessionRunState.Service
+    const status = yield* SessionStatus.Service
+    const session = yield* sessions.create({ title: "Ambient acquisition failure" })
+    const errors: NonNullable<SessionV1.Assistant["error"]>[] = []
+    const off = yield* events.listen((event) => {
+      if (event.type !== Session.Event.Error.type) return Effect.void
+      const data = event.data as typeof Session.Event.Error.data.Type
+      if (data.sessionID === session.id && data.error) errors.push(data.error)
+      return Effect.void
+    })
+    yield* Effect.addFinalizer(() => off)
+    const first = "VALID_SOURCE_LOADED_BEFORE_REJECTION_38D4"
+    const rejected = "REJECTED_SOURCE_BODY_93F1"
+    yield* writeText(path.join(dir, "AGENTS.md"), first)
+    yield* writeText(path.join(dir, "ambient-extra.md"), rejected + "x".repeat(65_537))
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Complete the local fixture." }],
+    })
+    const failed = yield* prompt.loop({ sessionID: session.id })
+    expect(failed.info.role).toBe("assistant")
+    if (failed.info.role !== "assistant") throw new Error("Expected errored assistant")
+    const error = failed.info.error
+    expect(error?.name).toBe("UnknownError")
+    if (error?.name !== "UnknownError") throw new Error("Expected instruction acquisition error")
+    expect(error.data.message).toContain("65536-byte input limit")
+    expect(error.data.message).not.toContain(first)
+    expect(error.data.message).not.toContain(rejected)
+    expect(failed.info.time.completed).toBeDefined()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toEqual(error)
+    expect(yield* llm.hits).toHaveLength(0)
+    expect(yield* status.get(session.id)).toEqual({ type: "idle" })
+    yield* run.assertNotBusy(session.id)
+    const stored = yield* MessageV2.get({ sessionID: session.id, messageID: failed.info.id })
+    expect(stored.info).toEqual(failed.info)
+
+    yield* writeText(path.join(dir, "ambient-extra.md"), "REPAIRED_AMBIENT_SOURCE")
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Retry after repairing the instruction file." }],
+    })
+    yield* llm.text("REPAIRED_AMBIENT_REQUEST_OK")
+    const completed = yield* prompt.loop({ sessionID: session.id })
+    expect(completed.info.role).toBe("assistant")
+    if (completed.info.role !== "assistant") throw new Error("Expected completed assistant")
+    expect(completed.info.error).toBeUndefined()
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(1)
+    const wire = JSON.stringify(hits[0]?.body)
+    expect(wire).toContain(first)
+    expect(wire).toContain("REPAIRED_AMBIENT_SOURCE")
+    expect(wire).not.toContain(rejected)
+    expect(errors).toHaveLength(1)
+  }),
+)
+
+it.instance("read instruction receipts are complete on the provider wire and suppress a repeat read", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Read instruction receipt",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    const nested = path.join(dir, "receipt-target")
+    const instructionFile = path.join(nested, "AGENTS.md")
+    const target = path.join(nested, "target.txt")
+    const instruction = "Provider must receive this complete scoped rule before target contents. 😀\nSecond line."
+    yield* writeText(instructionFile, instruction)
+    yield* writeText(target, "Target body follows its instruction.")
+
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Read the target file." }],
+    })
+    yield* llm.tool("read", { filePath: target })
+    yield* llm.text("I read the target.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    const firstHits = yield* llm.hits
+    expect(firstHits).toHaveLength(2)
+    const firstWire = (firstHits[1]?.body.messages as Array<{ content?: unknown }> | undefined)
+      ?.map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n")
+    expect(firstWire).toContain(JSON.stringify(instruction))
+    expect(firstWire).toContain('"instructions":[')
+    expect(firstWire).toContain('"hasMore":false')
+    expect(firstWire).not.toContain("Target body follows its instruction.")
+
+    const afterFirstRead = yield* MessageV2.filterCompactedEffect(session.id)
+    const firstRead = completedReadParts(afterFirstRead)[0]
+    expect(firstRead).toBeDefined()
+    if (!firstRead) return
+    const firstBatch = readInstructionBatch(firstRead)
+    expect(firstRead.state.metadata.pendingInstructions).toBe(true)
+    expect(firstRead.state.metadata.receipt).toEqual({ kind: "batch", start: 0, end: firstRead.state.output.length })
+    expect(firstRead.state.output).toBe(JSON.stringify(firstBatch))
+    expect(firstBatch).toMatchObject({
+      instructions: [
+        {
+          filepath: path.resolve(instructionFile),
+          text: instruction,
+          offset: 0,
+          nextOffset: instruction.length,
+          totalLength: instruction.length,
+        },
+      ],
+      pending: [],
+      hasMore: false,
+    })
+
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Read that target again." }],
+    })
+    yield* llm.tool("read", { filePath: target })
+    yield* llm.text("The existing receipt covers that instruction.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    const reads = completedReadParts(yield* MessageV2.filterCompactedEffect(session.id))
+    expect(reads).toHaveLength(2)
+    expect(reads[1]?.state.output).not.toContain(instruction)
+    expect(reads[1]?.state.metadata.loaded).toEqual([])
+    expect(reads[1]?.state.output).toContain("Target body follows its instruction.")
+    const hits = yield* llm.hits
+    const secondWire = JSON.stringify(hits[3]?.body.messages)
+    expect(secondWire).toContain("Target body follows its instruction.")
+  }),
+)
+
+itWithClippedReadReceipt.instance("read does not trust a selected receipt clipped by provider projection", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Clipped read receipt",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    const nested = path.join(dir, "clipped-receipt-target")
+    const instructionFile = path.join(nested, "AGENTS.md")
+    const target = path.join(nested, "target.txt")
+    const instruction = "Keep the scoped rule selected until its complete receipt is present."
+    const body = "Target body is released only after a complete batch is selected."
+    yield* writeText(instructionFile, instruction)
+    yield* writeText(target, body)
+
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Read the target three times." }],
+    })
+    yield* llm.tool("read", { filePath: target })
+    yield* llm.tool("read", { filePath: target })
+    yield* llm.tool("read", { filePath: target })
+    yield* llm.text("Done.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    expect(receiptClip.clipped()).toBe(true)
+    const receiptEnd = receiptClip.receiptEnd()
+    const projectedLength = receiptClip.projectedLength()
+    if (receiptEnd === undefined || projectedLength === undefined) return
+    expect(projectedLength).toBe(receiptEnd - 1)
+
+    const reads = completedReadParts(yield* MessageV2.filterCompactedEffect(session.id))
+    expect(reads).toHaveLength(3)
+    const first = reads[0]
+    const second = reads[1]
+    const third = reads[2]
+    if (!first || !second || !third) return
+
+    expect(first.state.output).toContain(instruction)
+    expect(first.state.output).not.toContain(body)
+    expect(first.state.metadata.pendingInstructions).toBe(true)
+    expect(first.state.metadata.receipt?.end).toBe(first.state.output.length)
+    expect(second.state.output).toContain(instruction)
+    expect(second.state.output).not.toContain(body)
+    expect(second.state.metadata.pendingInstructions).toBe(true)
+    expect(third.state.output).not.toContain(instruction)
+    expect(third.state.output).toContain(body)
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(4)
+    expect(JSON.stringify(hits[1]?.body)).not.toContain(body)
+    expect(JSON.stringify(hits[2]?.body)).not.toContain(body)
+    expect(JSON.stringify(hits[3]?.body)).toContain(body)
+  }),
+)
+
+it.instance("concurrent reads retain both targets until their full receipt batches are selected", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Concurrent read receipts",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    const directory = path.join(dir, "concurrent-targets")
+    const instruction = "Read the shared scoped rule before either target."
+    const firstBody = "First target body."
+    const secondBody = "Second target body."
+    const instructionFile = path.join(directory, "AGENTS.md")
+    const firstTarget = path.join(directory, "first.txt")
+    const secondTarget = path.join(directory, "second.txt")
+    yield* writeText(instructionFile, instruction)
+    yield* writeText(firstTarget, firstBody)
+    yield* writeText(secondTarget, secondBody)
+
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Read both targets, then read both again." }],
+    })
+    const calls = (suffix: string) =>
+      raw({
+        chunks: [
+          { id: `chatcmpl-${suffix}`, object: "chat.completion.chunk", choices: [{ delta: { role: "assistant" } }] },
+          {
+            id: `chatcmpl-${suffix}`,
+            object: "chat.completion.chunk",
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: `call_${suffix}_first`,
+                      type: "function",
+                      function: { name: "read", arguments: "" },
+                    },
+                    {
+                      index: 1,
+                      id: `call_${suffix}_second`,
+                      type: "function",
+                      function: { name: "read", arguments: "" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            id: `chatcmpl-${suffix}`,
+            object: "chat.completion.chunk",
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    { index: 0, function: { arguments: JSON.stringify({ filePath: firstTarget }) } },
+                    { index: 1, function: { arguments: JSON.stringify({ filePath: secondTarget }) } },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            id: `chatcmpl-${suffix}`,
+            object: "chat.completion.chunk",
+            choices: [{ delta: {}, finish_reason: "tool_calls" }],
+          },
+        ],
+      })
+    yield* llm.push(calls("initial-reads"))
+    yield* llm.push(calls("selected-reads"))
+    yield* llm.text("Done.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(3)
+    const reads = completedReadParts(yield* MessageV2.filterCompactedEffect(session.id))
+    expect(reads).toHaveLength(4)
+    const initial = reads.slice(0, 2)
+    const repeated = reads.slice(2)
+    const initialOutputs = initial.map((part) => part.state.output).join("\n")
+    const repeatedOutputs = repeated.map((part) => part.state.output).join("\n")
+    expect(initialOutputs).toContain(instruction)
+    expect(initialOutputs).not.toContain(firstBody)
+    expect(initialOutputs).not.toContain(secondBody)
+    expect(initial.every((part) => part.state.metadata.pendingInstructions === true)).toBe(true)
+    expect(repeatedOutputs).not.toContain(instruction)
+    expect(repeatedOutputs).toContain(firstBody)
+    expect(repeatedOutputs).toContain(secondBody)
+
+    const selected = JSON.stringify(hits[1]?.body)
+    expect(selected).toContain(instruction)
+    expect(selected).not.toContain(firstBody)
+    expect(selected).not.toContain(secondBody)
+    const released = JSON.stringify(hits[2]?.body)
+    expect(released).toContain(firstBody)
+    expect(released).toContain(secondBody)
+  }),
+)
+
+itWithoutReadReceipts.instance(
+  "read redelivers instructions when selected provider context removes a durable receipt",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Read transformed receipt",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const nested = path.join(dir, "transformed-target")
+      const instructionFile = path.join(nested, "AGENTS.md")
+      const target = path.join(nested, "target.txt")
+      const instruction = "Redeliver this rule when its receipt is omitted from selected context."
+      yield* writeText(instructionFile, instruction)
+      yield* writeText(target, "Target body.")
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "Read the target." }],
+      })
+      yield* llm.tool("read", { filePath: target })
+      yield* llm.tool("read", { filePath: target })
+      yield* llm.text("Done.")
+      yield* prompt.loop({ sessionID: session.id })
+
+      const hits = yield* llm.hits
+      expect(hits).toHaveLength(3)
+      expect(receiptOmission.omitted()).toBeGreaterThan(0)
+      expect(JSON.stringify(hits[1]?.body)).not.toContain(instruction)
+      const reads = completedReadParts(yield* MessageV2.filterCompactedEffect(session.id))
+      expect(reads).toHaveLength(2)
+      expect(reads[0]?.state.output).toContain(instruction)
+      expect(reads[1]?.state.output).toContain(instruction)
+      expect(readInstructionBatch(reads[0]!)).toMatchObject({
+        instructions: [{ filepath: path.resolve(instructionFile), text: instruction }],
+        pending: [],
+        hasMore: false,
+      })
+      expect(readInstructionBatch(reads[1]!)).toMatchObject({
+        instructions: [{ filepath: path.resolve(instructionFile), text: instruction }],
+        pending: [],
+        hasMore: false,
+      })
+    }),
+)
+
+it.instance("read does not trust a completed receipt from an errored assistant omitted by provider projection", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Read errored receipt",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    const nested = path.join(dir, "errored-target")
+    const instructionFile = path.join(nested, "AGENTS.md")
+    const target = path.join(nested, "target.txt")
+    const instruction = "An errored assistant's hidden receipt must not suppress this rule."
+    yield* writeText(instructionFile, instruction)
+    yield* writeText(target, "Target body.")
+
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Read the target once." }],
+    })
+    yield* llm.tool("read", { filePath: target })
+    yield* llm.text("First read complete.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    const beforeError = yield* MessageV2.filterCompactedEffect(session.id)
+    const receiptMessage = beforeError.find((message) => completedReadParts([message]).length > 0)
+    expect(receiptMessage?.info.role).toBe("assistant")
+    if (!receiptMessage || receiptMessage.info.role !== "assistant") return
+    yield* sessions.updateMessage({
+      ...receiptMessage.info,
+      error: {
+        name: "ContentFilterError",
+        data: { message: "Fixture error hides this assistant turn from provider history." },
+      },
+    })
+
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Read the target again." }],
+    })
+    yield* llm.tool("read", { filePath: target })
+    yield* llm.text("The current request received its scoped instructions.")
+    yield* prompt.loop({ sessionID: session.id })
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(4)
+    expect(JSON.stringify(hits[2]?.body)).not.toContain(instruction)
+    const reads = completedReadParts(yield* MessageV2.filterCompactedEffect(session.id))
+    expect(reads).toHaveLength(2)
+    expect(reads[1]?.state.output).toContain(instruction)
+  }),
+)
+
 it.instance("glob tool keeps instance context during prompt runs", () =>
   Effect.gen(function* () {
     const { dir, llm } = yield* useServerConfig(providerCfg)
@@ -921,7 +1518,7 @@ it.instance("failed subtask preserves metadata on error tool state", () =>
   }),
 )
 
-it.instance("subtask child inherits parent session external_directory allow", () =>
+it.instance("subtask child retains parent rule records without enforcing legacy task restrictions", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
@@ -944,11 +1541,11 @@ it.instance("subtask child inherits parent session external_directory allow", ()
       expect.arrayContaining([{ permission: "external_directory", pattern: "/tmp/allowed/*", action: "allow" }]),
     )
     expect(Permission.evaluate("external_directory", "/tmp/allowed/file", rules).action).toBe("allow")
-    expect(Permission.evaluate("task", "anything", rules).action).toBe("deny")
+    expect(Permission.evaluate("task", "anything", rules).action).toBe("allow")
   }),
 )
 
-noLLMServer.instance("prompt tools replace previous prompt tool rules", () =>
+noLLMServer.instance("prompt tools replace previous rule records without creating an implicit approval gate", () =>
   Effect.gen(function* () {
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
@@ -971,7 +1568,7 @@ noLLMServer.instance("prompt tools replace previous prompt tool rules", () =>
 
     const reloaded = yield* sessions.get(session.id)
     expect(reloaded.permission).toEqual([{ permission: "read", pattern: "*", action: "allow" }])
-    expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("ask")
+    expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("allow")
   }),
 )
 

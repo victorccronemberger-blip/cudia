@@ -27,6 +27,11 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+import { ProviderError } from "@/provider/error"
+import { HarnessPolicy } from "@opencode-ai/core/harness/policy"
+import { ContextAudit } from "@opencode-ai/core/harness/audit"
+import { Auth } from "@/auth"
+import { Plugin } from "@/plugin"
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
 
@@ -77,11 +82,29 @@ function llmLayerWithExecutor(
   options: {
     executor?: Layer.Layer<RequestExecutor.Service>
     flags?: Partial<RuntimeFlags.Info>
+    contextMode?: HarnessPolicy.Interface["contextMode"]
+    audit?: Layer.Layer<ContextAudit.Service>
+    auth?: Layer.Layer<Auth.Service>
+    plugin?: Layer.Layer<Plugin.Service>
   } = {},
 ) {
   return AppNodeBuilder.build(LLM.node, [
     [RuntimeFlags.node, RuntimeFlags.layer(options.flags)],
     ...(options.executor ? ([[LayerNodePlatform.requestExecutor, options.executor]] as const) : []),
+    ...(options.contextMode
+      ? ([
+          [
+            HarnessPolicy.node,
+            Layer.succeed(
+              HarnessPolicy.Service,
+              HarnessPolicy.Service.of({ contextMode: options.contextMode, auditMode: "off" }),
+            ),
+          ],
+        ] as const)
+      : []),
+    ...(options.audit ? ([[ContextAudit.node, options.audit]] as const) : []),
+    ...(options.auth ? ([[Auth.node, options.auth]] as const) : []),
+    ...(options.plugin ? ([[Plugin.node, options.plugin]] as const) : []),
   ])
 }
 
@@ -753,6 +776,92 @@ function createEventResponse(chunks: unknown[], includeDone = false) {
 
 describe("session.llm.stream", () => {
   const vivgridFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
+  const opencodeFixture = { providerID: "opencode-test", modelID: vivgridFixture.modelID }
+
+  const headerCases = [
+    { providerID: opencodeFixture.providerID, child: false },
+    { providerID: opencodeFixture.providerID, child: true },
+    { providerID: "custom-test", child: false },
+    { providerID: "custom-test", child: true },
+  ]
+  headerCases.forEach((input) => {
+    it.instance(
+      `sends session identity headers for ${input.child ? "child" : "root"} sessions on ${input.providerID}`,
+      () =>
+        Effect.gen(function* () {
+          const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
+          const request = waitRequest(
+            "/chat/completions",
+            new Response(createChatStream("Hello"), {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          )
+          const resolved = yield* Provider.use.getModel(
+            ProviderV2.ID.make(input.providerID),
+            ModelV2.ID.make(opencodeFixture.modelID),
+          )
+          const sessionID = SessionID.make("session-child")
+          const parentSessionID = input.child ? SessionID.make("session-parent") : undefined
+          const agent = {
+            name: "test",
+            mode: "primary",
+            options: {},
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          } satisfies Agent.Info
+          const user = {
+            id: MessageID.make("msg_user-parent-header"),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: {
+              providerID: ProviderV2.ID.make(input.providerID),
+              modelID: resolved.id,
+            },
+          } satisfies SessionV1.User
+
+          yield* drain({
+            user,
+            sessionID,
+            parentSessionID,
+            model: resolved,
+            agent,
+            system: ["You are a helpful assistant."],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          })
+
+          const headers = (yield* Effect.promise(() => request)).headers
+          expect(headers.get("x-opencode-session-id")).toBe(sessionID)
+          expect(headers.get("x-opencode-parent-session-id")).toBe(parentSessionID ?? null)
+          expect(headers.get("x-parent-session-id")).toBe(parentSessionID ?? null)
+          if (input.providerID.startsWith("opencode")) {
+            expect(headers.get("x-opencode-session")).toBe(sessionID)
+            return
+          }
+          expect(headers.get("x-session-affinity")).toBe(sessionID)
+          expect(headers.get("X-Session-Id")).toBe(sessionID)
+        }),
+      {
+        config: () => {
+          const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
+          return {
+            enabled_providers: [input.providerID],
+            provider: {
+              [input.providerID]: {
+                name: "OpenCode Test",
+                npm: "@ai-sdk/openai-compatible",
+                models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },
+                options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+              },
+            },
+          }
+        },
+      },
+    )
+  })
+
   it.instance(
     "sends temperature, tokens, and reasoning options for openai-compatible models",
     () =>
@@ -819,6 +928,70 @@ describe("session.llm.stream", () => {
 
         const reasoning = (body.reasoningEffort as string | undefined) ?? (body.reasoning_effort as string | undefined)
         expect(reasoning).toBe("high")
+      }),
+    {
+      config: () => ({
+        enabled_providers: [vivgridFixture.providerID],
+        provider: {
+          [vivgridFixture.providerID]: {
+            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+          },
+        },
+      }),
+    },
+  )
+
+  it.instance(
+    "surfaces network_error finish reasons as retryable stream failures",
+    () =>
+      Effect.gen(function* () {
+        const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
+        const request = waitRequest(
+          "/chat/completions",
+          createEventResponse(
+            [
+              {
+                id: "chatcmpl-network-error",
+                object: "chat.completion.chunk",
+                choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "network_error" }],
+              },
+            ],
+            true,
+          ),
+        )
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(vivgridFixture.providerID),
+          ModelV2.ID.make(fixture.model.id),
+        )
+        const sessionID = SessionID.make("session-test-network-error")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("msg_user-network-error"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderV2.ID.make(vivgridFixture.providerID), modelID: resolved.id },
+        } satisfies SessionV1.User
+
+        const error = yield* drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        }).pipe(Effect.flip)
+        yield* Effect.promise(() => request)
+
+        if (!(error instanceof ProviderError.ResponseStreamError)) throw error
+        expect(error.message).toBe("Provider finish_reason: network_error")
       }),
     {
       config: () => ({
@@ -1217,15 +1390,34 @@ describe("session.llm.stream", () => {
           model: { providerID: ProviderV2.ID.make("openai"), modelID: resolved.id, variant: "high" },
         } satisfies SessionV1.User
 
-        yield* drain({
-          user,
-          sessionID,
-          model: resolved,
-          agent,
-          system: ["You are a helpful assistant."],
-          messages: [{ role: "user", content: "Hello" }],
-          tools: {},
-        })
+        const audits: ContextAudit.Input[] = []
+        yield* drainWith(
+          llmLayerWithExecutor({
+            contextMode: "lean",
+            audit: Layer.succeed(
+              ContextAudit.Service,
+              ContextAudit.Service.of({
+                enabled: true,
+                latest: () => Effect.succeed(undefined),
+                record: (input) =>
+                  Effect.sync(() => {
+                    audits.push(input)
+                  }),
+              }),
+            ),
+          }),
+          {
+            user,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["You are a helpful assistant."],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {
+              noop: tool({ description: "A test tool", inputSchema: z.object({ value: z.string() }) }),
+            },
+          },
+        )
 
         const capture = yield* Effect.promise(() => request)
         const body = capture.body
@@ -1235,15 +1427,86 @@ describe("session.llm.stream", () => {
         expect(body.stream).toBe(true)
         expect((body.reasoning as { effort?: string } | undefined)?.effort).toBe("high")
         expect((body.reasoning as { mode?: string } | undefined)?.mode).toBe("pro")
+        expect(audits).toHaveLength(1)
+        expect(audits[0]!.runtime).toBe("v1-ai-sdk")
+        expect(audits[0]!.trace?.records.map((item) => item.stage)).toContain("ProviderTransform.message")
+        expect(audits[0]!.instructions.map((item) => item.text).join("\n")).toContain(HarnessPolicy.BASE)
+        expect(audits[0]!.tools).toMatchObject([{ name: "noop", description: "A test tool" }])
+        expect(audits[0]!.tools[0]!.inputSchema).toMatchObject({
+          type: "object",
+          properties: { value: { type: "string" } },
+        })
 
         const maxTokens = body.max_output_tokens as number | undefined
         expect(maxTokens).toBe(undefined) // match codex cli behavior
+
+        // OAuth sends instructions outside system-role messages. Capture the
+        // effective provider options after the plugin has replaced that text.
+        const oauthRequest = waitRequest("/responses", createEventResponse(responseChunks, true))
+        const oauthAudits: ContextAudit.Input[] = []
+        yield* drainWith(
+          llmLayerWithExecutor({
+            contextMode: "lean",
+            auth: Layer.mock(Auth.Service, {
+              all: () => Effect.succeed({}),
+              get: () => Effect.succeed(new Auth.Oauth({ type: "oauth", access: "test", refresh: "test", expires: 0 })),
+            }),
+            plugin: Layer.succeed(
+              Plugin.Service,
+              Plugin.Service.of({
+                init: () => Effect.void,
+                list: () => Effect.succeed([]),
+                trigger: (name, _input, output, observer) =>
+                  Effect.sync(() => {
+                    const finish = observer?.({ kind: "runtime", id: "oauth-test-plugin", ordinal: 0 }, output)
+                    if (name === "chat.params") {
+                      const params = output as { options: Record<string, unknown> }
+                      params.options = { ...params.options, instructions: "Final OAuth plugin instructions" }
+                    }
+                    finish?.("success")
+                    return output
+                  }),
+              }),
+            ),
+            audit: Layer.succeed(
+              ContextAudit.Service,
+              ContextAudit.Service.of({
+                enabled: true,
+                latest: () => Effect.succeed(undefined),
+                record: (input) =>
+                  Effect.sync(() => {
+                    oauthAudits.push(input)
+                  }),
+              }),
+            ),
+          }),
+          {
+            user,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["Earlier project instructions"],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          },
+        )
+        const oauthBody = (yield* Effect.promise(() => oauthRequest)).body
+        if (typeof oauthBody.instructions !== "string") throw new Error("OAuth instructions missing from adapter body")
+        expect(oauthBody.instructions).toBe("Final OAuth plugin instructions")
+        expect(oauthAudits).toHaveLength(1)
+        expect(oauthAudits[0]!.instructions).toEqual([
+          { source: "provider-instructions:openai", text: oauthBody.instructions },
+        ])
+        expect(oauthAudits[0]!.messages.some((message) => message.role === "system")).toBe(false)
+        expect(oauthAudits[0]!.trace?.records.find((item) => item.stage === "chat.params")?.change).toBe("changed")
+        expect(JSON.stringify(oauthAudits[0]!.trace)).not.toContain("Final OAuth plugin instructions")
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+    20_000,
   )
 
   it.instance(
-    "keeps supported OpenAI models on AI SDK path when native flag is off",
+    "keeps supported OpenAI models on AI SDK path and bypasses observation when audit is off",
     () =>
       Effect.gen(function* () {
         const model = loadFixture("openai", "gpt-5.2").model
@@ -1306,6 +1569,7 @@ describe("session.llm.stream", () => {
 
         const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
         const sessionID = SessionID.make("session-test-native-flag-off")
+        let observations = 0
         const agent = {
           name: "test",
           mode: "primary",
@@ -1317,6 +1581,17 @@ describe("session.llm.stream", () => {
           AppNodeBuilder.build(LLM.node, [
             [LayerNodePlatform.llmClient, failingNativeClient],
             [RuntimeFlags.node, RuntimeFlags.layer({ experimentalNativeLlm: false })],
+            [
+              ContextAudit.node,
+              Layer.succeed(
+                ContextAudit.Service,
+                ContextAudit.Service.of({
+                  enabled: false,
+                  latest: () => Effect.succeed(undefined),
+                  record: () => Effect.die(new Error("disabled audit must not record")),
+                }),
+              ),
+            ],
           ]),
           {
             user: {
@@ -1333,12 +1608,23 @@ describe("session.llm.stream", () => {
             system: ["You are a helpful assistant."],
             messages: [{ role: "user", content: "Hello" }],
             tools: {},
+            contextTrace: {
+              start() {
+                observations += 1
+                throw new Error("disabled audit must not snapshot")
+              },
+              capture() {
+                observations += 1
+                throw new Error("disabled audit must not capture")
+              },
+            },
           },
         )
 
         const capture = yield* Effect.promise(() => request)
         expect(capture.url.pathname.endsWith("/responses")).toBe(true)
         expect(capture.body.model).toBe(resolved.api.id)
+        expect(observations).toBe(0)
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
@@ -1380,22 +1666,39 @@ describe("session.llm.stream", () => {
           temperature: 0.2,
         } satisfies Agent.Info
 
-        yield* drainWith(llmLayerWithExecutor({ flags: { experimentalNativeLlm: true } }), {
-          user: {
-            id: MessageID.make("msg_user-native"),
+        const nativeAudits: ContextAudit.Input[] = []
+        yield* drainWith(
+          llmLayerWithExecutor({
+            flags: { experimentalNativeLlm: true },
+            audit: Layer.succeed(
+              ContextAudit.Service,
+              ContextAudit.Service.of({
+                enabled: true,
+                latest: () => Effect.succeed(undefined),
+                record: (input) =>
+                  Effect.sync(() => {
+                    nativeAudits.push(input)
+                  }),
+              }),
+            ),
+          }),
+          {
+            user: {
+              id: MessageID.make("msg_user-native"),
+              sessionID,
+              role: "user",
+              time: { created: Date.now() },
+              agent: agent.name,
+              model: { providerID: ProviderV2.ID.make("openai"), modelID: resolved.id, variant: "high" },
+            } satisfies SessionV1.User,
             sessionID,
-            role: "user",
-            time: { created: Date.now() },
-            agent: agent.name,
-            model: { providerID: ProviderV2.ID.make("openai"), modelID: resolved.id, variant: "high" },
-          } satisfies SessionV1.User,
-          sessionID,
-          model: resolved,
-          agent,
-          system: ["You are a helpful assistant."],
-          messages: [{ role: "user", content: "Hello" }],
-          tools: {},
-        })
+            model: resolved,
+            agent,
+            system: ["You are a helpful assistant."],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          },
+        )
 
         const capture = yield* Effect.promise(() => request)
         expect(capture.url.pathname.endsWith("/responses")).toBe(true)
@@ -1406,6 +1709,11 @@ describe("session.llm.stream", () => {
         expect(capture.body.include).toEqual(["reasoning.encrypted_content"])
         expect(JSON.stringify(capture.body.input)).toContain("You are a helpful assistant.")
         expect(capture.body.input).toContainEqual({ role: "user", content: [{ type: "input_text", text: "Hello" }] })
+        expect(nativeAudits).toHaveLength(1)
+        expect(nativeAudits[0]?.runtime).toBe("v1-native")
+        expect(nativeAudits[0]?.instructions.map((part) => part.text).join("\n")).toContain(
+          "You are a helpful assistant.",
+        )
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )

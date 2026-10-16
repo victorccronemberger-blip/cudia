@@ -10,6 +10,10 @@ import { AbsolutePath } from "./schema"
 import { SystemContext } from "./system-context/index"
 import { SystemContextRegistry } from "./system-context/registry"
 import { makeLocationNode } from "./effect/app-node"
+import { InstructionSource } from "./instruction-source"
+import { AmbientInstructions } from "./harness/ambient-instructions"
+import { ContextManifest } from "./harness/context-manifest"
+import { ContextManifestSchema } from "@opencode-ai/schema/context-manifest"
 
 class File extends Schema.Class<File>("InstructionContext.File")({
   path: AbsolutePath,
@@ -25,6 +29,8 @@ const layer = Layer.effectDiscard(
     const global = yield* Global.Service
     const location = yield* Location.Service
     const registry = yield* SystemContextRegistry.Service
+    const instructions = yield* InstructionSource.Service
+    const ambient = yield* AmbientInstructions.Service
 
     const source = (value: ReadonlyArray<File> | SystemContext.Unavailable) =>
       SystemContext.make({
@@ -33,11 +39,12 @@ const layer = Layer.effectDiscard(
         load: Effect.succeed(value),
         baseline: render,
         update: (_previous, current) =>
-          `These instructions replace all previously loaded ambient instructions.\n\n${render(current)}`,
+          render(current, "These instructions replace all previously loaded ambient instructions.\n\n"),
         removed: () => "Previously loaded instructions no longer apply.",
       })
 
     const observe = Effect.fn("InstructionContext.observe")(function* () {
+      if (!ambient.current().automatic) return []
       const start = yield* fs.resolve(location.directory)
       const stop = yield* fs.resolve(location.project.directory)
       const fromProject = relative(stop, start)
@@ -51,40 +58,39 @@ const layer = Layer.effectDiscard(
                 targets: ["AGENTS.md"],
                 start,
                 stop,
+                maxResults: instructions.limits.maxSources,
               }),
           fs.resolve,
         ),
       )
-      const paths = Array.dedupe([yield* fs.resolve(join(global.config, "AGENTS.md")), ...discovered])
-      const files = yield* Effect.forEach(
-        paths,
-        (path) =>
-          fs
-            .readFileStringSafe(path)
-            .pipe(
-              Effect.map((content) =>
-                content === undefined ? undefined : new File({ path: AbsolutePath.make(path), content }),
-              ),
-            ),
-        { concurrency: "unbounded" },
+      const globalPath = join(global.config, "AGENTS.md")
+      const globalInfo = yield* fs
+        .stat(globalPath)
+        .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(undefined)))
+      const paths = Array.dedupe([...(globalInfo === undefined ? [] : [yield* fs.realPath(globalPath)]), ...discovered])
+      const files = yield* instructions.load(
+        paths.map((path) => ({
+          kind: "file" as const,
+          path,
+        })),
       )
-      if (files.some((file, index) => file === undefined && discovered.has(paths[index])))
-        return SystemContext.unavailable
-      return files.filter((file): file is File => file !== undefined)
+      return files.map((file) => new File({ path: AbsolutePath.make(file.source), content: file.text }))
     })
 
     yield* registry.register({
       key,
       load: observe().pipe(
-        Effect.map((files) =>
-          files === SystemContext.unavailable
-            ? source(files)
-            : files.length === 0
-              ? SystemContext.empty
-              : source(files),
+        Effect.map((files) => (files.length === 0 ? SystemContext.empty : source(files))),
+        Effect.catch((error) =>
+          Effect.logWarning("Cannot acquire ambient instruction context", { error }).pipe(
+            Effect.as(source(SystemContext.unavailable)),
+          ),
         ),
-        Effect.catch(() => Effect.succeed(source(SystemContext.unavailable))),
-        Effect.catchDefect(() => Effect.succeed(source(SystemContext.unavailable))),
+        Effect.catchDefect((defect) =>
+          Effect.logWarning("Ambient instruction discovery failed", { defect }).pipe(
+            Effect.as(source(SystemContext.unavailable)),
+          ),
+        ),
       ),
     })
   }),
@@ -93,9 +99,34 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "instruction-context",
   layer,
-  deps: [FSUtil.node, Global.node, Location.node, SystemContextRegistry.node],
+  deps: [
+    FSUtil.node,
+    Global.node,
+    Location.node,
+    SystemContextRegistry.node,
+    InstructionSource.node,
+    AmbientInstructions.node,
+  ],
 })
 
-function render(files: ReadonlyArray<File>) {
-  return files.map((file) => `Instructions from: ${file.path}\n${file.content}`).join("\n\n")
+function render(files: ReadonlyArray<File>, prefix = ""): ContextManifest.Rendered {
+  const chunks = [prefix]
+  const origins: ContextManifestSchema.Origin[] = []
+  let cursor = prefix.length
+  files.forEach((file, index) => {
+    const header = `${index === 0 ? "" : "\n\n"}Instructions from: ${file.path}\n`
+    const start = cursor + header.length
+    const observed = ContextManifest.describe(file.content)
+    origins.push({
+      kind: "file",
+      id: file.path,
+      start,
+      end: start + file.content.length,
+      sha256: observed.sha256,
+      bytes: observed.bytes,
+    })
+    chunks.push(header, file.content)
+    cursor = start + file.content.length
+  })
+  return { text: chunks.join(""), origins }
 }

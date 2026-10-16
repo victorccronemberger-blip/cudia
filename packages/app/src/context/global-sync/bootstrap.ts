@@ -1,4 +1,5 @@
 import type {
+  Agent,
   Config,
   OpencodeClient,
   Path,
@@ -10,9 +11,6 @@ import type {
   Session,
 } from "@opencode-ai/sdk/v2/client"
 import type {
-  AgentListInput,
-  AgentListOutput,
-  CatalogApi,
   CommandInfo,
   CommandListInput,
   CommandListOutput,
@@ -34,17 +32,22 @@ import {
   cmp,
   normalizeAgentList,
   normalizePermissionRequest,
+  normalizeNativeAgentList,
+  normalizeNativeProviderList,
   normalizeProjectInfo,
   normalizeProviderList,
 } from "./utils"
 import { formatServerError } from "@/utils/server-errors"
 import { QueryClient, queryOptions } from "@tanstack/solid-query"
 import { loadMcpQuery, loadMcpResourcesQuery } from "../server-sync"
+import type { NativeMcpClient } from "@/utils/native-mcp"
 import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
 import { ScopedKey, type ServerScope } from "@/utils/server-scope"
 import { normalizeSessionInfo } from "@/utils/session"
 import type { ServerProtocol } from "@/utils/server-protocol"
 import type { ServerApi } from "@/utils/server"
+import type { NativeAgentListApi, NativeCatalogClient } from "@/utils/native-catalog"
+import type { NativeWorkspaceClient } from "@/utils/native-workspace"
 
 type GlobalStore = {
   ready: boolean
@@ -105,10 +108,13 @@ function showErrors(input: {
   })
 }
 
-export const loadGlobalConfigQuery = (scope: ServerScope, sdk: OpencodeClient) =>
+export const loadGlobalConfigQuery = (scope: ServerScope, sdk: OpencodeClient, protocol?: Promise<ServerProtocol>) =>
   queryOptions({
     queryKey: [scope, "config"],
-    queryFn: () => retry(() => sdk.global.config.get().then((x) => x.data!)),
+    queryFn: async () => {
+      if ((await protocol) !== "v1") return {}
+      return retry(() => sdk.global.config.get().then((x) => x.data!))
+    },
   })
 
 type ProjectApi = {
@@ -121,12 +127,25 @@ type PermissionApi = ServerApi["permission"]
 type QuestionApi = ServerApi["question"]
 type VcsApi = ServerApi["vcs"]
 
-export const loadProjectsQuery = (scope: ServerScope, api: ProjectApi) =>
+export const loadProjectsQuery = (
+  scope: ServerScope,
+  api: ProjectApi,
+  nativeWorkspace?: NativeWorkspaceClient,
+  protocol?: Promise<ServerProtocol>,
+) =>
   queryOptions({
     queryKey: [scope, "project"],
     queryFn: () =>
       retry(() =>
-        api.list().then((projects) => {
+        Promise.resolve(protocol).then(async (kind) => {
+          if (kind === "v2" && !nativeWorkspace) throw new Error(undefined, { cause: "NativeWorkspaceUnavailable" })
+          const projects =
+            kind === "v1" || !nativeWorkspace
+              ? await api.list()
+              : (await nativeWorkspace.projects.list()).map((project) => ({
+                  ...project,
+                  sandboxes: [...project.sandboxes],
+                }))
           return projects
             .filter((p) => !!p?.id)
             .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
@@ -139,7 +158,9 @@ export const loadProjectsQuery = (scope: ServerScope, api: ProjectApi) =>
 
 export async function bootstrapGlobal(input: {
   serverSDK: OpencodeClient
-  serverAPI: CatalogApi & { readonly project: ProjectApi }
+  serverAPI: { readonly project: ProjectApi }
+  nativeCatalog: NativeCatalogClient
+  nativeWorkspace?: NativeWorkspaceClient
   protocol?: Promise<ServerProtocol>
   scope: ServerScope
   requestFailedTitle: string
@@ -149,24 +170,28 @@ export async function bootstrapGlobal(input: {
   queryClient: QueryClient
 }) {
   const slow = [
-    () => input.queryClient.fetchQuery(loadGlobalConfigQuery(input.scope, input.serverSDK)),
+    () => input.queryClient.fetchQuery(loadGlobalConfigQuery(input.scope, input.serverSDK, input.protocol)),
     () =>
       input.queryClient.fetchQuery(
-        loadProvidersQuery(input.scope, null, input.serverAPI, input.serverSDK, input.protocol),
+        loadProvidersQuery(input.scope, null, input.nativeCatalog, input.serverSDK, input.protocol),
       ),
-    () => input.queryClient.fetchQuery(loadPathQuery(input.scope, null, input.serverSDK, input.protocol)),
+    () =>
+      input.queryClient.fetchQuery(
+        loadPathQuery(input.scope, null, input.serverSDK, input.protocol, input.nativeWorkspace),
+      ),
     () =>
       input.queryClient
-        .fetchQuery(loadProjectsQuery(input.scope, input.serverAPI.project))
+        .fetchQuery(loadProjectsQuery(input.scope, input.serverAPI.project, input.nativeWorkspace, input.protocol))
         .then((data) => input.setGlobalStore("project", data)),
   ]
-  await runAll(slow)
-  // showErrors({
-  //   errors: errors(),
-  //   title: input.requestFailedTitle,
-  //   translate: input.translate,
-  //   formatMoreCount: input.formatMoreCount,
-  // })
+  const settled = await runAll(slow)
+  if ((await input.protocol) === "v1") return
+  showErrors({
+    errors: errors(settled),
+    title: input.requestFailedTitle,
+    translate: input.translate,
+    formatMoreCount: input.formatMoreCount,
+  })
 }
 
 function groupBySession<T extends { id: string; sessionID: string }>(input: T[]) {
@@ -218,7 +243,7 @@ function warmSessions(input: {
 export const loadProvidersQuery = (
   scope: ServerScope,
   directory: string | null,
-  sdk: CatalogApi,
+  sdk: NativeCatalogClient,
   legacy?: OpencodeClient,
   protocol?: Promise<ServerProtocol>,
 ) =>
@@ -232,17 +257,13 @@ export const loadProvidersQuery = (
         }
         const location = directory ? { location: { directory } } : undefined
         const [providers, models, defaultModel] = await Promise.all([
-          sdk.provider.list(location),
-          sdk.model.list(location),
-          sdk.model.default(location),
+          sdk.providers.list(location),
+          sdk.models.list(location),
+          sdk.models.default(location),
         ])
-        return normalizeProviderList(providers.data, models.data, defaultModel.data)
+        return normalizeNativeProviderList(providers.data, models.data, defaultModel.data)
       }),
   })
-
-type AgentListApi = {
-  readonly list: (input?: AgentListInput) => Promise<AgentListOutput>
-}
 
 type CommandListApi = {
   readonly list: (input?: CommandListInput) => Promise<CommandListOutput>
@@ -255,16 +276,16 @@ type ReferenceListApi = {
 export const loadAgentsQuery = (
   scope: ServerScope,
   directory: string,
-  sdk: AgentListApi,
+  sdk: NativeAgentListApi,
   legacy?: OpencodeClient,
   protocol?: Promise<ServerProtocol>,
 ) =>
-  queryOptions({
+  queryOptions<Agent[]>({
     queryKey: [scope, directory, "agents"],
     queryFn: () =>
       retry(async () => {
         if ((await protocol) === "v1" && legacy) return normalizeAgentList((await legacy.app.agents()).data ?? [])
-        return sdk.list({ location: { directory } }).then((result) => normalizeAgentList(result.data))
+        return sdk.list({ location: { directory } }).then((result) => normalizeNativeAgentList(result.data))
       }),
   })
 
@@ -297,14 +318,28 @@ export const loadPathQuery = (
   directory: string | null,
   sdk: OpencodeClient,
   protocol?: Promise<ServerProtocol>,
+  nativeWorkspace?: NativeWorkspaceClient,
 ) =>
   queryOptions<Path>({
     queryKey: [scope, directory, "path"],
-    queryFn: async () => {
-      if ((await protocol) !== "v1")
-        return { state: "", config: "", worktree: "", directory: directory ?? "", home: "" }
-      return retry(() => sdk.path.get({ directory: directory ?? undefined }).then((result) => result.data!))
-    },
+    queryFn: () =>
+      retry(async () => {
+        if ((await protocol) !== "v1" && nativeWorkspace) {
+          const paths = await nativeWorkspace.locationPaths.get()
+          const location = await nativeWorkspace.location.get({
+            location: { directory: directory ?? paths.defaultDirectory },
+          })
+          return {
+            state: "",
+            config: "",
+            worktree: location.project.directory,
+            directory: location.directory,
+            home: paths.home,
+          }
+        }
+        if ((await protocol) !== "v1") throw new Error(undefined, { cause: "NativeWorkspaceUnavailable" })
+        return sdk.path.get({ directory: directory ?? undefined }).then((result) => result.data!)
+      }),
   })
 
 export const loadReferencesQuery = (
@@ -329,8 +364,10 @@ export async function bootstrapDirectory(input: {
   scope: ServerScope
   mcp: boolean
   sdk: OpencodeClient
-  api: CatalogApi & {
-    readonly agent: AgentListApi
+  nativeMcp?: NativeMcpClient
+  nativeCatalog: NativeCatalogClient
+  nativeWorkspace?: NativeWorkspaceClient
+  api: {
     readonly command: CommandListApi
     readonly mcp: McpApi
     readonly permission: PermissionApi
@@ -373,10 +410,15 @@ export async function bootstrapDirectory(input: {
       () => Promise.resolve(input.loadSessions(input.directory)),
       () =>
         input.queryClient
-          .ensureQueryData(loadAgentsQuery(input.scope, input.directory, input.api.agent, input.sdk, input.protocol))
+          .ensureQueryData(
+            loadAgentsQuery(input.scope, input.directory, input.nativeCatalog.agents, input.sdk, input.protocol),
+          )
           .then((data) => input.setStore("agent", data)),
       () =>
-        retry(() => input.sdk.config.get().then((x) => input.setStore("config", reconcile(x.data!, { merge: false })))),
+        retry(async () => {
+          if ((await input.protocol) !== "v1") return
+          return input.sdk.config.get().then((x) => input.setStore("config", reconcile(x.data!, { merge: false })))
+        }),
       () =>
         retry(() =>
           (async () => {
@@ -406,25 +448,43 @@ export async function bootstrapDirectory(input: {
         ),
       !seededProject &&
         (() =>
-          retry(() => input.api.project.current({ location: { directory: input.directory } })).then((project) =>
-            input.setStore("project", project.id),
-          )),
+          retry(async () => {
+            if ((await input.protocol) !== "v1" && input.nativeWorkspace) {
+              const location = await input.nativeWorkspace.location.get({
+                location: { directory: input.directory },
+              })
+              input.setStore("project", location.project.id)
+              return
+            }
+            if ((await input.protocol) !== "v1") throw new Error(undefined, { cause: "NativeWorkspaceUnavailable" })
+            const project = await input.api.project.current({ location: { directory: input.directory } })
+            input.setStore("project", project.id)
+          })),
       !seededPath &&
         (() =>
           input.queryClient
-            .ensureQueryData(loadPathQuery(input.scope, input.directory, input.sdk, input.protocol))
+            .ensureQueryData(
+              loadPathQuery(input.scope, input.directory, input.sdk, input.protocol, input.nativeWorkspace),
+            )
             .then((data) => {
               const next = projectID(data.directory ?? input.directory, input.global.project)
               if (next) input.setStore("project", next)
             })),
       () =>
         retry(async () => {
-          if ((await input.protocol) !== "v1") return
-          return input.sdk.vcs.get().then((result) => {
+          const protocol = await input.protocol
+          if (protocol === "v1") {
+            const result = await input.sdk.vcs.get()
             const next = { branch: result.data?.branch, default_branch: result.data?.default_branch }
             input.setStore("vcs", next)
-            if (next) input.vcsCache.setStore("value", next)
-          })
+            input.vcsCache.setStore("value", next)
+            return
+          }
+          if (!input.nativeWorkspace) throw new Error(undefined, { cause: "NativeWorkspaceUnavailable" })
+          const result = await input.nativeWorkspace.vcs.get({ location: { directory: input.directory } })
+          const next = { branch: result.data.branch, default_branch: result.data.defaultBranch }
+          input.setStore("vcs", next)
+          input.vcsCache.setStore("value", next)
         }),
       input.mcp &&
         (() =>
@@ -511,16 +571,19 @@ export async function bootstrapDirectory(input: {
       input.mcp &&
         (() =>
           input.queryClient.fetchQuery(
-            loadMcpQuery(input.scope, input.directory, input.api.mcp, input.sdk, input.protocol),
+            loadMcpQuery(input.scope, input.directory, input.api.mcp, input.sdk, input.protocol, input.nativeMcp),
           )),
       input.mcp &&
         (() =>
-          input.queryClient.fetchQuery(
-            loadMcpResourcesQuery(input.scope, input.directory, input.api.mcp, input.sdk, input.protocol),
-          )),
+          (async () => {
+            if ((await input.protocol) !== "v1") return
+            await input.queryClient.fetchQuery(
+              loadMcpResourcesQuery(input.scope, input.directory, input.api.mcp, input.sdk, input.protocol),
+            )
+          })()),
       () =>
         input.queryClient
-          .fetchQuery(loadProvidersQuery(input.scope, input.directory, input.api, input.sdk, input.protocol))
+          .fetchQuery(loadProvidersQuery(input.scope, input.directory, input.nativeCatalog, input.sdk, input.protocol))
           .catch((err) => {
             const project = getFilename(input.directory)
             showToast({

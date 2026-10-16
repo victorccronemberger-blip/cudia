@@ -17,10 +17,14 @@ import { PtyGroup } from "./groups/pty"
 import { makeQuestionGroup } from "./groups/question"
 import { ReferenceGroup } from "./groups/reference"
 import { Authorization } from "./middleware/authorization"
-import { LocationGroup } from "./groups/location"
+import { LocationGroup, LocationPathsGroup } from "./groups/location"
+import { ProjectGroup } from "./groups/project"
 import { IntegrationGroup } from "./groups/integration"
 import { CredentialGroup } from "./groups/credential"
 import { ProjectCopyGroup } from "./groups/project-copy"
+import { MCPGroup } from "./groups/mcp"
+import { LSPGroup } from "./groups/lsp"
+import { VcsGroup } from "./groups/vcs"
 
 // Protocol owns middleware placement, while Server injects concrete keys so Core service identities stay downstream.
 const makeApiFromGroup = <
@@ -43,9 +47,12 @@ const makeApiFromGroup = <
     .add(ModelGroup.middleware(locationMiddleware))
     .add(ProviderGroup.middleware(locationMiddleware))
     .add(IntegrationGroup.middleware(locationMiddleware))
+    .add(MCPGroup.middleware(locationMiddleware))
+    .add(LSPGroup.middleware(locationMiddleware))
     .add(CredentialGroup.middleware(locationMiddleware))
     .add(makePermissionGroup(locationMiddleware, sessionLocationMiddleware))
     .add(FileSystemGroup.middleware(locationMiddleware))
+    .add(VcsGroup.middleware(locationMiddleware))
     .add(CommandGroup.middleware(locationMiddleware))
     .add(SkillGroup.middleware(locationMiddleware))
     .add(eventGroup)
@@ -53,6 +60,8 @@ const makeApiFromGroup = <
     .add(makeQuestionGroup(locationMiddleware, sessionLocationMiddleware))
     .add(ReferenceGroup.middleware(locationMiddleware))
     .add(ProjectCopyGroup.middleware(locationMiddleware))
+    .add(ProjectGroup)
+    .add(LocationPathsGroup)
     .annotateMerge(
       OpenApi.annotations({
         title: "opencode HttpApi",

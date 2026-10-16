@@ -80,9 +80,9 @@ export function decodeFilePath(input: string) {
   }
 }
 
-export function encodeFilePath(filepath: string): string {
+export function encodeFilePath(filepath: string, windows = true): string {
   // Normalize Windows paths: convert backslashes to forward slashes
-  let normalized = filepath.replace(/\\/g, "/")
+  let normalized = windows ? filepath.replace(/\\/g, "/") : filepath
 
   // Handle Windows absolute paths (D:/path -> /D:/path for proper file:// URLs)
   if (/^[A-Za-z]:/.test(normalized)) {
@@ -101,17 +101,20 @@ export function encodeFilePath(filepath: string): string {
     .join("/")
 }
 
-export function createPathHelpers(scope: () => string) {
+export function createPathHelpers(scope: () => string, options?: { literalPaths: () => boolean }) {
   const normalize = (input: string) => {
     const root = scope()
 
-    let path = unquoteGitPath(decodeFilePath(stripQueryAndHash(stripFileProtocol(input))))
+    const literal = options?.literalPaths()
+    const decoded =
+      literal && !input.startsWith("file://") ? input : decodeFilePath(stripQueryAndHash(stripFileProtocol(input)))
+    let path = literal ? decoded : unquoteGitPath(decoded)
 
     // Separator-agnostic prefix stripping for Cygwin/native Windows compatibility
     // Only case-insensitive on Windows (drive letter or UNC paths)
-    const windows = /^[A-Za-z]:/.test(root) || root.startsWith("\\\\")
-    const canonRoot = windows ? root.replace(/\\/g, "/").toLowerCase() : root.replace(/\\/g, "/")
-    const canonPath = windows ? path.replace(/\\/g, "/").toLowerCase() : path.replace(/\\/g, "/")
+    const windows = /^[A-Za-z]:/.test(root) || root.startsWith("\\\\") || root.startsWith("//")
+    const canonRoot = windows ? root.replace(/\\/g, "/").toLowerCase() : root
+    const canonPath = windows ? path.replace(/\\/g, "/").toLowerCase() : path
     if (
       canonPath.startsWith(canonRoot) &&
       (canonRoot.endsWith("/") || canonPath === canonRoot || canonPath[canonRoot.length] === "/")
@@ -120,11 +123,11 @@ export function createPathHelpers(scope: () => string) {
       path = path.slice(root.length)
     }
 
-    if (path.startsWith("./") || path.startsWith(".\\")) {
+    if (path.startsWith("./") || (windows && path.startsWith(".\\"))) {
       path = path.slice(2)
     }
 
-    if (path.startsWith("/") || path.startsWith("\\")) {
+    if (path.startsWith("/") || (windows && path.startsWith("\\"))) {
       path = path.slice(1)
     }
     return path
@@ -132,7 +135,8 @@ export function createPathHelpers(scope: () => string) {
 
   const tab = (input: string) => {
     const path = normalize(input)
-    return `file://${encodeFilePath(path)}`
+    const windows = /^[A-Za-z]:/.test(scope()) || scope().startsWith("\\\\") || scope().startsWith("//")
+    return `file://${encodeFilePath(path, options?.literalPaths() ? windows : true)}`
   }
 
   const pathFromTab = (tabValue: string) => {
@@ -143,7 +147,7 @@ export function createPathHelpers(scope: () => string) {
   const normalizeDir = (input: string) => {
     const path = normalize(input)
     const root = scope()
-    const windows = /^[A-Za-z]:/.test(root) || root.startsWith("\\\\")
+    const windows = /^[A-Za-z]:/.test(root) || root.startsWith("\\\\") || root.startsWith("//")
     return (windows ? path.replace(/\\/g, "/") : path).replace(/\/+$/, "")
   }
 

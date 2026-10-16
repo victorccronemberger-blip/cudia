@@ -1,49 +1,34 @@
-#!/usr/bin/env bash
-# cudia launcher — starts opencode with the cudia harness config loaded.
-set -euo pipefail
-# Resolve the real script path even when invoked through a symlink
-# (BASH_SOURCE[0] holds the symlink path, so cd'ing to its dirname would
-#  land in ~/.local/bin instead of the repo).
-SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
-HERE="$(cd "$(dirname "$SCRIPT")" && pwd)"
+#!/usr/bin/env sh
+# Load the harness from this checkout while keeping the caller's project directory.
+set -eu
 
-# Load this checkout's harness without changing the project directory selected
-# by the caller. Source builds identify as the "local" channel, so force the
-# shared production database to preserve access to existing session history.
+# macOS readlink does not support -f. Follow relative links without that flag.
+SCRIPT=$0
+while [ -L "$SCRIPT" ]; do
+  DIR=$(CDPATH= cd -P -- "$(dirname -- "$SCRIPT")" && pwd)
+  LINK=$(readlink -- "$SCRIPT")
+  case "$LINK" in
+    /*) SCRIPT=$LINK ;;
+    *) SCRIPT=$DIR/$LINK ;;
+  esac
+done
+HERE=$(CDPATH= cd -P -- "$(dirname -- "$SCRIPT")" && pwd)
+. "$HERE/script/cudia-common.sh"
+
 export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HERE/.opencode}"
+# Custom builds share the production database, retaining existing session history.
 export OPENCODE_DISABLE_CHANNEL_DB="${OPENCODE_DISABLE_CHANNEL_DB:-1}"
+# Discover MCP schemas on demand instead of sending the whole catalog every turn.
+export OPENCODE_EXPERIMENTAL_CODE_MODE="${OPENCODE_EXPERIMENTAL_CODE_MODE:-1}"
+# Keep catalogs in discovery tools; retain a small neutral operational base.
+export CUDIA_CONTEXT_MODE="${CUDIA_CONTEXT_MODE:-lean}"
+# Expose native web search to any model; the backend is called only on tool use.
+export OPENCODE_ENABLE_EXA="${OPENCODE_ENABLE_EXA:-1}"
 
-# Prefer this repo's compiled binary so custom harness features match the
-# checkout without resolving TSX workspace modules at runtime.
-ARCH="$(uname -m)"
-case "$ARCH" in
-  x86_64|amd64) ARCH="x64" ;;
-  aarch64|arm64) ARCH="arm64" ;;
-esac
-case "$(uname -s)" in
-  Linux) PLATFORM="linux" ;;
-  Darwin) PLATFORM="darwin" ;;
-  *) PLATFORM="" ;;
-esac
-LOCAL_BIN="$HERE/packages/opencode/dist/opencode-$PLATFORM-$ARCH/bin/opencode"
-if command -v bun >/dev/null 2>&1 && [ -n "$PLATFORM" ] && { [ "$ARCH" = "x64" ] || [ "$ARCH" = "arm64" ]; }; then
-  if [ ! -e "$HERE/packages/opencode/node_modules/@opencode-ai/tui/package.json" ]; then
-    echo "==> installing cudia workspace dependencies..." >&2
-    (cd "$HERE" && bun install --frozen-lockfile)
-  fi
-  if [ ! -x "$LOCAL_BIN" ]; then
-    echo "==> building cudia local binary..." >&2
-    (cd "$HERE/packages/opencode" && bun run script/build.ts --single --skip-install --skip-embed-web-ui)
-  fi
-  exec "$LOCAL_BIN" "$@"
+cudia_platform "$HERE"
+cudia_fingerprint "$HERE"
+if [ ! -x "$CUDIA_LOCAL_BIN" ] || [ ! -f "$CUDIA_BUILD_STAMP" ] ||
+  [ "$(cat "$CUDIA_BUILD_STAMP")" != "$CUDIA_FINGERPRINT" ]; then
+  cudia_build "$HERE"
 fi
-
-if command -v opencode >/dev/null 2>&1; then
-  exec opencode "$@"
-fi
-if [ -x "$HOME/.opencode/bin/opencode" ]; then
-  exec "$HOME/.opencode/bin/opencode" "$@"
-fi
-
-echo "opencode CLI not found. Run: curl -fsSL https://opencode.ai/install | bash" >&2
-exit 1
+exec "$CUDIA_LOCAL_BIN" "$@"

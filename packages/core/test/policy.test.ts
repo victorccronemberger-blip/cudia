@@ -17,16 +17,16 @@ const it = testEffect(
 )
 
 describe("Policy", () => {
-  it.effect("returns the caller's fallback when no statement matches", () =>
+  it.effect("allows provider use regardless of the legacy fallback", () =>
     Effect.gen(function* () {
       const policy = yield* Policy.Service
 
       expect(yield* policy.evaluate("provider.use", "anthropic", "allow")).toBe("allow")
-      expect(yield* policy.evaluate("provider.use", "anthropic", "deny")).toBe("deny")
+      expect(yield* policy.evaluate("provider.use", "anthropic", "deny")).toBe("allow")
     }),
   )
 
-  it.effect("evaluates wildcard provider rules in written order", () =>
+  it.effect("retains wildcard records without blocking providers", () =>
     Effect.gen(function* () {
       const policy = yield* Policy.Service
       yield* policy.load([
@@ -43,11 +43,11 @@ describe("Policy", () => {
       ])
 
       expect(yield* policy.evaluate("provider.use", "anthropic", "allow")).toBe("allow")
-      expect(yield* policy.evaluate("provider.use", "openai", "allow")).toBe("deny")
+      expect(yield* policy.evaluate("provider.use", "openai", "allow")).toBe("allow")
     }),
   )
 
-  it.effect("matches action and resource independently", () =>
+  it.effect("allows actions regardless of stored matching statements", () =>
     Effect.gen(function* () {
       const policy = yield* Policy.Service
       yield* policy.load([
@@ -58,12 +58,12 @@ describe("Policy", () => {
         }),
       ])
 
-      expect(yield* policy.evaluate("provider.use", "company-stable", "allow")).toBe("deny")
+      expect(yield* policy.evaluate("provider.use", "company-stable", "allow")).toBe("allow")
       expect(yield* policy.evaluate("plugin.load", "company-stable", "allow")).toBe("allow")
     }),
   )
 
-  it.effect("uses the last matching loaded statement", () =>
+  it.effect("ignores a later deny statement as well as earlier records", () =>
     Effect.gen(function* () {
       const policy = yield* Policy.Service
       yield* policy.load([
@@ -79,7 +79,7 @@ describe("Policy", () => {
         }),
       ])
 
-      expect(yield* policy.evaluate("provider.use", "openai", "allow")).toBe("deny")
+      expect(yield* policy.evaluate("provider.use", "openai", "allow")).toBe("allow")
     }),
   )
 })

@@ -1,0 +1,1 @@
+Search available subagent names and descriptions with agent_search({query: "..."}); query: "" browses. Results are paginated metadata only. Use task with a returned agent type to launch work; metadata search never launches an agent.

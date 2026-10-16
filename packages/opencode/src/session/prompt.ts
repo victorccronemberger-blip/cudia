@@ -42,6 +42,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { Goal } from "@/goal"
+import { isGoalControl, operationalMessages } from "@/goal/control"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
@@ -58,6 +59,8 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { ContextAudit } from "@opencode-ai/core/harness/audit"
+import { ContextTrace } from "@opencode-ai/core/harness/trace"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -122,6 +125,7 @@ const layer = Layer.effect(
     const processor = yield* SessionProcessor.Service
     const compaction = yield* SessionCompaction.Service
     const plugin = yield* Plugin.Service
+    const audit = yield* ContextAudit.Service
     const commands = yield* Command.Service
     const config = yield* Config.Service
     const permission = yield* Permission.Service
@@ -154,6 +158,7 @@ const layer = Layer.effect(
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
+      yield* goal.pause(sessionID).pipe(Effect.catch(Effect.die))
       yield* state.cancel(sessionID)
     })
 
@@ -629,7 +634,7 @@ const layer = Layer.effect(
         }
       }
       const match = yield* sessions
-        .findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
+        .findMessage(sessionID, (m) => !isGoalControl(m) && m.info.role === "user" && !!m.info.model)
         .pipe(Effect.orDie)
       if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
       return yield* provider.defaultModel().pipe(Effect.orDie)
@@ -674,10 +679,11 @@ const layer = Layer.effect(
 
       const current = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       if (
-        current.agent !== info.agent ||
-        current.model?.providerID !== info.model.providerID ||
-        current.model?.id !== info.model.modelID ||
-        (current.model?.variant === "default" ? undefined : current.model?.variant) !== info.model.variant
+        !input.parts.some((part) => part.type === "text" && part.metadata?.goalControl === true) &&
+        (current.agent !== info.agent ||
+          current.model?.providerID !== info.model.providerID ||
+          current.model?.id !== info.model.modelID ||
+          (current.model?.variant === "default" ? undefined : current.model?.variant) !== info.model.variant)
       ) {
         yield* sessions.setAgentModel({
           sessionID: input.sessionID,
@@ -1081,10 +1087,12 @@ const layer = Layer.effect(
     })
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
+      const match = yield* sessions
+        .findMessage(sessionID, (m) => !isGoalControl(m) && m.info.role !== "user")
+        .pipe(Effect.orDie)
       if (Option.isSome(match)) return match.value
-      const msgs = yield* sessions.messages({ sessionID, limit: 1 }).pipe(Effect.orDie)
-      if (msgs.length > 0) return msgs[0]
+      const latest = yield* sessions.findMessage(sessionID, (m) => !isGoalControl(m)).pipe(Effect.orDie)
+      if (Option.isSome(latest)) return latest.value
       throw new Error("Impossible")
     })
 
@@ -1099,8 +1107,8 @@ const layer = Layer.effect(
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
-          let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
-            Effect.provideService(Database.Service, database),
+          let msgs = operationalMessages(
+            yield* MessageV2.filterCompactedEffect(sessionID).pipe(Effect.provideService(Database.Service, database)),
           )
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
@@ -1120,9 +1128,9 @@ const layer = Layer.effect(
 
           if (
             lastAssistant?.finish &&
-            !["tool-calls"].includes(lastAssistant.finish) &&
+            !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastUser.id < lastAssistant.id
+            lastAssistant.parentID === lastUser.id
           ) {
             const orphan = lastAssistantMsg?.parts.find(
               (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
@@ -1262,15 +1270,51 @@ const layer = Layer.effect(
             if (step === 1)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-            yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+            const contextTrace = audit.enabled ? ContextTrace.create() : undefined
+            yield* plugin.trigger(
+              "experimental.chat.messages.transform",
+              {},
+              { messages: msgs },
+              contextTrace
+                ? (source) =>
+                    contextTrace.start(
+                      {
+                        stage: "experimental.chat.messages.transform",
+                        projection: "consumed-session-messages",
+                        source,
+                      },
+                      () => msgs,
+                    )
+                : undefined,
+            )
 
-            const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
+            const prepared = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
+              instruction.system(),
               sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
-            ])
+            ]).pipe(
+              Effect.catchTag("InstructionSourceError", (error) =>
+                Effect.gen(function* () {
+                  yield* Effect.logWarning("Ambient instruction acquisition failed", {
+                    kind: error.kind,
+                    source: error.source,
+                    reason: error.reason,
+                    maximum: error.maximum,
+                    observedBytes: error.observedBytes,
+                    status: error.status,
+                  })
+                  handle.message.error = MessageV2.fromError(error, { providerID: handle.message.providerID })
+                  handle.message.time.completed = Date.now()
+                  yield* sessions.updateMessage(handle.message)
+                  yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
+                  return undefined
+                }),
+              ),
+            )
+            if (prepared === undefined) return "break" as const
+            const [skills, env, instructions, mcpInstructions, modelMsgs] = prepared
             const system = [
               ...env,
               ...instructions,
@@ -1293,6 +1337,7 @@ const layer = Layer.effect(
               tools,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
+              ...(contextTrace ? { contextTrace } : {}),
             })
 
             if (structured !== undefined) {
@@ -1368,6 +1413,7 @@ const layer = Layer.effect(
       messageID?: MessageID
       agent?: string
       model?: string
+      variant?: string
       text: string
     }) {
       const user = yield* createUserMessage({
@@ -1375,6 +1421,7 @@ const layer = Layer.effect(
         messageID: input.messageID,
         agent: input.agent,
         model: input.model ? Provider.parseModel(input.model) : undefined,
+        variant: input.variant,
         noReply: true,
         parts: [
           {
@@ -1382,6 +1429,7 @@ const layer = Layer.effect(
             text: `[GOAL CONTROL]\n${input.text}`,
             synthetic: true,
             ignored: true,
+            metadata: { goalControl: true },
           },
         ],
       })
@@ -1411,6 +1459,7 @@ const layer = Layer.effect(
         type: "text",
         text: input.text,
         synthetic: true,
+        metadata: { goalControl: true },
         time: { start: now, end: now },
       }
       yield* sessions.updateMessage(info)
@@ -1421,6 +1470,16 @@ const layer = Layer.effect(
 
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
       if (input.command === "goal") {
+        if (input.parts?.length) {
+          yield* createUserMessage({
+            sessionID: input.sessionID,
+            agent: input.agent,
+            model: input.model ? Provider.parseModel(input.model) : undefined,
+            variant: input.variant,
+            noReply: true,
+            parts: input.parts,
+          })
+        }
         const responses = { count: 0 }
         const respond = (text: string) =>
           respondGoal({
@@ -1428,9 +1487,10 @@ const layer = Layer.effect(
             messageID: responses.count++ === 0 ? input.messageID : undefined,
             agent: input.agent,
             model: input.model,
+            variant: input.variant,
             text,
           })
-        return yield* goal.command(input, prompt, respond).pipe(Effect.catch(Effect.die))
+        return yield* goal.command(input, prompt, respond, state.cancel).pipe(Effect.catch(Effect.die))
       }
       yield* Effect.logInfo("command", {
         "session.id": input.sessionID,
@@ -1684,6 +1744,7 @@ export const node = LayerNode.make({
     SessionProcessor.node,
     SessionCompaction.node,
     Plugin.node,
+    ContextAudit.node,
     Command.node,
     Config.node,
     Permission.node,

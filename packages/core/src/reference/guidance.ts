@@ -4,6 +4,8 @@ import { makeLocationNode } from "../effect/app-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Reference } from "../reference"
 import { SystemContext } from "../system-context/index"
+import { ContextManifest } from "../harness/context-manifest"
+import { ContextManifestSchema } from "@opencode-ai/schema/context-manifest"
 
 const Summary = Schema.Struct({
   name: Schema.String,
@@ -11,19 +13,36 @@ const Summary = Schema.Struct({
   description: Schema.String.pipe(Schema.optional),
 })
 
-const render = (references: ReadonlyArray<typeof Summary.Type>) =>
-  [
-    "Project references provide additional directories that can be accessed when relevant.",
-    "<available_references>",
-    ...references.flatMap((reference) => [
+const render = (references: ReadonlyArray<typeof Summary.Type>, prefix = ""): ContextManifest.Rendered => {
+  const chunks = [
+    `${prefix}Project references provide additional directories that can be accessed when relevant.\n<available_references>`,
+  ]
+  const origins: ContextManifestSchema.Origin[] = []
+  let cursor = chunks[0].length
+  for (const reference of references) {
+    const text = [
       "  <reference>",
       `    <name>${reference.name}</name>`,
       `    <path>${reference.path}</path>`,
       ...(reference.description === undefined ? [] : [`    <description>${reference.description}</description>`]),
       "  </reference>",
-    ]),
-    "</available_references>",
-  ].join("\n")
+    ].join("\n")
+    const start = cursor + 1
+    const observed = ContextManifest.describe(JSON.stringify(reference))
+    origins.push({
+      kind: "reference",
+      id: reference.path,
+      start,
+      end: start + text.length,
+      sha256: observed.sha256,
+      bytes: observed.bytes,
+    })
+    chunks.push(text)
+    cursor = start + text.length
+  }
+  chunks.push("</available_references>")
+  return { text: chunks.join("\n"), origins }
+}
 
 export interface Interface {
   readonly load: () => Effect.Effect<SystemContext.SystemContext>
@@ -53,10 +72,10 @@ const layer = Layer.effect(
           load: Effect.succeed(available),
           baseline: render,
           update: (_previous, current) =>
-            [
-              "The available project references have changed. This list supersedes the previous reference list.",
-              render(current),
-            ].join("\n"),
+            render(
+              current,
+              "The available project references have changed. This list supersedes the previous reference list.\n",
+            ),
           removed: () => "Project reference guidance is no longer available. Do not use previously listed references.",
         })
       }),

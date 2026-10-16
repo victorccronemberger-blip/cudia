@@ -143,6 +143,7 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
             id: event.data.messageID,
             type: "system",
             text: event.data.text,
+            ...(event.data.contextManifest === undefined ? {} : { contextManifest: event.data.contextManifest }),
             time: { created: event.data.timestamp },
           }),
         ),

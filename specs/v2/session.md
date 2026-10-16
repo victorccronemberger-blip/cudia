@@ -102,7 +102,6 @@ Current Context Epoch follow-ups:
 
 - Add configured, remote, and nested instruction sources with explicit precedence and removal semantics.
 - Add durable post-crash continuation recovery for promoted or provider-dispatched work.
-- Add explicit manual compaction on top of automatic request-budget compaction.
 - Add operational metrics for observation latency, unavailable sources, contention, baseline size, and chronological-update growth.
 - Consider watcher-backed per-file caching only if measurements show direct safe-boundary observation is too expensive.
 - Expose plugin-defined Context Sources only after plugin reload and scoped cleanup semantics are designed.
@@ -119,6 +118,16 @@ Compaction keeps the full transcript durable while replacing its active model re
 Repeated compactions update the previous structured summary with newly compacted messages. The runner then reloads projected history and executes the original pending turn.
 
 When a provider rejects a request as context overflow before durable assistant output or tool execution, the runner attempts one overflow-triggered compaction even when the local estimate did not predict pressure. A completed checkpoint rebuilds the same logical provider turn with one remaining physical attempt. A second overflow, unavailable compaction, or overflow after durable output becomes the ordinary terminal failure; recovery never loops or replays partial side effects. Deterministic old tool-result pruning remains a separate follow-up.
+
+## Manual Compaction
+
+`SessionV2.compact` and the bodyless `POST /api/session/:sessionID/compact` serialize a manual operation through the same process-local coordinator as ordinary execution. Requests execute FIFO before any saved continuation. The runner yields only between provider turns after all tools settle durably. A saved continuation contains promotion and step bookkeeping only; history, the context epoch, the selected model and tool definitions are reloaded after compaction. Completed ordinary work does not acquire a synthetic continuation.
+
+The operation snapshots visible history when it begins and never promotes durable inbox rows. It uses the selected model and the same summary budget and recent-context selection as automatic compaction, bypassing only the automatic pressure trigger. Empty history or wholly retained history is a successful no-op without a provider call. An unknown context limit, an oversized summary prompt, an empty or incomplete provider response, or unsettled tools fail without committing a new checkpoint. Provider finish must confirm `stop`; truncation or unconfirmed EOF does not commit. Both automatic and manual compaction preserve the full durable transcript.
+
+The endpoint returns 204 only after a completed checkpoint or a defined no-op; missing sessions return 404 and unavailable/failed compaction returns 503. The internal optional `Prompt` supports textual summary focus only; nonempty file or agent attachments are rejected before enqueueing. Focus does not replace the required preservation instructions or authorize actions. The public endpoint currently has no focus payload.
+
+An operation failure settles its own waiter and permits other queued operations and known unfinished execution to proceed. Ordinary drain failure settles queued operation waiters without trying to summarize partially settled work. Caller cancellation drops only that caller's wait; explicit session interruption cancels the owner and its current/queued operations, while preserving durable inbox inputs. A new wake accepted during interrupt cleanup belongs to a successor execution. Accepted manual requests and saved continuations have no durable execution identity and are not replayed after process restart. Repeated manual requests may delay ordinary generation; starvation prevention is not implemented.
 
 ## V1 Runtime Context Parity
 

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, mock, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test"
 import { createRoot, getOwner, type Owner } from "solid-js"
 import { createStore } from "solid-js/store"
 import type { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
@@ -7,6 +7,7 @@ import type { QueryOptionsApi } from "../server-sync"
 import { ServerScope } from "@/utils/server-scope"
 
 let createChildStoreManager: typeof import("./child-store").createChildStoreManager
+let originalSolidQuery: typeof import("@tanstack/solid-query")
 const querySingles: Array<() => { queryKey?: unknown[]; enabled?: boolean }> = []
 const persist: typeof import("@/utils/persist").persisted = (_target, store) => [
   store[0],
@@ -51,7 +52,9 @@ function createOwner(callback: (owner: Owner) => void) {
 }
 
 beforeAll(async () => {
+  originalSolidQuery = await import("@tanstack/solid-query")
   mock.module("@tanstack/solid-query", () => ({
+    ...originalSolidQuery,
     useQuery: (options: () => { queryKey?: unknown[]; enabled?: boolean }) => {
       querySingles.push(options)
       return {
@@ -61,7 +64,8 @@ beforeAll(async () => {
         get data() {
           if (options().queryKey?.[1] === "path") throw new Error("pending path data read")
           if (options().queryKey?.[1] === "mcp") return options().enabled ? { demo: { status: "disabled" } } : undefined
-          if (options().queryKey?.[1] === "lsp") return []
+          if (options().queryKey?.includes("lsp"))
+            return [{ id: "typescript", name: "TypeScript", root: "/project", status: "connected" }]
           if (options().queryKey?.[1] === "providers") return provider
           return undefined
         },
@@ -70,6 +74,10 @@ beforeAll(async () => {
   }))
 
   createChildStoreManager = (await import("./child-store")).createChildStoreManager
+})
+
+afterAll(() => {
+  mock.module("@tanstack/solid-query", () => ({ ...originalSolidQuery }))
 })
 
 describe("createChildStoreManager", () => {
@@ -269,6 +277,80 @@ describe("createChildStoreManager", () => {
 
       manager.child("/project", { bootstrap: false })
       expect(queries[0]?.().enabled).toBe(true)
+    } finally {
+      dispose()
+    }
+  })
+
+  test("does not expose cached LSP statuses before the protocol is known", () => {
+    let manager: ReturnType<typeof createChildStoreManager> | undefined
+    const offset = querySingles.length
+    const queryOptions = {
+      ...queryOptionsApi,
+      lsp: (directory: string) => ({
+        queryKey: [ServerScope.local, directory, "lsp"] as const,
+        enabled: false,
+        queryFn: async () => [],
+      }),
+    } as unknown as QueryOptionsApi
+
+    const dispose = createOwner((owner) => {
+      manager = createChildStoreManager({
+        owner,
+        scope: ServerScope.local,
+        persist,
+        isBooting: () => false,
+        isLoadingSessions: () => false,
+        onBootstrap() {},
+        onMcp() {},
+        onDispose() {},
+        translate: (key) => key,
+        queryOptions,
+        global: { provider },
+      })
+    })
+
+    try {
+      if (!manager) throw new Error("manager required")
+      const [store] = manager.child("/pending-project")
+      const lsp = querySingles.slice(offset).find((query) => query().queryKey?.includes("lsp"))
+
+      expect(lsp?.().enabled).toBe(false)
+      expect(store.lsp_ready).toBe(false)
+      expect(store.lsp).toEqual([])
+    } finally {
+      dispose()
+    }
+  })
+
+  test("keeps LSP query and statuses available for the V1 protocol", () => {
+    let manager: ReturnType<typeof createChildStoreManager> | undefined
+    const offset = querySingles.length
+
+    const dispose = createOwner((owner) => {
+      manager = createChildStoreManager({
+        owner,
+        scope: ServerScope.local,
+        persist,
+        isBooting: () => false,
+        isLoadingSessions: () => false,
+        onBootstrap() {},
+        onMcp() {},
+        onDispose() {},
+        translate: (key) => key,
+        queryOptions: queryOptionsApi,
+        global: { provider },
+      })
+    })
+
+    try {
+      if (!manager) throw new Error("manager required")
+      const [store] = manager.child("/v1-project")
+      const lsp = querySingles.slice(offset).find((query) => query().queryKey?.includes("lsp"))
+
+      expect(lsp?.().enabled).toBe(true)
+      expect(store.lsp_ready).toBe(true)
+      expect(store.lsp).toEqual([{ id: "typescript", name: "TypeScript", root: "/project", status: "connected" }])
     } finally {
       dispose()
     }

@@ -1,0 +1,19 @@
+package main
+
+import (
+	"embed"
+	"os"
+
+	"cudia.local/windows-setup"
+)
+
+//go:embed payload.bin
+var embedded embed.FS
+
+func main() {
+	payload, err := embedded.ReadFile("payload.bin")
+	if err != nil {
+		os.Exit(73)
+	}
+	os.Exit(setup.Run(payload, "@@CUDIA_PAYLOAD_SHA256@@", os.Args[1:]))
+}

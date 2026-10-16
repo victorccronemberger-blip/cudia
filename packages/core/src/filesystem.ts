@@ -40,7 +40,9 @@ export class GlobInput extends Schema.Class<GlobInput>("FileSystem.GlobInput")({
 export class GrepInput extends Schema.Class<GrepInput>("FileSystem.GrepInput")({
   pattern: Schema.String,
   path: RelativePath.pipe(Schema.optional),
-  include: Schema.String.pipe(Schema.optional),
+  include: Schema.String.pipe(Schema.optional).annotate({
+    description: "Filters files in directory searches. An explicit file path is searched regardless of include.",
+  }),
   limit: PositiveInt.pipe(Schema.optional),
 }) {}
 

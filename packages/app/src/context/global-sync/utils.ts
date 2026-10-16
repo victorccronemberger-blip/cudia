@@ -5,6 +5,12 @@ import type {
   PermissionV2Request,
   ProviderListOutput,
 } from "@opencode-ai/client/promise"
+import type {
+  AgentsListOutput,
+  ModelsDefaultOutput,
+  ModelsListOutput,
+  ProvidersListOutput,
+} from "@opencode-ai/runtime-client"
 import type { Agent, PermissionRequest, Project, Provider, ProviderListResponse } from "@opencode-ai/sdk/v2/client"
 import type { Project as CurrentProject } from "@opencode-ai/client/promise"
 import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
@@ -32,6 +38,28 @@ export function normalizeAgentList(input: AgentListOutput["data"] | Agent[]): Ag
     variant: agent.model?.variant,
     prompt: agent.system,
     options: agent.request.settings,
+    steps: agent.steps,
+  }))
+}
+
+export function normalizeNativeAgentList(input: AgentsListOutput["data"]): Agent[] {
+  return input.map((agent) => ({
+    name: agent.id,
+    description: agent.description,
+    mode: agent.mode,
+    hidden: agent.hidden,
+    temperature: typeof agent.request.body.temperature === "number" ? agent.request.body.temperature : undefined,
+    topP: typeof agent.request.body.topP === "number" ? agent.request.body.topP : undefined,
+    color: agent.color,
+    permission: agent.permissions.map((rule) => ({
+      permission: rule.action,
+      pattern: rule.resource,
+      action: rule.effect,
+    })),
+    model: agent.model && { providerID: agent.model.providerID, modelID: agent.model.id },
+    variant: agent.model?.variant,
+    prompt: agent.system,
+    options: agent.request.body,
     steps: agent.steps,
   }))
 }
@@ -139,6 +167,7 @@ export function normalizeProviderList(
   return {
     all,
     connected: providers.map((provider) => provider.id),
+    defaultModel: defaultModel ? { providerID: defaultModel.providerID, modelID: defaultModel.id } : null,
     default: Object.fromEntries(
       providers.flatMap((provider) => {
         const model =
@@ -149,6 +178,109 @@ export function normalizeProviderList(
       }),
     ),
   }
+}
+
+export function normalizeNativeProviderList(
+  providers: ProvidersListOutput["data"],
+  models: ModelsListOutput["data"],
+  defaultModel?: ModelsDefaultOutput["data"],
+): NormalizedProviderListResponse {
+  const all = new Map<string, Provider>()
+
+  for (const provider of providers) {
+    all.set(provider.id, {
+      id: provider.id,
+      name: provider.name,
+      source: "custom",
+      env: [],
+      options: {},
+      models: {},
+    })
+  }
+
+  for (const model of models) {
+    const provider = all.get(model.providerID)
+    if (!provider || !model.enabled || model.status === "deprecated") continue
+    const cost = model.cost.find((item) => item.tier === undefined) ?? model.cost[0]
+    const api = model.api
+    provider.models[model.id] = {
+      id: model.id,
+      providerID: model.providerID,
+      api: {
+        id: api.id,
+        url: api.url ?? "",
+        npm: api.type === "aisdk" ? api.package : "",
+      },
+      name: model.name,
+      family: model.family,
+      capabilities: {
+        temperature: false,
+        reasoning: false,
+        attachment: model.capabilities.input.some((item) => item !== "text"),
+        toolcall: model.capabilities.tools,
+        input: {
+          text: model.capabilities.input.includes("text"),
+          audio: model.capabilities.input.includes("audio"),
+          image: model.capabilities.input.includes("image"),
+          video: model.capabilities.input.includes("video"),
+          pdf: model.capabilities.input.includes("pdf"),
+        },
+        output: {
+          text: model.capabilities.output.includes("text"),
+          audio: model.capabilities.output.includes("audio"),
+          image: model.capabilities.output.includes("image"),
+          video: model.capabilities.output.includes("video"),
+          pdf: model.capabilities.output.includes("pdf"),
+        },
+        interleaved: false,
+      },
+      cost: {
+        input: cost?.input ?? 0,
+        output: cost?.output ?? 0,
+        cache: {
+          read: cost?.cache.read ?? 0,
+          write: cost?.cache.write ?? 0,
+        },
+        tiers: model.cost.flatMap((item) =>
+          item.tier
+            ? [
+                {
+                  input: item.input,
+                  output: item.output,
+                  cache: item.cache,
+                  tier: item.tier,
+                },
+              ]
+            : [],
+        ),
+      },
+      limit: model.limit,
+      status: model.status,
+      options: {},
+      headers: {},
+      release_date: nativeReleaseDate(model.time.released),
+      variants: Object.fromEntries(model.variants.map((variant) => [variant.id, variant.body])),
+    }
+  }
+
+  const selectedDefault = defaultModel && {
+    providerID: defaultModel.providerID,
+    modelID: defaultModel.id,
+  }
+
+  return {
+    all,
+    connected: providers.map((provider) => provider.id),
+    defaultModel: selectedDefault ?? null,
+    default: selectedDefault ? { [selectedDefault.providerID]: selectedDefault.modelID } : {},
+  }
+}
+
+function nativeReleaseDate(released: number): string {
+  const date = new Date(released)
+  if (Number.isNaN(date.getTime())) return ""
+  const iso = date.toISOString()
+  return /^\d{4}-\d{2}-\d{2}T/.test(iso) ? iso.slice(0, 10) : ""
 }
 
 export function sanitizeProject(project: Project) {

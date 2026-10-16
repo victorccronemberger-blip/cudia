@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "product": "cudia",
+  "channel": "stable",
+  "manifestUrl": "https://cyara.com.br/updates/v1/stable.json",
+  "checkIntervalHours": 24,
+  "automaticCheck": true
+}

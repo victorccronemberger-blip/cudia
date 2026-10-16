@@ -627,6 +627,18 @@ const events = {
       partID: PartID,
     },
   }),
+  ToolOutputCompacted: define({
+    type: "message.tool-output.compacted",
+    ...options,
+    schema: {
+      sessionID: SessionID,
+      messageID: MessageID,
+      partID: PartID,
+      tool: Schema.String,
+      outputHash: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+      time: NonNegativeInt,
+    },
+  }),
 }
 
 export const PartDelta = define({
@@ -669,6 +681,7 @@ export const Event = {
     events.MessageRemoved,
     events.PartUpdated,
     events.PartRemoved,
+    events.ToolOutputCompacted,
     PartDelta,
     Diff,
     Error,

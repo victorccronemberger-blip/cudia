@@ -55,6 +55,44 @@ function request(headers: Record<string, string>, variant?: string) {
 const decode = Schema.decodeUnknownSync(Config.Info)
 
 describe("ConfigProviderPlugin.Plugin", () => {
+  it.effect("keeps an env-backed provider discoverable without marking it available before credentials exist", () =>
+    withEnv({ CUDIA_FRESH_PROVIDER_KEY: undefined }, () =>
+      Effect.gen(function* () {
+        const catalog = yield* Catalog.Service
+        const providerID = ProviderV2.ID.make("fresh-env-provider")
+        const modelID = ModelV2.ID.make("fresh-chat")
+        yield* addPlugin(
+          Config.Service.of({
+            entries: () =>
+              Effect.succeed([
+                new Config.Document({
+                  type: "document",
+                  info: decode({
+                    providers: {
+                      "fresh-env-provider": {
+                        env: ["CUDIA_FRESH_PROVIDER_KEY"],
+                        api: { type: "aisdk", package: "@ai-sdk/openai-compatible", url: "https://example.test/v1" },
+                        models: { "fresh-chat": {} },
+                      },
+                    },
+                  }),
+                }),
+              ]),
+          }),
+        )
+        expect(yield* catalog.model.get(providerID, modelID)).toBeDefined()
+        expect((yield* catalog.provider.available()).some((provider) => provider.id === providerID)).toBe(false)
+        expect((yield* catalog.model.available()).some((model) => model.providerID === providerID)).toBe(false)
+        yield* withEnv({ CUDIA_FRESH_PROVIDER_KEY: "fixture-only" }, () =>
+          Effect.gen(function* () {
+            expect((yield* catalog.provider.available()).some((provider) => provider.id === providerID)).toBe(true)
+            expect((yield* catalog.model.available()).some((model) => model.providerID === providerID)).toBe(true)
+          }),
+        )
+      }),
+    ),
+  )
+
   it.effect("keeps configured model variant bodies unchanged", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service

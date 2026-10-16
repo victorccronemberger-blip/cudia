@@ -6,6 +6,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { executeTool, settleTool, toolDefinitions } from "./lib/tool"
@@ -41,8 +42,8 @@ const identity = {
   assistantMessageID: SessionMessage.ID.make("msg_registry"),
 }
 const sessionID = SessionV2.ID.make("ses_registry")
-const call = (name: string, id = `call-${name}`): ToolRegistry.ExecuteInput => ({
-  sessionID,
+const call = (name: string, id = `call-${name}`, targetSessionID = sessionID): ToolRegistry.ExecuteInput => ({
+  sessionID: targetSessionID,
   ...identity,
   call: { type: "tool-call", id, name, input: { text: name } },
 })
@@ -58,8 +59,34 @@ const make = (permission?: string) => {
   return permission ? Tool.withPermission(tool, permission) : tool
 }
 
+const makeLabel = (label: string) =>
+  Tool.make({
+    description: label,
+    input: Schema.Struct({ text: Schema.String }),
+    output: Schema.Struct({ text: Schema.String }),
+    execute: () => Effect.succeed({ text: label }),
+    toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
+  })
+
 describe("ToolRegistry", () => {
-  it.effect("filters disabled tools with edit aliases and ordered wildcard precedence", () =>
+  it.effect("omits unavailable tools from both definitions and settlement", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      yield* registry.register({ echo: make(), tool_result: make() })
+      const materialized = yield* registry.materialize([], sessionID, { omit: ["tool_result"] })
+      expect(materialized.definitions.map((tool) => tool.name)).toEqual(["echo"])
+      expect((yield* materialized.settle(call("tool_result"))).result).toEqual({
+        type: "error",
+        value: "Unknown tool: tool_result",
+      })
+      expect((yield* registry.materialize([], sessionID)).definitions.map((tool) => tool.name)).toEqual([
+        "echo",
+        "tool_result",
+      ])
+    }),
+  )
+
+  it.effect("keeps every tool visible regardless of legacy permission rules", () =>
     Effect.gen(function* () {
       const service = yield* ToolRegistry.Service
       yield* service.register({
@@ -73,6 +100,7 @@ describe("ToolRegistry", () => {
         toolDefinitions(service, rules).pipe(Effect.map((definitions) => definitions.map((tool) => tool.name)))
 
       expect(yield* names([{ action: "question", resource: "*", effect: "deny" }])).toEqual([
+        "question",
         "bash",
         "edit",
         "write",
@@ -83,14 +111,20 @@ describe("ToolRegistry", () => {
           { action: "*", resource: "*", effect: "deny" },
           { action: "question", resource: "private", effect: "allow" },
         ]),
-      ).toEqual(["question"])
+      ).toEqual(["question", "bash", "edit", "write", "apply_patch"])
       expect(
         yield* names([
           { action: "question", resource: "private", effect: "allow" },
           { action: "*", resource: "*", effect: "deny" },
         ]),
-      ).toEqual([])
-      expect(yield* names([{ action: "edit", resource: "*", effect: "deny" }])).toEqual(["question", "bash"])
+      ).toEqual(["question", "bash", "edit", "write", "apply_patch"])
+      expect(yield* names([{ action: "edit", resource: "*", effect: "deny" }])).toEqual([
+        "question",
+        "bash",
+        "edit",
+        "write",
+        "apply_patch",
+      ])
     }),
   )
 
@@ -106,7 +140,7 @@ describe("ToolRegistry", () => {
         (yield* toolDefinitions(service, [{ action: "edit", resource: "*", effect: "deny" }])).map(
           (definition) => definition.name,
         ),
-      ).toEqual(["first"])
+      ).toEqual(["first", "second"])
     }),
   )
 
@@ -447,6 +481,107 @@ describe("ToolRegistry", () => {
       yield* Deferred.succeed(release, undefined)
 
       expect(yield* Fiber.join(settlement)).toMatchObject({ result: { type: "text", value: "echo" } })
+    }),
+  )
+
+  it.effect("isolates session registrations and rejects cross-session captured snapshots", () =>
+    Effect.gen(function* () {
+      const service = yield* ToolRegistry.Service
+      const firstSession = SessionSchema.ID.make("ses_registry_first")
+      const secondSession = SessionSchema.ID.make("ses_registry_second")
+      yield* service.register(
+        { only_first: makeLabel("first"), shared: makeLabel("first shared") },
+        { sessionID: firstSession },
+      )
+      yield* service.register(
+        { only_second: makeLabel("second"), shared: makeLabel("second shared") },
+        { sessionID: secondSession },
+      )
+
+      const first = yield* service.materialize([], firstSession)
+      const second = yield* service.materialize([], secondSession)
+      const unscoped = yield* service.materialize()
+
+      expect(first.definitions.map((tool) => tool.name).sort()).toEqual(["only_first", "shared"])
+      expect(second.definitions.map((tool) => tool.name).sort()).toEqual(["only_second", "shared"])
+      expect(unscoped.definitions).toEqual([])
+      expect((yield* first.settle(call("shared", "cross-session", secondSession))).result).toEqual({
+        type: "error",
+        value: "Stale tool call: shared",
+      })
+      expect((yield* first.settle(call("shared", "first-session", firstSession))).result).toEqual({
+        type: "text",
+        value: "first shared",
+      })
+      expect((yield* second.settle(call("shared", "second-session", secondSession))).result).toEqual({
+        type: "text",
+        value: "second shared",
+      })
+    }),
+  )
+
+  integrated.effect("prefers session registrations and reveals only the next visible registration", () =>
+    Effect.gen(function* () {
+      const applications = yield* ApplicationTools.Service
+      const service = yield* ToolRegistry.Service
+      const firstSession = SessionSchema.ID.make("ses_registry_stack_first")
+      const secondSession = SessionSchema.ID.make("ses_registry_stack_second")
+      const locationScope = yield* Scope.make()
+      const firstScope = yield* Scope.make()
+      const secondScope = yield* Scope.make()
+
+      yield* applications.register({ echo: makeLabel("application") })
+      yield* service
+        .register({ echo: makeLabel("first session") }, { sessionID: firstSession })
+        .pipe(Scope.provide(firstScope))
+      yield* service
+        .register({ echo: makeLabel("second session") }, { sessionID: secondSession })
+        .pipe(Scope.provide(secondScope))
+      yield* service.register({ echo: makeLabel("location") }).pipe(Scope.provide(locationScope))
+
+      const first = yield* service.materialize([], firstSession)
+      const second = yield* service.materialize([], secondSession)
+      expect((yield* first.settle(call("echo", "first", firstSession))).result).toEqual({
+        type: "text",
+        value: "first session",
+      })
+      expect((yield* second.settle(call("echo", "second", secondSession))).result).toEqual({
+        type: "text",
+        value: "second session",
+      })
+
+      yield* Scope.close(firstScope, Exit.void)
+      expect((yield* second.settle(call("echo", "second-still-active", secondSession))).result).toEqual({
+        type: "text",
+        value: "second session",
+      })
+      expect((yield* first.settle(call("echo", "first-now-stale", firstSession))).result).toEqual({
+        type: "error",
+        value: "Stale tool call: echo",
+      })
+      expect(
+        (yield* (yield* service.materialize([], firstSession)).settle(call("echo", "location", firstSession))).result,
+      ).toEqual({
+        type: "text",
+        value: "location",
+      })
+
+      yield* Scope.close(secondScope, Exit.void)
+      expect(
+        (yield* (yield* service.materialize([], secondSession)).settle(call("echo", "location-b", secondSession)))
+          .result,
+      ).toEqual({
+        type: "text",
+        value: "location",
+      })
+      yield* Scope.close(locationScope, Exit.void)
+      expect(
+        (yield* (yield* service.materialize([], firstSession)).settle(call("echo", "application", firstSession)))
+          .result,
+      ).toEqual({
+        type: "text",
+        value: "application",
+      })
     }),
   )
 })

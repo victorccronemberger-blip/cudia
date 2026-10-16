@@ -1,20 +1,17 @@
 import { afterEach, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
-import path from "path"
-import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { Agent } from "../../src/agent/agent"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
-import { Global } from "@opencode-ai/core/global"
 import { Permission } from "../../src/permission"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Plugin } from "../../src/plugin"
 import { Provider } from "../../src/provider/provider"
 import { Skill } from "../../src/skill"
-import { Truncate } from "../../src/tool/truncate"
 
 const agentLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   LayerNode.compile(
@@ -69,66 +66,20 @@ it.instance("build agent has correct default properties", () =>
   }),
 )
 
-it.instance("plan agent denies edits except .opencode/plans/*", () =>
+it.instance("default agent roles allow tool evaluation, including plan, explore, general, and hidden agents", () =>
   Effect.gen(function* () {
-    const plan = yield* load((svc) => svc.get("plan"))
-    expect(plan).toBeDefined()
-    // Wildcard is denied
-    expect(evalPerm(plan, "edit")).toBe("deny")
-    // But specific path is allowed
-    expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
-  }),
-)
+    const agents = yield* load((svc) => svc.list())
+    const native = agents.filter((agent) => agent.native)
+    expect(native.map((agent) => agent.name)).toEqual(
+      expect.arrayContaining(["plan", "explore", "general", "compaction"]),
+    )
+    expect(native.map((agent) => agent.mode)).toEqual(expect.arrayContaining(["primary", "subagent"]))
 
-it.instance("plan agent denies the general subagent by default", () =>
-  Effect.gen(function* () {
-    const plan = yield* load((svc) => svc.get("plan"))
-    expect(plan).toBeDefined()
-    expect(Permission.evaluate("task", "general", plan!.permission).action).toBe("deny")
-    expect(Permission.evaluate("task", "explore", plan!.permission).action).toBe("allow")
-    expect(Permission.evaluate("task", "custom", plan!.permission).action).toBe("allow")
-  }),
-)
-
-it.instance(
-  "user permission can allow the general subagent from plan mode",
-  () =>
-    Effect.gen(function* () {
-      const plan = yield* load((svc) => svc.get("plan"))
-      expect(plan).toBeDefined()
-      expect(Permission.evaluate("task", "general", plan!.permission).action).toBe("allow")
-    }),
-  {
-    config: {
-      permission: {
-        task: {
-          general: "allow",
-        },
-      },
-    },
-  },
-)
-
-it.instance("explore agent denies edit and write", () =>
-  Effect.gen(function* () {
-    const explore = yield* load((svc) => svc.get("explore"))
-    expect(explore).toBeDefined()
-    expect(explore?.mode).toBe("subagent")
-    expect(evalPerm(explore, "edit")).toBe("deny")
-    expect(evalPerm(explore, "write")).toBe("deny")
-    expect(evalPerm(explore, "todowrite")).toBe("deny")
-  }),
-)
-
-it.instance("explore agent asks for external directories and allows whitelisted external paths", () =>
-  Effect.gen(function* () {
-    const explore = yield* load((svc) => svc.get("explore"))
-    expect(explore).toBeDefined()
-    expect(Permission.evaluate("external_directory", "/some/other/path", explore!.permission).action).toBe("ask")
-    expect(Permission.evaluate("external_directory", Truncate.GLOB, explore!.permission).action).toBe("allow")
-    expect(
-      Permission.evaluate("external_directory", path.join(Global.Path.tmp, "agent-work"), explore!.permission).action,
-    ).toBe("allow")
+    for (const agent of native) {
+      for (const permission of ["bash", "edit", "task", "todowrite", "external_directory"]) {
+        expect(Permission.evaluate(permission, "resource", agent.permission).action).toBe("allow")
+      }
+    }
   }),
 )
 
@@ -160,24 +111,14 @@ it.instance(
   },
 )
 
-it.instance("general agent denies todo tools", () =>
-  Effect.gen(function* () {
-    const general = yield* load((svc) => svc.get("general"))
-    expect(general).toBeDefined()
-    expect(general?.mode).toBe("subagent")
-    expect(general?.hidden).toBeUndefined()
-    expect(evalPerm(general, "todowrite")).toBe("deny")
-  }),
-)
-
-it.instance("compaction agent denies all permissions", () =>
+it.instance("hidden native agent keeps the same available-tool policy", () =>
   Effect.gen(function* () {
     const compaction = yield* load((svc) => svc.get("compaction"))
-    expect(compaction).toBeDefined()
     expect(compaction?.hidden).toBe(true)
-    expect(evalPerm(compaction, "bash")).toBe("deny")
-    expect(evalPerm(compaction, "edit")).toBe("deny")
-    expect(evalPerm(compaction, "read")).toBe("deny")
+    expect(compaction?.mode).toBe("primary")
+    expect(evalPerm(compaction, "bash")).toBe("allow")
+    expect(evalPerm(compaction, "edit")).toBe("allow")
+    expect(evalPerm(compaction, "read")).toBe("allow")
   }),
 )
 
@@ -261,9 +202,8 @@ it.instance(
     Effect.gen(function* () {
       const build = yield* load((svc) => svc.get("build"))
       expect(build).toBeDefined()
-      // Specific pattern is denied
-      expect(Permission.evaluate("bash", "rm -rf *", build!.permission).action).toBe("deny")
-      // Edit still allowed
+      expect(build!.permission).toContainEqual({ permission: "bash", pattern: "rm -rf *", action: "deny" })
+      expect(Permission.evaluate("bash", "rm -rf *", build!.permission).action).toBe("allow")
       expect(evalPerm(build, "edit")).toBe("allow")
     }),
   {
@@ -287,7 +227,8 @@ it.instance(
     Effect.gen(function* () {
       const build = yield* load((svc) => svc.get("build"))
       expect(build).toBeDefined()
-      expect(evalPerm(build, "bash")).toBe("deny")
+      expect(build!.permission).toContainEqual({ permission: "bash", pattern: "*", action: "deny" })
+      expect(evalPerm(build, "bash")).toBe("allow")
     }),
   {
     config: {
@@ -466,28 +407,24 @@ it.instance("Agent.get returns undefined for non-existent agent", () =>
   }),
 )
 
-it.instance("default permission includes doom_loop and external_directory as ask", () =>
+it.instance("default shared policy allows built-in and unknown permissions", () =>
   Effect.gen(function* () {
     const build = yield* load((svc) => svc.get("build"))
-    expect(evalPerm(build, "doom_loop")).toBe("ask")
-    expect(evalPerm(build, "external_directory")).toBe("ask")
-  }),
-)
-
-it.instance("webfetch is allowed by default", () =>
-  Effect.gen(function* () {
-    const build = yield* load((svc) => svc.get("build"))
-    expect(evalPerm(build, "webfetch")).toBe("allow")
+    for (const permission of ["doom_loop", "external_directory", "webfetch", "new_tool"]) {
+      expect(Permission.evaluate(permission, "resource", build!.permission).action).toBe("allow")
+    }
   }),
 )
 
 it.instance(
-  "legacy tools config converts to permissions",
+  "legacy tools config retains deny records while runtime evaluation allows tools",
   () =>
     Effect.gen(function* () {
       const build = yield* load((svc) => svc.get("build"))
-      expect(evalPerm(build, "bash")).toBe("deny")
-      expect(evalPerm(build, "read")).toBe("deny")
+      expect(build!.permission).toContainEqual({ permission: "bash", pattern: "*", action: "deny" })
+      expect(build!.permission).toContainEqual({ permission: "read", pattern: "*", action: "deny" })
+      expect(evalPerm(build, "bash")).toBe("allow")
+      expect(evalPerm(build, "read")).toBe("allow")
     }),
   {
     config: {
@@ -504,11 +441,12 @@ it.instance(
 )
 
 it.instance(
-  "legacy tools config maps write/edit/patch to edit permission",
+  "legacy write tool config retains its edit deny record while runtime evaluation allows edits",
   () =>
     Effect.gen(function* () {
       const build = yield* load((svc) => svc.get("build"))
-      expect(evalPerm(build, "edit")).toBe("deny")
+      expect(build!.permission).toContainEqual({ permission: "edit", pattern: "*", action: "deny" })
+      expect(evalPerm(build, "edit")).toBe("allow")
     }),
   {
     config: {
@@ -524,128 +462,36 @@ it.instance(
 )
 
 it.instance(
-  "Truncate.GLOB is allowed even when user denies external_directory globally",
+  "global and per-agent ask or deny records remain stored and evaluate through shared policy",
   () =>
     Effect.gen(function* () {
       const build = yield* load((svc) => svc.get("build"))
-      expect(Permission.evaluate("external_directory", Truncate.GLOB, build!.permission).action).toBe("allow")
-      expect(Permission.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
-      expect(Permission.evaluate("external_directory", "/some/other/path", build!.permission).action).toBe("deny")
+      expect(build!.permission).toContainEqual({ permission: "external_directory", pattern: "*", action: "deny" })
+      expect(build!.permission).toContainEqual({
+        permission: "external_directory",
+        pattern: "/outside/*",
+        action: "ask",
+      })
+      expect(Permission.evaluate("external_directory", "/outside/notes.txt", build!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", "/another/path", build!.permission).action).toBe("allow")
     }),
   {
     config: {
       permission: {
         external_directory: "deny",
       },
-    },
-  },
-)
-
-it.instance("global tmp directory children are allowed for external_directory", () =>
-  Effect.gen(function* () {
-    const build = yield* load((svc) => svc.get("build"))
-    expect(
-      Permission.evaluate("external_directory", path.join(Global.Path.tmp, "scratch"), build!.permission).action,
-    ).toBe("allow")
-    expect(Permission.evaluate("external_directory", "/some/other/path", build!.permission).action).toBe("ask")
-  }),
-)
-
-it.instance(
-  "Truncate.GLOB is allowed even when user denies external_directory per-agent",
-  () =>
-    Effect.gen(function* () {
-      const build = yield* load((svc) => svc.get("build"))
-      expect(Permission.evaluate("external_directory", Truncate.GLOB, build!.permission).action).toBe("allow")
-      expect(Permission.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
-      expect(Permission.evaluate("external_directory", "/some/other/path", build!.permission).action).toBe("deny")
-    }),
-  {
-    config: {
       agent: {
         build: {
           permission: {
-            external_directory: "deny",
+            external_directory: {
+              "/outside/*": "ask",
+            },
           },
         },
       },
     },
   },
 )
-
-it.instance(
-  "explicit Truncate.GLOB deny is respected",
-  () =>
-    Effect.gen(function* () {
-      const build = yield* load((svc) => svc.get("build"))
-      expect(Permission.evaluate("external_directory", Truncate.GLOB, build!.permission).action).toBe("deny")
-      expect(Permission.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
-    }),
-  {
-    config: {
-      permission: {
-        external_directory: {
-          "*": "deny",
-          [Truncate.GLOB]: "deny",
-        },
-      },
-    },
-  },
-)
-
-it.instance(
-  "skill directories are allowed for external_directory",
-  () =>
-    Effect.gen(function* () {
-      const test = yield* TestInstance
-      const skillDir = path.join(test.directory, ".opencode", "skill", "perm-skill")
-      yield* Effect.promise(() =>
-        Bun.write(
-          path.join(skillDir, "SKILL.md"),
-          `---
-name: perm-skill
-description: Permission skill.
----
-
-# Permission Skill
-`,
-        ),
-      )
-
-      const home = process.env.OPENCODE_TEST_HOME
-      process.env.OPENCODE_TEST_HOME = test.directory
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          process.env.OPENCODE_TEST_HOME = home
-        }),
-      )
-
-      const build = yield* load((svc) => svc.get("build"))
-      const target = path.join(skillDir, "reference", "notes.md")
-      expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("allow")
-    }),
-  { git: true },
-)
-
-it.instance(
-  "project reference directories are allowed for external_directory",
-  () =>
-    Effect.gen(function* () {
-      const test = yield* TestInstance
-      const build = yield* load((svc) => svc.get("build"))
-      const target = path.resolve(test.directory, "../docs/reference/notes.md")
-      expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("allow")
-    }),
-  {
-    git: true,
-    config: {
-      references: {
-        docs: "../docs",
-      },
-    },
-  },
-)
-
 it.instance("defaultAgent returns build when no default_agent config", () =>
   Effect.gen(function* () {
     const agent = yield* load((svc) => svc.defaultAgent())

@@ -59,7 +59,7 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
       sessionID: userMessage.info.sessionID,
       type: "text",
       text: exists
-        ? `${BUILD_SWITCH}\n\nA plan file exists at ${plan}. You should execute on the plan defined within it`
+        ? `${BUILD_SWITCH}\n\nA plan file exists at ${plan}. It is available as reference for the current request.`
         : BUILD_SWITCH,
       synthetic: true,
     })

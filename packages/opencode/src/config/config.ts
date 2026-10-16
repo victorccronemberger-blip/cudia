@@ -14,6 +14,7 @@ import { applyEdits, modify } from "jsonc-parser"
 import { InstallationLocal, InstallationVersion } from "@opencode-ai/core/installation/version"
 import { existsSync } from "fs"
 import { Account } from "@/account/account"
+import { normalizeServerUrl } from "@/account/url"
 import { isRecord } from "@/util/record"
 import type { ConsoleState } from "@opencode-ai/core/v1/config/console-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -33,6 +34,8 @@ import { ConfigParse } from "./parse"
 import { ConfigPaths } from "./paths"
 import { ConfigPlugin } from "./plugin"
 import { ConfigVariable } from "./variable"
+import { ConfigV2Compat } from "./v2-compat"
+import { ConfigDistribution } from "@opencode-ai/core/config/distribution"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 
@@ -116,6 +119,7 @@ type Info = ConfigV1.Info & {
 
 type State = {
   config: Info
+  bundledProviders: ReadonlySet<string>
   directories: string[]
   deps: Fiber.Fiber<void>[]
   consoleState: ConsoleState
@@ -123,6 +127,7 @@ type State = {
 
 export interface Interface {
   readonly get: () => Effect.Effect<Info>
+  readonly bundledProviders: () => Effect.Effect<ReadonlySet<string>>
   readonly getGlobal: () => Effect.Effect<Info>
   readonly getConsoleState: () => Effect.Effect<ConsoleState>
   readonly update: (config: Info) => Effect.Effect<void>
@@ -184,6 +189,19 @@ const layer = Layer.effect(
 
     const readConfigFile = (filepath: string) => fs.readFileStringSafe(filepath).pipe(Effect.orDie)
 
+    const decodeConfig = Effect.fnUntraced(function* (input: unknown, source: string) {
+      const result = ConfigV2Compat.lower(normalizeLoadedConfig(input), source)
+      yield* Effect.forEach(result.diagnostics, (diagnostic) =>
+        Effect.logWarning("configuration compatibility diagnostic", {
+          source,
+          path: diagnostic.path,
+          kind: diagnostic.kind,
+          action: diagnostic.message,
+        }),
+      )
+      return ConfigParse.schema(ConfigV1.Info, result.value, source)
+    })
+
     const fetchRemoteJson = Effect.fnUntraced(function* <S extends Schema.Top>(
       url: string,
       headers: Record<string, string> | undefined,
@@ -212,7 +230,7 @@ const layer = Layer.effect(
 
     const loadConfig = Effect.fnUntraced(function* (
       text: string,
-      options: { path: string } | { dir: string; source: string },
+      options: { path: string } | { dir: string; source: string; readOnly?: boolean },
       env?: Record<string, string>,
     ) {
       const source = "path" in options ? options.path : options.source
@@ -224,7 +242,8 @@ const layer = Layer.effect(
         ),
       )
       const parsed = ConfigParse.jsonc(expanded, source)
-      const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
+      if ("readOnly" in options && options.readOnly) ConfigDistribution.validate(parsed, source)
+      const data = yield* decodeConfig(parsed, source)
       if (!("path" in options)) return data
 
       yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
@@ -240,14 +259,20 @@ const layer = Layer.effect(
       yield* Effect.logInfo("loading", { path: filepath })
       const text = yield* readConfigFile(filepath)
       if (!text) return {} as Info
+      const distribution = yield* Effect.promise(() => ConfigDistribution.resolve())
+      if (distribution && (yield* Effect.promise(() => distribution.contains(filepath)))) {
+        return {} as Info
+      }
       return yield* loadConfig(text, { path: filepath }, env)
     })
 
     const loadGlobal = Effect.fnUntraced(function* (env?: Record<string, string>) {
       let result: Info = {}
+      const distribution = yield* Effect.promise(() => ConfigDistribution.resolve())
+      const readOnly = distribution && (yield* Effect.promise(() => distribution.contains(Global.Path.config)))
       // Seed the default global config with the schema for editor completion, but avoid writing when the user
       // explicitly routes config through env-provided paths or content.
-      if (!Flag.OPENCODE_CONFIG && !Flag.OPENCODE_CONFIG_DIR && !Flag.OPENCODE_CONFIG_CONTENT) {
+      if (!readOnly && !Flag.OPENCODE_CONFIG && !Flag.OPENCODE_CONFIG_DIR && !Flag.OPENCODE_CONFIG_CONTENT) {
         const file = globalConfigFile()
         if (!existsSync(file)) {
           yield* fs
@@ -260,7 +285,7 @@ const layer = Layer.effect(
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.jsonc"), env))
 
       const legacy = path.join(Global.Path.config, "config")
-      if (existsSync(legacy)) {
+      if (!readOnly && existsSync(legacy)) {
         yield* Effect.promise(() =>
           import(pathToFileURL(legacy).href, { with: { type: "toml" } })
             .then(async (mod) => {
@@ -313,9 +338,11 @@ const layer = Layer.effect(
 
     const loadInstanceState = Effect.fn("Config.loadInstanceState")(
       function* (ctx: InstanceContext) {
+        const distribution = yield* Effect.promise(() => ConfigDistribution.resolve())
         const auth = yield* authSvc.all().pipe(Effect.orDie)
 
         let result: Info = {}
+        const bundledProviders = new Set<string>()
         const authEnv: Record<string, string> = {}
         const consoleManagedProviders = new Set<string>()
         let activeOrgName: string | undefined
@@ -348,9 +375,36 @@ const layer = Layer.effect(
           result.plugin_origins = plugins
         })
 
-        const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
+        const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope, bundled = false) => {
+          for (const id of Object.keys(next.provider ?? {})) {
+            if (bundled) bundledProviders.add(id)
+            else bundledProviders.delete(id)
+          }
           result = mergeConfigConcatArrays(result, next)
           return mergePluginOrigins(source, next.plugin, kind)
+        }
+
+        // Defaults are decoded virtually: no schema insertion, plugin resolution, or
+        // dependency installation is permitted in the versioned distribution tree.
+        if (distribution) {
+          for (const file of ConfigPaths.fileInDirectory(distribution.directory, "opencode")) {
+            const text = yield* readConfigFile(file)
+            if (text === undefined) continue
+            const next = yield* loadConfig(text, { dir: distribution.directory, source: file, readOnly: true })
+            yield* merge(file, next, "global", true)
+          }
+          result.command = mergeDeep(
+            result.command ?? {},
+            yield* Effect.promise(() => ConfigCommand.load(distribution.directory)),
+          )
+          result.agent = mergeDeep(
+            result.agent ?? {},
+            yield* Effect.promise(() => ConfigAgent.load(distribution.directory)),
+          )
+          result.agent = mergeDeep(
+            result.agent ?? {},
+            yield* Effect.promise(() => ConfigAgent.loadMode(distribution.directory)),
+          )
         }
 
         for (const [key, value] of Object.entries(auth)) {
@@ -413,7 +467,8 @@ const layer = Layer.effect(
         result.mode = result.mode || {}
         result.plugin = result.plugin || []
 
-        const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
+        const sources = yield* ConfigPaths.sources(ctx.directory, ctx.worktree)
+        const directories = sources.map((source) => source.path)
 
         if (Flag.OPENCODE_CONFIG_DIR) {
           yield* Effect.logDebug("loading config from OPENCODE_CONFIG_DIR", { path: Flag.OPENCODE_CONFIG_DIR })
@@ -421,7 +476,8 @@ const layer = Layer.effect(
 
         const deps: Fiber.Fiber<void>[] = []
 
-        for (const dir of directories) {
+        for (const { path: dir, readOnly } of sources) {
+          if (readOnly) continue
           if (dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR) {
             for (const file of ["opencode.json", "opencode.jsonc"]) {
               const source = path.join(dir, file)
@@ -478,7 +534,11 @@ const layer = Layer.effect(
         const activeAccount = Option.getOrUndefined(
           yield* accountSvc.active().pipe(Effect.catch(() => Effect.succeed(Option.none()))),
         )
-        if (activeAccount?.active_org_id) {
+        if (
+          activeAccount?.active_org_id &&
+          result.enterprise?.url &&
+          normalizeServerUrl(result.enterprise.url) === normalizeServerUrl(activeAccount.url)
+        ) {
           const accountID = activeAccount.id
           const orgID = activeAccount.active_org_id
           const url = activeAccount.url
@@ -524,12 +584,13 @@ const layer = Layer.effect(
         // macOS managed preferences (.mobileconfig deployed via MDM) override everything
         const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
         if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
+          yield* merge(
+            managed.source,
             yield* loadConfig(managed.text, {
               dir: path.dirname(managed.source),
               source: managed.source,
             }),
+            "global",
           )
         }
 
@@ -585,6 +646,7 @@ const layer = Layer.effect(
 
         return {
           config: result,
+          bundledProviders,
           directories,
           deps,
           consoleState: {
@@ -607,6 +669,10 @@ const layer = Layer.effect(
       return yield* InstanceState.use(state, (s) => s.config)
     })
 
+    const bundledProviders = Effect.fn("Config.bundledProviders")(function* () {
+      return yield* InstanceState.use(state, (s) => new Set(s.bundledProviders))
+    })
+
     const directories = Effect.fn("Config.directories")(function* () {
       return yield* InstanceState.use(state, (s) => s.directories)
     })
@@ -624,9 +690,18 @@ const layer = Layer.effect(
     const update = Effect.fn("Config.update")(function* (config: Info) {
       const dir = yield* InstanceState.directory
       const file = path.join(dir, "config.json")
+      const distribution = yield* Effect.promise(() => ConfigDistribution.resolve())
+      if (distribution && (yield* Effect.promise(() => distribution.contains(file)))) {
+        throw new Error(`Cannot write configuration in distribution defaults: ${file}`)
+      }
       const existing = yield* loadFile(file)
+      const text = yield* readConfigFile(file)
+      const original = text ? ConfigParse.jsonc(text, file) : writable(existing)
       yield* fs
-        .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), writable(config)), null, 2))
+        .writeFileString(
+          file,
+          JSON.stringify(mergeDeep(isRecord(original) ? original : writable(existing), writable(config)), null, 2),
+        )
         .pipe(Effect.orDie)
     })
 
@@ -636,21 +711,26 @@ const layer = Layer.effect(
 
     const updateGlobal = Effect.fn("Config.updateGlobal")(function* (config: Info) {
       const file = globalConfigFile()
+      const distribution = yield* Effect.promise(() => ConfigDistribution.resolve())
+      if (distribution && (yield* Effect.promise(() => distribution.contains(file)))) {
+        throw new Error(`Cannot write configuration in distribution defaults: ${file}`)
+      }
       const before = (yield* readConfigFile(file)) ?? "{}"
       const patch = writableGlobal(config)
 
       let next: Info
       let changed: boolean
       if (!file.endsWith(".jsonc")) {
-        const existing = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(before, file), file)
-        const merged = mergeDeep(writable(existing), patch)
+        const existing = ConfigParse.jsonc(before, file)
+        ConfigParse.schema(ConfigV1.Info, ConfigV2Compat.lower(normalizeLoadedConfig(existing), file).value, file)
+        const merged = mergeDeep(isRecord(existing) ? existing : {}, patch)
         const serialized = JSON.stringify(merged, null, 2)
+        next = yield* decodeConfig(merged, file)
         changed = serialized !== before
         if (changed) yield* fs.writeFileString(file, serialized).pipe(Effect.orDie)
-        next = merged
       } else {
         const updated = patchJsonc(before, patch)
-        next = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(updated, file), file)
+        next = yield* decodeConfig(ConfigParse.jsonc(updated, file), file)
         changed = updated !== before
         if (changed) yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       }
@@ -661,6 +741,7 @@ const layer = Layer.effect(
 
     return Service.of({
       get,
+      bundledProviders,
       getGlobal,
       getConsoleState,
       update,

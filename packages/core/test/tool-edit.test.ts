@@ -9,6 +9,7 @@ import { FileMutation } from "@opencode-ai/core/file-mutation"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Location } from "@opencode-ai/core/location"
 import { LocationMutation } from "@opencode-ai/core/location-mutation"
+import { LSPMutation } from "@opencode-ai/core/lsp/mutation"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
@@ -30,6 +31,7 @@ let afterRead = (_target: string, _content: Uint8Array): Effect.Effect<void> => 
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
+    check: () => Effect.die("unused"),
     assert: (input) =>
       Effect.sync(() => assertions.push(input)).pipe(
         Effect.andThen(
@@ -97,6 +99,10 @@ const withTool = <A, E, R>(directory: string, body: (registry: ToolRegistry.Inte
           [FSUtil.node, filesystem],
           [Location.node, activeLocation],
           [PermissionV2.node, permission],
+          [
+            LSPMutation.node,
+            Layer.succeed(LSPMutation.Service, LSPMutation.Service.of({ after: () => Effect.succeed(undefined) })),
+          ],
           [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
         ],
       ),
@@ -124,9 +130,11 @@ describe("EditTool", () => {
             withTool(tmp.path, (registry) =>
               Effect.gen(function* () {
                 expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["edit"])
-                expect(yield* toolDefinitions(registry, [{ action: "edit", resource: "*", effect: "deny" }])).toEqual(
-                  [],
-                )
+                expect(
+                  (yield* toolDefinitions(registry, [{ action: "edit", resource: "*", effect: "deny" }])).map(
+                    (tool) => tool.name,
+                  ),
+                ).toEqual(["edit"])
                 const settled = yield* settleTool(
                   registry,
                   call({ path: "hello.txt", oldString: "before", newString: "after" }),
@@ -398,7 +406,7 @@ describe("EditTool", () => {
             Effect.gen(function* () {
               expect(result).toEqual({
                 type: "error",
-                value: "File changed after permission approval. Read it again before editing.",
+                value: "File changed before the edit could commit. Read it again before editing.",
               })
               expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("newer\n")
               expect(writes).toEqual([])
@@ -419,15 +427,12 @@ test("keeps the locked edit schema, semantics docstring, and deferred TODOs visi
   const schema = definition[0]?.inputSchema as { readonly properties?: Record<string, unknown> }
 
   expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["newString", "oldString", "path", "replaceAll"])
-  expect(source).toContain(
-    "absolute external paths retain mutation capability through a separate\n * external_directory approval before edit approval.",
-  )
+  expect(source).toContain("parent-relative, absolute, and symlink-resolved paths can target elsewhere.")
   for (const todo of [
     "Port V1 fuzzy correction strategies only after exact-edit behavior is established: line-trimmed matching, block-anchor fallback, indentation correction, and similarity-threshold review.",
     "Add formatter integration after V2 formatter runtime exists.",
     "Publish watcher/file-edit events after V2 watcher integration exists.",
     "Add snapshots / undo after design exists.",
-    "Add LSP notification and diagnostics after V2 LSP runtime exists.",
   ]) {
     expect(source).toContain(`TODO: ${todo}`)
   }

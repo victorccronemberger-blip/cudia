@@ -23,6 +23,7 @@ import { SystemContextRegistry } from "../../system-context/registry"
 import { SkillGuidance } from "../../skill/guidance"
 import { ReferenceGuidance } from "../../reference/guidance"
 import { ToolRegistry } from "../../tool/registry"
+import { ToolResultTool } from "../../tool/tool-result"
 import { ToolOutputStore } from "../../tool-output-store"
 import { SessionContextEpoch } from "../context-epoch"
 import { SessionCompaction } from "../compaction"
@@ -31,7 +32,7 @@ import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
 import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
-import { type RunError, Service } from "./index"
+import { type RunError, type RunInput, Service } from "./index"
 import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
@@ -39,6 +40,9 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+import { HarnessPolicy } from "../../harness/policy"
+import { ContextAudit } from "../../harness/audit"
+import { ContextManifest } from "../../harness/context-manifest"
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -93,6 +97,8 @@ import { llmClient } from "../../effect/app-node-platform"
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const policy = yield* HarnessPolicy.Service
+    const audit = yield* ContextAudit.Service
     const events = yield* EventV2.Service
     const llm = yield* LLMClient.Service
     const agents = yield* AgentV2.Service
@@ -170,6 +176,52 @@ const layer = Layer.effect(
         concurrency: "unbounded",
       }).pipe(Effect.map(SystemContext.combine))
 
+    const sessionHTTP = (session: SessionSchema.Info) => ({
+      headers: {
+        "x-opencode-session-id": session.id,
+        ...(session.parentID ? { "x-opencode-parent-session-id": session.parentID } : {}),
+        "x-session-affinity": session.id,
+        "X-Session-Id": session.id,
+        ...(session.parentID ? { "x-parent-session-id": session.parentID } : {}),
+      },
+    })
+
+    const compact = Effect.fn("SessionRunner.compact")(function* (input: {
+      readonly sessionID: SessionSchema.ID
+      readonly focus?: string
+    }) {
+      const session = yield* getSession(input.sessionID)
+      if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
+        return yield* Effect.interrupt
+      const context = yield* getContext(session.id)
+      if (context.length === 0) return
+      if (
+        context.some(
+          (message) =>
+            message.type === "assistant" &&
+            message.content.some(
+              (part) => part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"),
+            ),
+        )
+      )
+        return yield* new SessionCompaction.Error({
+          reason: "unsettledTools",
+          message: "Resume the session to settle interrupted tool execution before compacting",
+        })
+      const agent = yield* agents.select(session.agent)
+      const initialized = yield* SessionContextEpoch.initialize(db, loadSystemContext(agent), session.id)
+      const system =
+        initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
+      const model = yield* models.resolve(session)
+      yield* compaction.manual({
+        sessionID: session.id,
+        entries: yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq),
+        model,
+        request: LLM.request({ model, http: sessionHTTP(session), messages: [], tools: [] }),
+        focus: input.focus,
+      })
+    })
+
     const runTurnAttempt = Effect.fn("SessionRunner.runTurn")(function* (
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
@@ -200,12 +252,21 @@ const layer = Layer.effect(
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
-      const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
+      const toolMaterialization = isLastStep
+        ? undefined
+        : yield* tools.materialize(agent.info?.permissions, session.id, {
+            omit:
+              ToolResultTool.available(context) || (yield* store.hasRecoverableToolResult(session.id))
+                ? []
+                : [ToolResultTool.name],
+          })
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
+      const agentSystem = agent.info?.system ?? (policy.contextMode === "lean" ? HarnessPolicy.BASE : undefined)
       const request = LLM.request({
         model,
+        http: sessionHTTP(session),
         providerOptions: { openai: { promptCacheKey } },
-        system: [agent.info?.system, system.baseline]
+        system: [agentSystem, system.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
         messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
@@ -229,6 +290,62 @@ const layer = Layer.effect(
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
+      if (audit.enabled)
+        yield* audit.record({
+          runtime: "v2",
+          sessionID: session.id,
+          agent: agent.id,
+          model: { provider: model.provider, id: model.id },
+          instructions: [
+            ...(agentSystem
+              ? [
+                  {
+                    source: agent.info?.system === undefined ? "harness-base" : "agent",
+                    text: agentSystem,
+                    manifest: ContextManifest.create([
+                      {
+                        producer: agent.info?.system === undefined ? "core/harness-base" : "core/agent",
+                        phase: "baseline",
+                        text: agentSystem,
+                        origins: [
+                          {
+                            kind: "runtime",
+                            id: agent.info?.system === undefined ? "harness:lean" : `agent:${agent.id}`,
+                            start: 0,
+                            end: agentSystem.length,
+                          },
+                        ],
+                      },
+                    ]).manifest,
+                  },
+                ]
+              : []),
+            ...(system.baseline
+              ? [
+                  {
+                    source: "context-baseline",
+                    text: system.baseline,
+                    manifest: system.contextManifest,
+                    baselineSeq: system.baselineSeq,
+                  },
+                ]
+              : []),
+            ...context.flatMap((message) =>
+              message.type === "system"
+                ? [
+                    {
+                      source: "context-update",
+                      text: message.text,
+                      manifest: message.contextManifest,
+                      messageID: message.id,
+                    },
+                  ]
+                : [],
+            ),
+          ],
+          messages: request.messages,
+          tools: request.tools,
+        })
       const providerStream = llm.stream(request).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
@@ -380,33 +497,35 @@ const layer = Layer.effect(
       )
     })
 
-    const run = Effect.fn("SessionRunner.run")(function* (input: {
-      readonly sessionID: SessionSchema.ID
-      readonly force: boolean
-    }) {
+    const run = Effect.fn("SessionRunner.run")(function* (input: RunInput) {
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
-      if (!input.force && !hasSteer && !hasQueue) return
-      yield* failInterruptedTools(input.sessionID)
-      let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
-      let shouldRun = input.force || hasSteer || hasQueue
-      while (shouldRun) {
-        let needsContinuation = true
-        let step = 1
-        while (needsContinuation) {
-          const result = yield* runTurn(input.sessionID, promotion, step)
-          needsContinuation = result.needsContinuation
-          step = result.step + 1
-          promotion = "steer"
-          if (!needsContinuation) needsContinuation = yield* SessionInput.hasPending(db, input.sessionID, "steer")
-        }
-        shouldRun = yield* SessionInput.hasPending(db, input.sessionID, "queue")
-        promotion = shouldRun ? "queue" : undefined
+      if (!input.continuation && !input.force && !hasSteer && !hasQueue) return
+      if (!input.continuation) yield* failInterruptedTools(input.sessionID)
+      let promotion = input.continuation
+        ? input.continuation.promotion
+        : hasSteer
+          ? "steer"
+          : hasQueue
+            ? "queue"
+            : undefined
+      let step = input.continuation?.step ?? 1
+      while (true) {
+        // Yield only between settled turns. Never carry a request or tool fiber across the handoff.
+        if (input.shouldYield?.()) return { continuation: { promotion, step } }
+        const result = yield* runTurn(input.sessionID, promotion, step)
+        step = result.step + 1
+        promotion = "steer"
+        if (result.needsContinuation || (yield* SessionInput.hasPending(db, input.sessionID, "steer"))) continue
+        if (!(yield* SessionInput.hasPending(db, input.sessionID, "queue"))) return
+        promotion = "queue"
+        step = 1
       }
     })
 
     return Service.of({
       run,
+      compact,
     })
   }),
 )
@@ -428,5 +547,7 @@ export const node = makeLocationNode({
     Config.node,
     Snapshot.node,
     Database.node,
+    HarnessPolicy.node,
+    ContextAudit.node,
   ],
 })

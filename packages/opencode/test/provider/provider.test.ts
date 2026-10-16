@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdir, unlink } from "fs/promises"
+import { mkdir, unlink, writeFile } from "fs/promises"
 import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -84,8 +84,50 @@ const paid = (providers: Record<string, { models: Record<string, { cost: { input
 
 const languageBaseURL = (language: unknown) => (language as { config: { baseURL: string } }).config.baseURL
 
+const languageHeaders = (language: unknown) =>
+  new Headers((language as { config: { headers: () => Record<string, string> } }).config.headers())
+
 const it = testEffect(LayerNode.compile(LayerNode.group([Provider.node, Env.node, Plugin.node])))
 const experimentalModels = testEffect(providerLayer({ enableExperimentalModels: true }))
+const credentials = testEffect(providerLayer())
+
+const bundledQwen = {
+  name: "Bundled Qwen Cloud",
+  npm: "@ai-sdk/openai-compatible",
+  api: "https://qwen.example/v1",
+  env: ["CUDIA_TEST_BUNDLED_QWENCLOUD_KEY"],
+  models: { "bundled-model": { name: "Bundled model" } },
+}
+
+const bundledProviderInit = (providerID: string, provider: Record<string, unknown>) => (directory: string) =>
+  Effect.gen(function* () {
+    const defaults = path.join(directory, "cudia-defaults")
+    yield* Effect.promise(() => mkdir(defaults, { recursive: true }))
+    yield* Effect.promise(() =>
+      writeFile(path.join(defaults, "opencode.json"), JSON.stringify({ provider: { [providerID]: provider } })),
+    )
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const previous = process.env.CUDIA_DISTRIBUTION_DIR
+        process.env.CUDIA_DISTRIBUTION_DIR = defaults
+        return previous
+      }),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.CUDIA_DISTRIBUTION_DIR
+          else process.env.CUDIA_DISTRIBUTION_DIR = previous
+        }),
+    )
+  })
+
+const bundledQwenOptions = {
+  config: { enabled_providers: ["qwencloud"] },
+  init: bundledProviderInit("qwencloud", bundledQwen),
+}
+const bundledQwenApiKey = {
+  ...bundledQwen,
+  options: { apiKey: "test-bundled-api-key" },
+}
 
 const alphaProviderConfig = {
   provider: {
@@ -314,6 +356,36 @@ it.instance("getModel returns model for valid provider/model", () =>
   }),
 )
 
+it.instance(
+  "getLanguage can construct uncached SDK models without replacing the default cached model",
+  Effect.gen(function* () {
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ProviderV2.ID.make("custom-provider"), ModelV2.ID.make("active-model"))
+
+    const cached = yield* provider.getLanguage(model)
+    const uncachedFirst = yield* provider.getLanguage(model, { cache: false })
+    const uncachedSecond = yield* provider.getLanguage(model, { cache: false })
+    const cachedAgain = yield* provider.getLanguage(model)
+
+    expect(uncachedFirst).not.toBe(cached)
+    expect(uncachedSecond).not.toBe(uncachedFirst)
+    expect(cachedAgain).toBe(cached)
+  }),
+  {
+    config: {
+      provider: {
+        "custom-provider": {
+          name: "Custom Provider",
+          npm: "@ai-sdk/openai-compatible",
+          api: "https://api.custom.com/v1",
+          models: { "active-model": { name: "Active Model" } },
+          options: { apiKey: "custom-key" },
+        },
+      },
+    },
+  },
+)
+
 it.instance("getModel throws ModelNotFoundError for invalid model", () =>
   Effect.gen(function* () {
     yield* set("ANTHROPIC_API_KEY", "test-api-key")
@@ -365,6 +437,135 @@ it.instance(
     expect(String(model.modelID)).toBe("claude-sonnet-4-20250514")
   }),
   { config: { model: "anthropic/claude-sonnet-4-20250514" } },
+)
+
+credentials.instance(
+  "bundled provider stays catalog-visible without credentials and is not runtime-active",
+  Effect.gen(function* () {
+    yield* remove("CUDIA_TEST_BUNDLED_QWENCLOUD_KEY")
+    const auth = yield* Auth.Service
+    const providerID = ProviderV2.ID.make("qwencloud")
+    yield* auth.remove(providerID)
+    const provider = yield* Provider.Service
+    const catalog = yield* provider.catalog()
+    const active = yield* provider.list()
+    expect(catalog[providerID]?.models[ModelV2.ID.make("bundled-model")]).toBeDefined()
+    expect(catalog[providerID]?.source).toBe("config")
+    expect(active[providerID]).toBeUndefined()
+  }),
+  bundledQwenOptions,
+)
+
+credentials.instance(
+  "bundled config source does not auto-activate a source-sensitive custom loader",
+  Effect.gen(function* () {
+    yield* remove("NVIDIA_API_KEY")
+    const auth = yield* Auth.Service
+    const providerID = ProviderV2.ID.make("nvidia")
+    yield* auth.remove(providerID)
+    const provider = yield* Provider.Service
+    expect((yield* provider.catalog())[providerID]).toBeDefined()
+    expect((yield* provider.list())[providerID]).toBeUndefined()
+  }),
+  {
+    config: { enabled_providers: ["nvidia"] },
+    init: bundledProviderInit("nvidia", { name: "Bundled NVIDIA" }),
+  },
+)
+
+credentials.instance(
+  "environment credentials activate a bundled provider and make it default-eligible",
+  Effect.gen(function* () {
+    yield* set("CUDIA_TEST_BUNDLED_QWENCLOUD_KEY", "env-key")
+    const auth = yield* Auth.Service
+    const providerID = ProviderV2.ID.make("qwencloud")
+    yield* auth.remove(providerID)
+    const provider = yield* Provider.Service
+    const active = yield* provider.list()
+    expect(active[providerID]?.source).toBe("config")
+    expect(active[providerID]?.key).toBe("env-key")
+    expect(yield* provider.defaultModel()).toEqual({ providerID, modelID: ModelV2.ID.make("bundled-model") })
+  }),
+  bundledQwenOptions,
+)
+
+credentials.instance(
+  "stored API credentials activate a bundled provider and make it default-eligible",
+  Effect.gen(function* () {
+    yield* remove("CUDIA_TEST_BUNDLED_QWENCLOUD_KEY")
+    const auth = yield* Auth.Service
+    const providerID = ProviderV2.ID.make("qwencloud")
+    yield* Effect.acquireRelease(auth.set(providerID, { type: "api", key: "stored-key" }).pipe(Effect.orDie), () =>
+      auth.remove(providerID).pipe(Effect.orDie),
+    )
+    const provider = yield* Provider.Service
+    const active = yield* provider.list()
+    expect(active[providerID]?.source).toBe("config")
+    expect(active[providerID]?.key).toBe("stored-key")
+    expect(yield* provider.defaultModel()).toEqual({ providerID, modelID: ModelV2.ID.make("bundled-model") })
+  }),
+  bundledQwenOptions,
+)
+
+credentials.instance(
+  "a bundled API key option activates its provider and makes it default-eligible",
+  Effect.gen(function* () {
+    yield* remove("CUDIA_TEST_BUNDLED_QWENCLOUD_KEY")
+    const auth = yield* Auth.Service
+    const providerID = ProviderV2.ID.make("qwencloud")
+    yield* auth.remove(providerID)
+    const provider = yield* Provider.Service
+    const active = yield* provider.list()
+    expect(active[providerID]?.source).toBe("config")
+    expect(active[providerID]?.options.apiKey).toBe("test-bundled-api-key")
+    expect(yield* provider.defaultModel()).toEqual({ providerID, modelID: ModelV2.ID.make("bundled-model") })
+  }),
+  { ...bundledQwenOptions, init: bundledProviderInit("qwencloud", bundledQwenApiKey) },
+)
+
+credentials.instance(
+  "explicit user provider configuration activates a bundled provider without credentials",
+  Effect.gen(function* () {
+    yield* remove("CUDIA_TEST_BUNDLED_QWENCLOUD_KEY")
+    const auth = yield* Auth.Service
+    const providerID = ProviderV2.ID.make("qwencloud")
+    yield* auth.remove(providerID)
+    const provider = yield* Provider.Service
+    const active = yield* provider.list()
+    expect(active[providerID]?.source).toBe("config")
+    expect(active[providerID]?.models[ModelV2.ID.make("user-model")]).toBeDefined()
+    expect(yield* provider.defaultModel()).toEqual({ providerID, modelID: ModelV2.ID.make("user-model") })
+  }),
+  {
+    ...bundledQwenOptions,
+    config: {
+      enabled_providers: ["qwencloud"],
+      provider: {
+        qwencloud: {
+          name: "User Qwen Cloud",
+          npm: "@ai-sdk/openai-compatible",
+          api: "https://user-qwen.example/v1",
+          models: { "user-model": { name: "User model" } },
+        },
+      },
+    },
+  },
+)
+
+credentials.instance(
+  "explicit model configuration is preserved when its bundled provider is inactive",
+  Effect.gen(function* () {
+    yield* remove("CUDIA_TEST_BUNDLED_QWENCLOUD_KEY")
+    const auth = yield* Auth.Service
+    yield* auth.remove(ProviderV2.ID.make("qwencloud"))
+    const provider = yield* Provider.Service
+    expect((yield* provider.list())[ProviderV2.ID.make("qwencloud")]).toBeUndefined()
+    expect(yield* provider.defaultModel()).toEqual({
+      providerID: ProviderV2.ID.make("qwencloud"),
+      modelID: ModelV2.ID.make("bundled-model"),
+    })
+  }),
+  { ...bundledQwenOptions, config: { enabled_providers: ["qwencloud"], model: "qwencloud/bundled-model" } },
 )
 
 it.instance(
@@ -952,6 +1153,106 @@ it.instance(
           env: ["SINGLE_ENV_KEY"],
           models: { "model-1": { name: "Model 1", tool_call: true, limit: { context: 8000, output: 2000 } } },
           options: { baseURL: "https://api.example.com/v1" },
+        },
+      },
+    },
+  },
+)
+
+const qwenKeyAliases = {
+  npm: "@ai-sdk/openai-compatible",
+  env: ["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
+  options: { baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" },
+  models: { "qwen-plus": { name: "Qwen Plus", tool_call: true, limit: { context: 128000, output: 4096 } } },
+}
+
+for (const scenario of [
+  { name: "fallback when the first variable is absent", primary: undefined, expected: "qwen-fallback-key" },
+  {
+    name: "first variable priority when both are set",
+    primary: "dashscope-primary-key",
+    expected: "dashscope-primary-key",
+  },
+]) {
+  credentials.instance(
+    `API key aliases use ${scenario.name} in the real compatible SDK headers`,
+    Effect.gen(function* () {
+      yield* remove("DASHSCOPE_API_KEY")
+      yield* set("QWEN_API_KEY", "qwen-fallback-key")
+      if (scenario.primary) yield* set("DASHSCOPE_API_KEY", scenario.primary)
+      const provider = yield* Provider.Service
+      const id = ProviderV2.ID.make("qwen-env-alias")
+      expect((yield* provider.list())[id].key).toBe(scenario.expected)
+      const model = yield* provider.getModel(id, ModelV2.ID.make("qwen-plus"))
+      expect(languageHeaders(yield* provider.getLanguage(model)).get("authorization")).toBe(
+        `Bearer ${scenario.expected}`,
+      )
+    }),
+    { config: { provider: { "qwen-env-alias": qwenKeyAliases } } },
+  )
+}
+
+credentials.instance(
+  "API key aliases preserve stored credentials and explicit option priority in SDK headers",
+  Effect.gen(function* () {
+    yield* set("DASHSCOPE_API_KEY", "dashscope-env-key")
+    yield* set("QWEN_API_KEY", "qwen-env-key")
+    const auth = yield* Auth.Service
+    const ids = [ProviderV2.ID.make("qwen-stored-alias"), ProviderV2.ID.make("qwen-options-alias")]
+    yield* Effect.acquireRelease(
+      Effect.forEach(ids, (id) => auth.set(id, { type: "api", key: "stored-key" }), {
+        concurrency: 1,
+        discard: true,
+      }).pipe(Effect.orDie),
+      () => Effect.forEach(ids, (id) => auth.remove(id), { concurrency: 1, discard: true }).pipe(Effect.orDie),
+    )
+    const provider = yield* Provider.Service
+    const providers = yield* provider.list()
+    for (const id of ids) {
+      expect(providers[id].key).toBe("stored-key")
+      const model = yield* provider.getModel(id, ModelV2.ID.make("qwen-plus"))
+      const expected = id === "qwen-options-alias" ? "option-key" : "stored-key"
+      expect(languageHeaders(yield* provider.getLanguage(model)).get("authorization")).toBe(`Bearer ${expected}`)
+    }
+  }),
+  {
+    config: {
+      provider: {
+        "qwen-stored-alias": qwenKeyAliases,
+        "qwen-options-alias": {
+          ...qwenKeyAliases,
+          options: { ...qwenKeyAliases.options, apiKey: "option-key" },
+        },
+      },
+    },
+  },
+)
+
+credentials.instance(
+  "API key aliases exclude multiple credential fields and native or mixed SDK providers",
+  Effect.gen(function* () {
+    yield* set("ALIAS_ACCOUNT_ID", "account-id")
+    yield* set("ALIAS_API_KEY", "api-key")
+    yield* set("DASHSCOPE_API_KEY", "dashscope-key")
+    yield* set("QWEN_API_KEY", "qwen-key")
+    const providers = yield* list
+    for (const name of ["multi-credential", "native-sdk-alias", "mixed-sdk-alias"]) {
+      const provider = providers[ProviderV2.ID.make(name)]
+      expect(provider).toBeDefined()
+      expect(provider.key).toBeUndefined()
+    }
+  }),
+  {
+    config: {
+      provider: {
+        "multi-credential": { ...qwenKeyAliases, env: ["ALIAS_ACCOUNT_ID", "ALIAS_API_KEY"] },
+        "native-sdk-alias": { ...qwenKeyAliases, npm: "@ai-sdk/xai" },
+        "mixed-sdk-alias": {
+          ...qwenKeyAliases,
+          models: {
+            ...qwenKeyAliases.models,
+            "native-model": { name: "Native model", provider: { npm: "@ai-sdk/xai" } },
+          },
         },
       },
     },
@@ -1548,6 +1849,33 @@ test("models.dev reasoning options replace generated variants and unsupported to
   expect(models["gemini-3-pro-fast"].variants).toEqual(models.override.variants)
 })
 
+test("MERGE Gateway exposes declared effort variants without model-specific handling", () => {
+  const provider = {
+    id: "merge-gateway",
+    name: "MERGE Gateway",
+    env: ["MERGE_GATEWAY_API_KEY"],
+    npm: "merge-gateway-ai-sdk-provider",
+    models: {
+      "openai/gpt-5.6-sol": {
+        id: "openai/gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        reasoning: true,
+        reasoning_options: [{ type: "effort", values: ["none", "low", "medium", "high", "xhigh", "max"] }],
+        limit: { context: 128_000, output: 64_000 },
+      },
+    },
+  } as unknown as ModelsDev.Provider
+
+  expect(Provider.fromModelsDevProvider(provider).models["openai/gpt-5.6-sol"].variants).toEqual({
+    none: { reasoningEffort: "none" },
+    low: { reasoningEffort: "low" },
+    medium: { reasoningEffort: "medium" },
+    high: { reasoningEffort: "high" },
+    xhigh: { reasoningEffort: "xhigh" },
+    max: { reasoningEffort: "max" },
+  })
+})
+
 test("public provider info omits invalid models", () => {
   const provider = Provider.fromModelsDevProvider({
     id: "test",
@@ -1878,6 +2206,32 @@ it.instance("Google Vertex: keeps regional Claude endpoints unchanged", () =>
     const language = yield* provider.getLanguage(model)
     expect(languageBaseURL(language)).toBe(
       "https://europe-west1-aiplatform.googleapis.com/v1/projects/test-project/locations/europe-west1/publishers/anthropic/models",
+    )
+  }),
+)
+
+it.instance("Google Vertex: uses REP endpoint for Gemini continental multi-regions", () =>
+  Effect.gen(function* () {
+    yield* set("GOOGLE_CLOUD_PROJECT", "test-project")
+    yield* set("VERTEX_LOCATION", "eu")
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ProviderV2.ID.make("google-vertex"), ModelV2.ID.make("gemini-3.5-flash"))
+    const language = yield* provider.getLanguage(model)
+    expect(languageBaseURL(language)).toBe(
+      "https://aiplatform.eu.rep.googleapis.com/v1beta1/projects/test-project/locations/eu/publishers/google",
+    )
+  }),
+)
+
+it.instance("Google Vertex: keeps regional Gemini endpoints unchanged", () =>
+  Effect.gen(function* () {
+    yield* set("GOOGLE_CLOUD_PROJECT", "test-project")
+    yield* set("VERTEX_LOCATION", "europe-west1")
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ProviderV2.ID.make("google-vertex"), ModelV2.ID.make("gemini-3.5-flash"))
+    const language = yield* provider.getLanguage(model)
+    expect(languageBaseURL(language)).toBe(
+      "https://europe-west1-aiplatform.googleapis.com/v1beta1/projects/test-project/locations/europe-west1/publishers/google",
     )
   }),
 )

@@ -52,6 +52,7 @@ const client = LLMClient.layer.pipe(Layer.provide(executor))
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
+    check: () => Effect.die("unused"),
     assert: () => Effect.die("unused"),
     ask: () => Effect.die("unused"),
     reply: () => Effect.die("unused"),
@@ -88,14 +89,22 @@ const execution = Layer.effect(
   SessionExecution.Service,
   Effect.gen(function* () {
     const sessionRunner = yield* SessionRunner.Service
-    const coordinator = yield* SessionRunCoordinator.make<SessionV2.ID, SessionRunner.RunError>({
-      drain: (sessionID, force) => sessionRunner.run({ sessionID, force }),
+    const coordinator = yield* SessionRunCoordinator.make<
+      SessionV2.ID,
+      SessionRunner.RunError,
+      { focus?: string },
+      SessionRunner.Continuation,
+      SessionRunner.CompactError
+    >({
+      drain: (sessionID, force, control) => sessionRunner.run({ sessionID, force, ...control }),
+      operate: (sessionID, operation) => sessionRunner.compact({ sessionID, focus: operation.focus }),
     })
     return SessionExecution.Service.of({
       active: coordinator.active,
       resume: coordinator.run,
       wake: coordinator.wake,
       interrupt: coordinator.interrupt,
+      compact: (sessionID, focus) => coordinator.operate(sessionID, { focus }),
     })
   }),
 ).pipe(Layer.provide(runnerLayer))

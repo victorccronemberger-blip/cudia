@@ -1,4 +1,4 @@
-import type { FileNode } from "@opencode-ai/sdk/v2"
+import type { FileNode } from "@/context/file/types"
 
 export type FileTreeV2Model = {
   children: ReadonlyMap<string, readonly FileTreeV2Node[]>
@@ -35,7 +35,6 @@ export function buildFileTreeV2Model(paths: readonly string[]): FileTreeV2Model 
         path,
         absolute: path,
         type: index === parts.length - 1 ? "file" : "directory",
-        ignored: false,
         originalPath: index === parts.length - 1 ? value : path,
       })
     })

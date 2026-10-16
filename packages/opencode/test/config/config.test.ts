@@ -2,12 +2,14 @@ import { test, expect, describe, afterEach, beforeEach, spyOn } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Cause, Effect, Exit, Layer, Option } from "effect"
+import { Cause, Effect, Exit, Layer, Logger, Option } from "effect"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { Config } from "@/config/config"
 import { ConfigManaged } from "@/config/managed"
 import { ConfigParse } from "../../src/config/parse"
+import { ConfigV2Compat } from "../../src/config/v2-compat"
+import { snapshot } from "./snapshot"
 import { Npm } from "@opencode-ai/core/npm"
 
 import { InstanceRef } from "../../src/effect/instance-ref"
@@ -95,13 +97,14 @@ const configLayer = (
   options: {
     auth?: Layer.Layer<Auth.Service>
     account?: Layer.Layer<Account.Service>
+    npm?: Layer.Layer<Npm.Service>
     client?: HttpClient.HttpClient
   } = {},
 ) =>
   LayerNode.compile(LayerNode.group([Config.node, FSUtil.node, Env.node, CrossSpawnSpawner.node]), [
     [Auth.node, options.auth ?? AuthTest.empty],
     [Account.node, options.account ?? AccountTest.empty],
-    [Npm.node, NpmTest.noop],
+    [Npm.node, options.npm ?? NpmTest.noop],
     [httpClient, Layer.succeed(HttpClient.HttpClient, options.client ?? unexpectedHttp)],
   ])
 
@@ -109,6 +112,197 @@ const layer = configLayer()
 
 const it = testEffect(layer)
 const configIt = (options?: Parameters<typeof configLayer>[0]) => testEffect(configLayer(options))
+
+const distributionInstalls: string[] = []
+const distributionIt = configIt({
+  npm: Layer.mock(Npm.Service)({
+    install: (dir) =>
+      Effect.sync(() => {
+        distributionInstalls.push(dir)
+      }),
+  }),
+})
+
+distributionIt.instance("keeps bundled provider origins internal and preserves explicit project overrides", () =>
+  Effect.gen(function* () {
+    const root = yield* tmpdirScoped()
+    const defaults = path.join(root, "defaults")
+    const custom = path.join(root, "custom")
+    const instance = yield* TestInstance
+    const providers = {
+      "catalog-only": { name: "Catalog", env: ["CATALOG_FIXTURE_KEY"], models: { example: {} } },
+      "local-override": { name: "Local", models: { example: {} } },
+    }
+    yield* FSUtil.use.writeWithDirs(path.join(defaults, "opencode.json"), JSON.stringify({ provider: providers }))
+    yield* writeConfigEffect(instance.directory, {
+      provider: { "local-override": { options: { baseURL: "http://127.0.0.1:1/v1" } } },
+    })
+    yield* withProcessEnvs(
+      { CUDIA_DISTRIBUTION_DIR: defaults, OPENCODE_CONFIG_DIR: custom },
+      withGlobalConfig({ config: {} }, () =>
+        Effect.gen(function* () {
+          const catalog = yield* Config.use.bundledProviders()
+          expect([...catalog]).toEqual(["catalog-only"])
+          const config = yield* Config.use.get()
+          expect(config.provider?.["catalog-only"].models).toHaveProperty("example")
+          expect(config.provider?.["local-override"].options?.baseURL).toBe("http://127.0.0.1:1/v1")
+          expect(config).not.toHaveProperty("bundledProviders")
+          // Consumers receive a copy; mutating it cannot change the origin record.
+          if (catalog instanceof Set) catalog.clear()
+          expect([...(yield* Config.use.bundledProviders())]).toEqual(["catalog-only"])
+        }),
+      ),
+    )
+  }),
+)
+
+distributionIt.instance(
+  "loads distribution defaults below global, project and custom config without installing or writing in defaults",
+  () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      const defaults = path.join(root, "defaults")
+      const custom = path.join(root, "custom")
+      const test = yield* TestInstance
+      const packaged = JSON.stringify({
+        model: "packaged/model",
+        default_agent: "reviewer",
+        permission: { edit: "allow" },
+        mcp: { disabled: { type: "local", command: ["never-run"], enabled: false } },
+      })
+      yield* FSUtil.use.writeWithDirs(path.join(defaults, "opencode.json"), packaged)
+      yield* FSUtil.use.writeWithDirs(path.join(defaults, "command/review.md"), "packaged command")
+      yield* FSUtil.use.writeWithDirs(
+        path.join(defaults, "agent/reviewer.md"),
+        "---\ndescription: packaged\n---\nPackaged",
+      )
+      yield* Effect.promise(() =>
+        fs.copyFile(
+          path.join(import.meta.dir, "../../../../.opencode/agent/arena-contestant.md"),
+          path.join(defaults, "agent/arena-contestant.md"),
+        ),
+      )
+      yield* FSUtil.use.writeWithDirs(
+        path.join(defaults, "plugins/never.ts"),
+        "throw new Error('distribution plugin executed')",
+      )
+      yield* writeConfigEffect(test.directory, { model: "project/model" })
+      yield* FSUtil.use.writeWithDirs(path.join(test.directory, ".opencode/command/review.md"), "project command")
+      yield* FSUtil.use.writeWithDirs(
+        path.join(test.directory, ".opencode/agent/reviewer.md"),
+        "---\ndescription: project\n---\nProject",
+      )
+      yield* writeConfigEffect(custom, { snapshot: false })
+      distributionInstalls.length = 0
+      yield* withProcessEnvs(
+        { CUDIA_DISTRIBUTION_DIR: defaults, OPENCODE_CONFIG_DIR: custom },
+        withGlobalConfig({ config: { username: "global" } }, () =>
+          Effect.gen(function* () {
+            const config = yield* Config.use.get()
+            yield* Config.use.waitForDependencies()
+            expect(config.model).toBe("project/model")
+            expect(config.username).toBe("global")
+            expect(config.default_agent).toBe("reviewer")
+            expect(config.snapshot).toBe(false)
+            expect(config.agent?.reviewer.description).toBe("project")
+            expect(config.command?.review.template).toBe("project command")
+            expect(config.agent?.["arena-contestant"].permission).toEqual({})
+            expect(config.mcp?.disabled).toMatchObject({ enabled: false })
+            expect(config.plugin).toEqual([])
+            expect((yield* Config.use.directories())[0]).toBe(defaults)
+            expect(distributionInstalls).not.toContain(defaults)
+            expect(distributionInstalls).toContain(custom)
+            expect(yield* FSUtil.use.existsSafe(path.join(custom, ".gitignore"))).toBe(true)
+          }),
+        ),
+      )
+      expect(yield* FSUtil.use.readFileString(path.join(defaults, "opencode.json"))).toBe(packaged)
+      expect((yield* Effect.promise(() => fs.readdir(defaults))).sort()).toEqual([
+        "agent",
+        "command",
+        "opencode.json",
+        "plugins",
+      ])
+    }),
+)
+
+distributionIt.instance("rejects distribution plugin and policy declarations before dependency installation", () =>
+  Effect.gen(function* () {
+    const defaults = yield* tmpdirScoped()
+    for (const config of [
+      { plugin: ["never-install"] },
+      { plugins: ["never-install"] },
+      { experimental: { policies: [] } },
+    ]) {
+      const project = yield* tmpdirScoped()
+      yield* writeConfigEffect(defaults, config)
+      distributionInstalls.length = 0
+      const exit = yield* withProcessEnv(
+        "CUDIA_DISTRIBUTION_DIR",
+        defaults,
+        Config.use.get().pipe(provideInstanceEffect(project), Effect.exit),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Distribution defaults cannot declare")
+      expect(distributionInstalls).toEqual([])
+    }
+  }),
+)
+
+distributionIt.instance("keeps distribution junction aliases out of writable custom config discovery", () =>
+  Effect.gen(function* () {
+    const root = yield* tmpdirScoped()
+    const defaults = path.join(root, "defaults")
+    const alias = path.join(root, "alias")
+    yield* writeConfigEffect(defaults, { default_agent: "packaged" })
+    yield* Effect.promise(() => fs.symlink(defaults, alias, process.platform === "win32" ? "junction" : "dir"))
+    distributionInstalls.length = 0
+    yield* withProcessEnvs(
+      { CUDIA_DISTRIBUTION_DIR: alias, OPENCODE_CONFIG_DIR: alias },
+      Effect.gen(function* () {
+        expect((yield* Config.use.get()).default_agent).toBe("packaged")
+        yield* Config.use.waitForDependencies()
+        const directories = yield* Config.use.directories()
+        expect(directories[0]).toBe(defaults)
+        expect(directories).not.toContain(alias)
+        expect(distributionInstalls).not.toContain(alias)
+        expect(distributionInstalls).not.toContain(defaults)
+        expect(yield* FSUtil.use.existsSafe(path.join(defaults, ".gitignore"))).toBe(false)
+        const projectUpdate = yield* Config.use
+          .update({ model: "must-not-write" })
+          .pipe(provideInstanceEffect(alias), Effect.exit)
+        expect(Exit.isFailure(projectUpdate)).toBe(true)
+        yield* withGlobalConfigDir(
+          alias,
+          Effect.gen(function* () {
+            const globalUpdate = yield* Config.use.updateGlobal({ model: "must-not-write" }).pipe(Effect.exit)
+            expect(Exit.isFailure(globalUpdate)).toBe(true)
+          }),
+        )
+      }),
+    )
+  }),
+)
+
+distributionIt.instance("does not create a missing custom config directory inside distribution defaults", () =>
+  Effect.gen(function* () {
+    const defaults = yield* tmpdirScoped()
+    const custom = path.join(defaults, "missing", "custom")
+    yield* writeConfigEffect(defaults, { default_agent: "packaged" })
+    distributionInstalls.length = 0
+    yield* withProcessEnvs(
+      { CUDIA_DISTRIBUTION_DIR: defaults, OPENCODE_CONFIG_DIR: custom },
+      Effect.gen(function* () {
+        expect(Global.make().config).toBe(custom)
+        expect((yield* Config.use.get()).default_agent).toBe("packaged")
+        yield* Config.use.waitForDependencies()
+        expect(yield* FSUtil.use.existsSafe(path.join(defaults, "missing"))).toBe(false)
+        expect(distributionInstalls).not.toContain(custom)
+        expect(yield* Config.use.directories()).not.toContain(custom)
+      }),
+    )
+  }),
+)
 
 const schemaConfig = (config: object) => ({ $schema: "https://opencode.ai/config.json", ...config })
 
@@ -397,6 +591,191 @@ it.effect("updates global config and omits empty shell key in jsonc", () =>
   ),
 )
 
+it.effect("logs global update diagnostics once without exposing values", () =>
+  withGlobalConfig(
+    {
+      config: {
+        providers: { example: { settings: { apiKey: "keep-me" } } },
+      },
+    },
+    ({ dir }) =>
+      Effect.gen(function* () {
+        const messages: unknown[] = []
+        yield* Config.use.updateGlobal({ username: "updated" }).pipe(
+          Effect.provide(
+            Logger.layer([
+              Logger.make<unknown, void>((options) => {
+                messages.push(options.message)
+              }),
+            ]),
+          ),
+        )
+        expect(JSON.stringify(messages)).not.toContain("keep-me")
+        expect(
+          messages.filter((item) => Array.isArray(item) && item[0] === "configuration compatibility diagnostic"),
+        ).toEqual([
+          [
+            "configuration compatibility diagnostic",
+            expect.objectContaining({
+              source: path.join(dir, "opencode.json"),
+              kind: "unsupported",
+              path: ["providers"],
+            }),
+          ],
+        ])
+      }),
+  ),
+)
+
+const updateFixtures = path.join(import.meta.dir, "fixtures/v2-compat")
+const globalInputs = [...new Bun.Glob("update-global/*-input.{json,jsonc}").scanSync({ cwd: updateFixtures })].sort()
+const projectInputs = [...new Bun.Glob("update-project/*-input.json").scanSync({ cwd: updateFixtures })].sort()
+if (!globalInputs.length || !projectInputs.length) throw new Error("Missing config update fixtures")
+
+for (const input of globalInputs) {
+  const extension = path.extname(input)
+  const name = input.slice(0, -`-input${extension}`.length)
+  const prefix = path.join(updateFixtures, name)
+  it.live(`fixture ${name}`, () =>
+    withGlobalConfig({}, ({ dir }) =>
+      Effect.gen(function* () {
+        const fs = yield* FSUtil.Service
+        const file = path.join(dir, `opencode${extension}`)
+        yield* fs.writeFileString(file, yield* fs.readFileString(path.join(updateFixtures, input)))
+        const patch = ConfigParse.schema(ConfigV1.Info, yield* fs.readJson(`${prefix}-patch.json`), input)
+        const updated = yield* Config.use.updateGlobal(patch)
+        const written = yield* fs.readFileString(file)
+
+        yield* Effect.promise(() => snapshot(`${prefix}-output${extension}`, written))
+        yield* Effect.promise(() => snapshot(`${prefix}-normalized.json`, JSON.stringify(updated.info, null, 2) + "\n"))
+      }),
+    ),
+  )
+}
+
+for (const input of projectInputs) {
+  const name = input.slice(0, -"-input.json".length)
+  const prefix = path.join(updateFixtures, name)
+  it.instance(`fixture ${name}`, () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const fs = yield* FSUtil.Service
+      const file = path.join(instance.directory, "config.json")
+      yield* fs.writeFileString(file, yield* fs.readFileString(path.join(updateFixtures, input)))
+      const patch = ConfigParse.schema(ConfigV1.Info, yield* fs.readJson(`${prefix}-patch.json`), input)
+      yield* Config.use.update(patch)
+      const written = yield* fs.readFileString(file)
+      const normalized = ConfigParse.schema(
+        ConfigV1.Info,
+        ConfigV2Compat.lower(ConfigParse.jsonc(written, file)).value,
+        file,
+      )
+
+      yield* Effect.promise(() => snapshot(`${prefix}-output.json`, written))
+      yield* Effect.promise(() => snapshot(`${prefix}-normalized.json`, JSON.stringify(normalized, null, 2) + "\n"))
+    }),
+  )
+}
+
+for (const name of ["opencode.json", "opencode.jsonc"]) {
+  it.live(`rejects updating ${name} with native permissions without writing it`, () =>
+    withGlobalConfig(
+      { name, config: { permissions: [{ action: "read", resource: "secret-resource", effect: "deny" }] } },
+      ({ dir }) =>
+        Effect.gen(function* () {
+          const fs = yield* FSUtil.Service
+          const file = path.join(dir, name)
+          const before = yield* fs.readFileString(file)
+          const exit = yield* Effect.exit(Config.use.updateGlobal({ username: "changed" }))
+          expect(Exit.isFailure(exit)).toBe(true)
+          if (Exit.isFailure(exit)) {
+            const error = Cause.squash(exit.cause)
+            expect(error).toMatchObject({ data: { path: file, issues: [{ path: ["permissions"] }] } })
+            expect(JSON.stringify(error)).not.toContain("secret-resource")
+          }
+          expect(yield* fs.readFileString(file)).toBe(before)
+        }),
+    ),
+  )
+}
+
+it.instance("rejects a project update with native agent permissions without writing it", () =>
+  Effect.gen(function* () {
+    const instance = yield* TestInstance
+    const fs = yield* FSUtil.Service
+    const file = path.join(instance.directory, "config.json")
+    const before = JSON.stringify({ agents: { reviewer: { permissions: [] } } })
+    yield* fs.writeFileString(file, before)
+    const exit = yield* Effect.exit(Config.use.update({ username: "changed" }))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit))
+      expect(Cause.squash(exit.cause)).toMatchObject({
+        data: { path: file, issues: [{ path: ["agents", "reviewer", "permissions"] }] },
+      })
+    expect(yield* fs.readFileString(file)).toBe(before)
+  }),
+)
+
+it.effect("native project MCP servers override inherited V1 disabled state", () =>
+  withConfigTree(
+    {
+      global: {
+        mcp: {
+          shared: { type: "local", command: ["global-mcp"], enabled: false },
+        },
+      },
+      project: {
+        mcp: {
+          servers: {
+            shared: { type: "local", command: ["project-mcp"] },
+          },
+        },
+      },
+    },
+    Effect.gen(function* () {
+      expect((yield* Config.use.get()).mcp?.shared).toMatchObject({
+        type: "local",
+        command: ["project-mcp"],
+        enabled: true,
+      })
+    }),
+  ),
+)
+
+it.effect("rejects native project permissions even with inherited V1 rules", () =>
+  withConfigTree(
+    {
+      global: {
+        permission: { read: "deny", bash: "ask" },
+        agent: { reviewer: { permission: { edit: "deny" } } },
+      },
+      project: {
+        permissions: [{ action: "read", resource: "*", effect: "allow" }],
+        agents: {
+          reviewer: {
+            system: "Review carefully",
+            permissions: [{ action: "edit", resource: "*", effect: "allow" }],
+          },
+        },
+      },
+    },
+    Effect.gen(function* () {
+      const exit = yield* Effect.exit(Config.use.get())
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit))
+        expect(Cause.squash(exit.cause)).toMatchObject({
+          data: {
+            path: expect.stringContaining(path.join("project", "opencode.json")),
+            issues: [
+              { path: ["permissions"], message: expect.stringContaining('Use V1 "permission" rules or run opencode2') },
+              { path: ["agents", "reviewer", "permissions"], message: expect.stringContaining("not supported") },
+            ],
+          },
+        })
+    }),
+  ),
+)
+
 it.instance(
   "loads formatter boolean config",
   Effect.gen(function* () {
@@ -580,29 +959,50 @@ const accountTokenIt = configIt({
           },
         }),
       ),
-    config: () =>
+    config: () => Effect.die("remote account configuration should not be fetched without an explicit enterprise URL"),
+    token: () => Effect.die("remote account token should not be loaded without an explicit enterprise URL"),
+  }),
+})
+
+accountTokenIt.instance("does not load stored account configuration without an explicit enterprise URL", () =>
+  Effect.gen(function* () {
+    const config = yield* Config.use.get()
+    expect(config.provider?.["opencode"]).toBeUndefined()
+  }),
+)
+
+const explicitAccountConfigIt = configIt({
+  account: Layer.mock(Account.Service)({
+    active: () =>
       Effect.succeed(
         Option.some({
-          provider: { opencode: { options: { apiKey: "{env:OPENCODE_CONSOLE_TOKEN}" } } },
+          id: AccountID.make("account-1"),
+          email: "user@example.com",
+          url: "https://control.example.com/",
+          active_org_id: OrgID.make("org-1"),
         }),
       ),
+    config: () =>
+      Effect.succeed(Option.some({ provider: { acme: { options: { apiKey: "{env:OPENCODE_CONSOLE_TOKEN}" } } } })),
     token: () => Effect.succeed(Option.some(AccessToken.make("st_test_token"))),
   }),
 })
 
-accountTokenIt.instance("resolves env templates in account config with account token", () =>
+explicitAccountConfigIt.instance("loads account configuration when its URL is explicitly selected", () =>
   Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeConfigEffect(test.directory, { enterprise: { url: "https://control.example.com" } })
     const config = yield* Config.use.get()
-    expect(config.provider?.["opencode"]?.options?.apiKey).toBe("st_test_token")
+    expect(config.provider?.["acme"]?.options?.apiKey).toBe("st_test_token")
   }),
 )
 
-it.instance("validates config schema and throws on invalid fields", () =>
+it.instance("validates config schema and throws on invalid values", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
-      invalid_field: "should cause error",
+      model: 42,
     })
     const exit = yield* Config.use.get().pipe(Effect.exit)
     expect(Exit.isFailure(exit)).toBe(true)
@@ -1331,7 +1731,7 @@ it.instance("permission config preserves user key order", () =>
   }),
 )
 
-test("config parser preserves permission order while rejecting unknown top-level keys", () => {
+test("config parser preserves permission order while ignoring unknown top-level keys", () => {
   const config = ConfigParse.schema(
     ConfigV1.Info,
     {
@@ -1340,18 +1740,13 @@ test("config parser preserves permission order while rejecting unknown top-level
         "*": "deny",
         edit: "ask",
       },
+      plugins: ["example"],
     },
     "test",
   )
 
   expect(Object.keys(config.permission!)).toEqual(["bash", "*", "edit"])
-  try {
-    ConfigParse.schema(ConfigV1.Info, { invalid_field: true }, "test")
-    throw new Error("expected config parse to fail")
-  } catch (err) {
-    const error = err as { data?: { issues?: Array<{ code?: string; keys?: string[]; path?: string[] }> } }
-    expect(error.data?.issues?.[0]).toMatchObject({ code: "unrecognized_keys", keys: ["invalid_field"], path: [] })
-  }
+  expect(config).not.toHaveProperty("plugins")
 })
 
 // MCP config merging tests

@@ -1,8 +1,8 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "f14a9b18-8207-487e-a3d3-227e629ba9ad",
-  "prevIds": ["169a0f0f-d58f-479f-b024-fa1c7b9a09db"],
+  "id": "4d604c5c-5df5-452f-a17d-277872937bb0",
+  "prevIds": ["be918d2c-6deb-4dfe-aff1-96e92d3f135e"],
   "ddl": [
     {
       "name": "workspace",
@@ -407,6 +407,16 @@
       "default": null,
       "generated": null,
       "name": "value",
+      "entityType": "columns",
+      "table": "credential"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "refresh_attempt",
       "entityType": "columns",
       "table": "credential"
     },
@@ -897,6 +907,16 @@
       "default": null,
       "generated": null,
       "name": "baseline",
+      "entityType": "columns",
+      "table": "session_context_epoch"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "baseline_manifest",
       "entityType": "columns",
       "table": "session_context_epoch"
     },

@@ -99,7 +99,7 @@ export interface Interface {
 
 interface State {
   hooks: Record<ProviderV2.ID, Hook>
-  pending: Map<ProviderV2.ID, AuthOAuthResult>
+  pending: Map<ProviderV2.ID, { method: number; authorization: AuthOAuthResult }>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ProviderAuth") {}
@@ -122,7 +122,7 @@ const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> = Layer.
                 : Result.failVoid,
             ),
           ),
-          pending: new Map<ProviderV2.ID, AuthOAuthResult>(),
+          pending: new Map<ProviderV2.ID, { method: number; authorization: AuthOAuthResult }>(),
         }
       }),
     )
@@ -177,7 +177,7 @@ const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> = Layer.
       }
 
       const result = yield* Effect.promise(() => method.authorize(input.inputs))
-      pending.set(input.providerID, result)
+      pending.set(input.providerID, { method: input.method, authorization: result })
       return {
         url: result.url,
         method: result.method,
@@ -189,15 +189,20 @@ const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> = Layer.
       input: { providerID: ProviderV2.ID } & CallbackInput,
     ) {
       const pending = (yield* InstanceState.get(state)).pending
-      const match = pending.get(input.providerID)
-      if (!match) return yield* new OauthMissing({ providerID: input.providerID })
+      const entry = pending.get(input.providerID)
+      if (!entry || entry.method !== input.method) return yield* new OauthMissing({ providerID: input.providerID })
+      const match = entry.authorization
       if (match.method === "code" && !input.code) {
         return yield* new OauthCodeMissing({ providerID: input.providerID })
       }
 
-      const result = yield* Effect.promise(() =>
-        match.method === "code" ? match.callback(input.code!) : match.callback(),
-      )
+      // Consume before awaiting: replaying a completed callback must never
+      // restore an already rotated refresh token over the current credentials.
+      pending.delete(input.providerID)
+      const result = yield* Effect.tryPromise({
+        try: () => (match.method === "code" ? match.callback(input.code!) : match.callback()),
+        catch: () => new OauthCallbackFailed({}),
+      })
       if (!result || result.type !== "success") return yield* new OauthCallbackFailed({})
 
       if ("key" in result) {

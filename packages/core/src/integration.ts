@@ -5,6 +5,7 @@ import {
   Cause,
   Clock,
   Context,
+  Deferred,
   Duration,
   Effect,
   Exit,
@@ -203,6 +204,7 @@ type AttemptTime = { created: number; expires: number }
 type PendingAttempt = {
   status: "pending"
   completing: boolean
+  committing: boolean
   authorization: OAuthAuthorization
   integrationID: ID
   methodID: MethodID
@@ -225,6 +227,7 @@ export const locationLayer = Layer.effect(
     const events = yield* EventV2.Service
     const scope = yield* Scope.Scope
     const attempts = SynchronizedRef.makeUnsafe(new Map<AttemptID, AttemptEntry>())
+    const refreshes = new Map<Credential.ID, Deferred.Deferred<Credential.OAuth | undefined, AuthorizationError>>()
     const state = State.create<Data, Draft>({
       initial: () => ({ integrations: new Map<ID, Entry>() }),
       draft: (draft) => ({
@@ -314,33 +317,151 @@ export const locationLayer = Layer.effect(
     const close = (attemptScope: Scope.Closeable) =>
       Scope.close(attemptScope, Exit.void).pipe(Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid)
 
+    const refreshCredential = (credentialID: Credential.ID) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const existing = refreshes.get(credentialID)
+          if (existing) return yield* restore(Deferred.await(existing))
+
+          const deferred = Deferred.makeUnsafe<Credential.OAuth | undefined, AuthorizationError>()
+          refreshes.set(credentialID, deferred)
+          const refresh: Effect.Effect<Credential.OAuth | undefined, AuthorizationError> = Effect.gen(function* () {
+            const credential = yield* credentials.get(credentialID)
+            if (!credential || credential.value.type !== "oauth") return undefined
+            if (yield* credentials.refresh.pending(credentialID))
+              return yield* new AuthorizationError({ cause: new Credential.RefreshPendingError() })
+
+            const now = yield* Clock.currentTimeMillis
+            if (
+              credential.value.expires === undefined ||
+              credential.value.expires > now + refreshMargin(credential.value)
+            )
+              return credential.value
+
+            const implementation = state
+              .get()
+              .integrations.get(credential.integrationID)
+              ?.implementations.get(credential.value.methodID)
+            const refresh = implementation?.refresh
+            const oauth = credential.value
+            if (!refresh || !oauth.refresh)
+              return yield* new AuthorizationError({
+                cause: new Error("OAuth credential expired; reconnect to authorize again"),
+              })
+
+            const claim = yield* authorize(credentials.refresh.begin(credential))
+            if (!claim) return undefined
+            // No finalizer clears this marker: an interrupted exchange may have rotated the token.
+            const refreshed = yield* authorize(refresh(oauth))
+            const issued = yield* Clock.currentTimeMillis
+            const value = Credential.OAuth.make({ ...refreshed, issued })
+            const currentImplementation = state
+              .get()
+              .integrations.get(credential.integrationID)
+              ?.implementations.get(oauth.methodID)
+            if (currentImplementation !== implementation) return undefined
+            return yield* credentials.refresh.complete(claim, value)
+          })
+          const owner = Effect.exit(refresh).pipe(
+            Effect.flatMap((exit) =>
+              Effect.sync(() => {
+                if (refreshes.get(credentialID) === deferred) refreshes.delete(credentialID)
+                Deferred.doneUnsafe(
+                  deferred,
+                  Exit.isFailure(exit) ? Effect.failCause(exit.cause) : Effect.succeed(exit.value),
+                )
+              }),
+            ),
+          )
+          yield* owner.pipe(Effect.forkIn(scope))
+          return yield* restore(Deferred.await(deferred))
+        }),
+      )
+
+    const refreshMargin = (credential: Credential.OAuth) => {
+      if (credential.issued === undefined || credential.expires === undefined) return 0
+      return Math.min(
+        Duration.toMillis(Duration.minutes(5)),
+        Math.max(0, (credential.expires - credential.issued) * 0.1),
+      )
+    }
+
     const message = (cause: Cause.Cause<unknown>) => {
       const error = Cause.squash(cause)
       return error instanceof Error ? error.message : String(error)
     }
 
     const settle = Effect.fnUntraced(function* (attemptID: AttemptID, exit: Exit.Exit<Credential.OAuth, unknown>) {
-      const now = yield* Clock.currentTimeMillis
-      const result = yield* SynchronizedRef.modify(attempts, (current) => {
-        const attempt = current.get(attemptID)
-        if (!attempt || attempt.status !== "pending") return [undefined, current]
-        const terminal: TerminalAttempt = Exit.isSuccess(exit)
-          ? { status: "complete", time: attempt.time, removeAt: now + terminalRetention }
-          : { status: "failed", message: message(exit.cause), time: attempt.time, removeAt: now + terminalRetention }
-        return [attempt, new Map(current).set(attemptID, terminal)]
-      })
-      if (!result) return
-      if (Exit.isSuccess(exit)) {
-        const implementation = state.get().integrations.get(result.integrationID)?.implementations.get(result.methodID)
-        yield* credentials.create({
-          integrationID: result.integrationID,
-          label: result.label ?? implementation?.label?.(exit.value),
-          value: exit.value,
+      if (Exit.isFailure(exit)) {
+        const now = yield* Clock.currentTimeMillis
+        const result = yield* SynchronizedRef.modify(attempts, (current) => {
+          const attempt = current.get(attemptID)
+          if (!attempt || attempt.status !== "pending" || attempt.committing) return [undefined, current]
+          return [
+            attempt,
+            new Map(current).set(attemptID, {
+              status: "failed",
+              message: message(exit.cause),
+              time: attempt.time,
+              removeAt: now + terminalRetention,
+            }),
+          ]
         })
-        yield* events.publish(Event.ConnectionUpdated, { integrationID: result.integrationID })
-        yield* events.publish(Event.Updated, {})
+        if (result) yield* close(result.scope)
+        return
       }
-      yield* close(result.scope)
+
+      yield* Effect.uninterruptibleMask(() =>
+        Effect.gen(function* () {
+          const attempt = yield* SynchronizedRef.modify(attempts, (current) => {
+            const match = current.get(attemptID)
+            if (!match || match.status !== "pending" || match.committing) return [undefined, current]
+            return [match, new Map(current).set(attemptID, { ...match, committing: true })]
+          })
+          if (!attempt) return
+
+          const implementation = state
+            .get()
+            .integrations.get(attempt.integrationID)
+            ?.implementations.get(attempt.methodID)
+          const persisted = yield* Effect.exit(
+            credentials.create({
+              integrationID: attempt.integrationID,
+              label: attempt.label ?? implementation?.label?.(exit.value),
+              value: exit.value,
+            }),
+          )
+          if (Exit.isFailure(persisted)) {
+            const now = yield* Clock.currentTimeMillis
+            yield* SynchronizedRef.update(attempts, (current) => {
+              const currentAttempt = current.get(attemptID)
+              if (!currentAttempt || currentAttempt.status !== "pending" || !currentAttempt.committing) return current
+              return new Map(current).set(attemptID, {
+                status: "failed",
+                message: "Failed to persist authorization credentials",
+                time: currentAttempt.time,
+                removeAt: now + terminalRetention,
+              })
+            })
+            yield* close(attempt.scope)
+            return yield* Effect.failCause(persisted.cause)
+          }
+
+          const now = yield* Clock.currentTimeMillis
+          yield* SynchronizedRef.update(attempts, (current) => {
+            const currentAttempt = current.get(attemptID)
+            if (!currentAttempt || currentAttempt.status !== "pending" || !currentAttempt.committing) return current
+            return new Map(current).set(attemptID, {
+              status: "complete",
+              time: currentAttempt.time,
+              removeAt: now + terminalRetention,
+            })
+          })
+          yield* events.publish(Event.ConnectionUpdated, { integrationID: attempt.integrationID })
+          yield* events.publish(Event.Updated, {})
+          yield* close(attempt.scope)
+        }),
+      )
     })
 
     const scrub = Effect.fnUntraced(function* () {
@@ -349,7 +470,7 @@ export const locationLayer = Layer.effect(
         const next = new Map(current)
         const scopes: Scope.Closeable[] = []
         for (const [id, attempt] of current) {
-          if (attempt.status === "pending" && attempt.time.expires <= now) {
+          if (attempt.status === "pending" && !attempt.committing && attempt.time.expires <= now) {
             scopes.push(attempt.scope)
             next.set(id, { status: "expired", time: attempt.time, removeAt: now + terminalRetention })
             continue
@@ -390,16 +511,7 @@ export const locationLayer = Layer.effect(
           const credential = yield* credentials.get(connection.id)
           if (!credential) return undefined
           if (credential.value.type === "key") return credential.value
-          const implementation = state
-            .get()
-            .integrations.get(credential.integrationID)
-            ?.implementations.get(credential.value.methodID)
-          if (!implementation?.refresh) return credential.value
-          const now = yield* Clock.currentTimeMillis
-          if (credential.value.expires > now + Duration.toMillis(Duration.minutes(5))) return credential.value
-          const value = yield* authorize(implementation.refresh(credential.value))
-          yield* credentials.update(credential.id, { value })
-          return value
+          return yield* refreshCredential(credential.id)
         }),
         key: Effect.fn("Integration.connection.key")(function* (input) {
           const method = state
@@ -432,6 +544,7 @@ export const locationLayer = Layer.effect(
             new Map(current).set(id, {
               status: "pending",
               completing: authorization.mode === "auto",
+              committing: false,
               authorization,
               integrationID: input.integrationID,
               methodID: input.methodID,
@@ -505,7 +618,7 @@ export const locationLayer = Layer.effect(
         cancel: Effect.fn("Integration.attempt.cancel")(function* (attemptID) {
           const attempt = yield* SynchronizedRef.modify(attempts, (current) => {
             const match = current.get(attemptID)
-            if (!match || match.status !== "pending") return [undefined, current]
+            if (!match || match.status !== "pending" || match.committing) return [undefined, current]
             const next = new Map(current)
             next.delete(attemptID)
             return [match, next]

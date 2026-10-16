@@ -1,5 +1,1 @@
-Load a specialized skill when the task at hand matches one of the skills listed in the system prompt.
-
-Use this tool to inject the skill's instructions and resources into current conversation. The output may contain detailed workflow guidance as well as references to scripts, files, etc in the same directory as the skill.
-
-The skill name must match one of the skills listed in your system prompt.
+Use name to load a skill's instructions and resource paths, or query to search names and descriptions with offset/limit pagination. query: "" browses. Search does not load skill bodies. Loading by name and searching are mutually exclusive; offset/limit apply to search.

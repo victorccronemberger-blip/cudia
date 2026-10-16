@@ -74,6 +74,14 @@ export type ProviderNotFoundError = {
 export const isProviderNotFoundError = (value: unknown): value is ProviderNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ProviderNotFoundError"
 
+export type MCPServerNotFoundError = {
+  readonly _tag: "MCPServerNotFoundError"
+  readonly server: string
+  readonly message: string
+}
+export const isMCPServerNotFoundError = (value: unknown): value is MCPServerNotFoundError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "MCPServerNotFoundError"
+
 export type PermissionNotFoundError = {
   readonly _tag: "PermissionNotFoundError"
   readonly requestID: string
@@ -81,6 +89,25 @@ export type PermissionNotFoundError = {
 }
 export const isPermissionNotFoundError = (value: unknown): value is PermissionNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "PermissionNotFoundError"
+
+export type VcsOperationError = {
+  readonly _tag: "VcsOperationError"
+  readonly reason: "command" | "output_limit" | "invalid_input" | "unavailable"
+  readonly operation: string
+  readonly message: string
+  readonly limit?: number
+}
+export const isVcsOperationError = (value: unknown): value is VcsOperationError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "VcsOperationError"
+
+export type VcsOutputLimitError = {
+  readonly _tag: "VcsOutputLimitError"
+  readonly operation: string
+  readonly message: string
+  readonly limit?: number | undefined
+}
+export const isVcsOutputLimitError = (value: unknown): value is VcsOutputLimitError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "VcsOutputLimitError"
 
 export type PtyNotFoundError = { readonly _tag: "PtyNotFoundError"; readonly ptyID: string; readonly message: string }
 export const isPtyNotFoundError = (value: unknown): value is PtyNotFoundError =>
@@ -101,7 +128,7 @@ export type ProjectCopyError = {
 export const isProjectCopyError = (value: unknown): value is ProjectCopyError =>
   typeof value === "object" && value !== null && "name" in value && value["name"] === "ProjectCopyError"
 
-export type HealthGetOutput = { readonly healthy: true }
+export type HealthGetOutput = { readonly healthy: true; readonly protocol: "v2" }
 
 export type LocationGetInput = {
   readonly location?: {
@@ -570,6 +597,27 @@ export type SessionsContextOutput = {
         readonly time: { readonly created: number }
         readonly type: "system"
         readonly text: string
+        readonly contextManifest?: {
+          readonly version: 1
+          readonly hashEncoding: "json-utf8"
+          readonly length: number
+          readonly bytes: number
+          readonly sha256: string
+          readonly parts: ReadonlyArray<{
+            readonly producer: string
+            readonly phase: "baseline" | "update" | "removed"
+            readonly start: number
+            readonly end: number
+            readonly origins: ReadonlyArray<{
+              readonly kind: "file" | "skill" | "reference" | "runtime" | "unknown"
+              readonly id: string
+              readonly start: number
+              readonly end: number
+              readonly sha256?: string
+              readonly bytes?: number
+            }>
+          }>
+        }
       }
     | {
         readonly id: string
@@ -788,6 +836,27 @@ export type SessionsHistoryOutput = {
           readonly sessionID: string
           readonly messageID: string
           readonly text: string
+          readonly contextManifest?: {
+            readonly version: 1
+            readonly hashEncoding: "json-utf8"
+            readonly length: number
+            readonly bytes: number
+            readonly sha256: string
+            readonly parts: ReadonlyArray<{
+              readonly producer: string
+              readonly phase: "baseline" | "update" | "removed"
+              readonly start: number
+              readonly end: number
+              readonly origins: ReadonlyArray<{
+                readonly kind: "file" | "skill" | "reference" | "runtime" | "unknown"
+                readonly id: string
+                readonly start: number
+                readonly end: number
+                readonly sha256?: string
+                readonly bytes?: number
+              }>
+            }>
+          }
         }
       }
     | {
@@ -1246,6 +1315,27 @@ export type SessionsEventsOutput =
         readonly sessionID: string
         readonly messageID: string
         readonly text: string
+        readonly contextManifest?: {
+          readonly version: 1
+          readonly hashEncoding: "json-utf8"
+          readonly length: number
+          readonly bytes: number
+          readonly sha256: string
+          readonly parts: ReadonlyArray<{
+            readonly producer: string
+            readonly phase: "baseline" | "update" | "removed"
+            readonly start: number
+            readonly end: number
+            readonly origins: ReadonlyArray<{
+              readonly kind: "file" | "skill" | "reference" | "runtime" | "unknown"
+              readonly id: string
+              readonly start: number
+              readonly end: number
+              readonly sha256?: string
+              readonly bytes?: number
+            }>
+          }>
+        }
       }
     }
   | {
@@ -1648,6 +1738,27 @@ export type SessionsMessageOutput = {
         readonly time: { readonly created: number }
         readonly type: "system"
         readonly text: string
+        readonly contextManifest?: {
+          readonly version: 1
+          readonly hashEncoding: "json-utf8"
+          readonly length: number
+          readonly bytes: number
+          readonly sha256: string
+          readonly parts: ReadonlyArray<{
+            readonly producer: string
+            readonly phase: "baseline" | "update" | "removed"
+            readonly start: number
+            readonly end: number
+            readonly origins: ReadonlyArray<{
+              readonly kind: "file" | "skill" | "reference" | "runtime" | "unknown"
+              readonly id: string
+              readonly start: number
+              readonly end: number
+              readonly sha256?: string
+              readonly bytes?: number
+            }>
+          }>
+        }
       }
     | {
         readonly id: string
@@ -1820,6 +1931,27 @@ export type MessagesListOutput = {
         readonly time: { readonly created: number }
         readonly type: "system"
         readonly text: string
+        readonly contextManifest?: {
+          readonly version: 1
+          readonly hashEncoding: "json-utf8"
+          readonly length: number
+          readonly bytes: number
+          readonly sha256: string
+          readonly parts: ReadonlyArray<{
+            readonly producer: string
+            readonly phase: "baseline" | "update" | "removed"
+            readonly start: number
+            readonly end: number
+            readonly origins: ReadonlyArray<{
+              readonly kind: "file" | "skill" | "reference" | "runtime" | "unknown"
+              readonly id: string
+              readonly start: number
+              readonly end: number
+              readonly sha256?: string
+              readonly bytes?: number
+            }>
+          }>
+        }
       }
     | {
         readonly id: string
@@ -1984,6 +2116,65 @@ export type ModelsListOutput = {
     readonly enabled: boolean
     readonly limit: { readonly context: number; readonly input?: number; readonly output: number }
   }>
+}
+
+export type ModelsDefaultInput = {
+  readonly location?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+  }["location"]
+}
+
+export type ModelsDefaultOutput = {
+  readonly location: {
+    readonly directory: string
+    readonly workspaceID?: string
+    readonly project: { readonly id: string; readonly directory: string }
+  }
+  readonly data: {
+    readonly id: string
+    readonly providerID: string
+    readonly family?: string
+    readonly name: string
+    readonly api:
+      | {
+          readonly id: string
+          readonly type: "aisdk"
+          readonly package: string
+          readonly url?: string
+          readonly settings?: { readonly [x: string]: JsonValue }
+        }
+      | {
+          readonly id: string
+          readonly type: "native"
+          readonly url?: string
+          readonly settings: { readonly [x: string]: JsonValue }
+        }
+    readonly capabilities: {
+      readonly tools: boolean
+      readonly input: ReadonlyArray<string>
+      readonly output: ReadonlyArray<string>
+    }
+    readonly request: {
+      readonly headers: { readonly [x: string]: string }
+      readonly body: { readonly [x: string]: JsonValue }
+      readonly variant?: string
+    }
+    readonly variants: ReadonlyArray<{
+      readonly id: string
+      readonly headers: { readonly [x: string]: string }
+      readonly body: { readonly [x: string]: JsonValue }
+    }>
+    readonly time: { readonly released: number }
+    readonly cost: ReadonlyArray<{
+      readonly tier?: { readonly type: "context"; readonly size: number }
+      readonly input: number
+      readonly output: number
+      readonly cache: { readonly read: number; readonly write: number }
+    }>
+    readonly status: "alpha" | "beta" | "deprecated" | "active"
+    readonly enabled: boolean
+    readonly limit: { readonly context: number; readonly input?: number; readonly output: number }
+  } | null
 }
 
 export type ProvidersListInput = {
@@ -2269,6 +2460,68 @@ export type IntegrationsAttemptCancelInput = {
 
 export type IntegrationsAttemptCancelOutput = void
 
+export type McpListInput = {
+  readonly location?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+  }["location"]
+}
+
+export type McpListOutput = {
+  readonly location: {
+    readonly directory: string
+    readonly workspaceID?: string
+    readonly project: { readonly id: string; readonly directory: string }
+  }
+  readonly data: ReadonlyArray<{
+    readonly name: string
+    readonly status: "disabled" | "disconnected" | "connecting" | "connected" | "failed" | "authentication_required"
+    readonly toolCount: number
+    readonly exposureCount: number
+    readonly authentication?: { readonly integrationID: string; readonly methodID: string }
+    readonly error?: { readonly kind: string; readonly message: string }
+  }>
+}
+
+export type McpConnectInput = {
+  readonly server: { readonly server: string }["server"]
+  readonly location?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+  }["location"]
+}
+
+export type McpConnectOutput = void
+
+export type McpDisconnectInput = {
+  readonly server: { readonly server: string }["server"]
+  readonly location?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+  }["location"]
+}
+
+export type McpDisconnectOutput = void
+
+export type LspStatusInput = {
+  readonly location?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+  }["location"]
+}
+
+export type LspStatusOutput = {
+  readonly location: {
+    readonly directory: string
+    readonly workspaceID?: string
+    readonly project: { readonly id: string; readonly directory: string }
+  }
+  readonly data: ReadonlyArray<{
+    readonly id: string
+    readonly name: string
+    readonly root: string
+    readonly status: "not_started" | "starting" | "connected" | "error" | "missing" | "disabled"
+    readonly failure?: string
+    readonly diagnosticMode?: "pull" | "push" | "none"
+  }>
+}
+
 export type CredentialsUpdateInput = {
   readonly credentialID: { readonly credentialID: string }["credentialID"]
   readonly location?: {
@@ -2493,6 +2746,74 @@ export type FilesFindOutput = {
     readonly project: { readonly id: string; readonly directory: string }
   }
   readonly data: ReadonlyArray<{ readonly path: string; readonly type: "file" | "directory" }>
+}
+
+export type VcsGetInput = {
+  readonly location?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+  }["location"]
+}
+
+export type VcsGetOutput = {
+  readonly location: {
+    readonly directory: string
+    readonly workspaceID?: string
+    readonly project: { readonly id: string; readonly directory: string }
+  }
+  readonly data: { readonly branch?: string; readonly defaultBranch?: string }
+}
+
+export type VcsStatusInput = {
+  readonly location?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+  }["location"]
+}
+
+export type VcsStatusOutput = {
+  readonly location: {
+    readonly directory: string
+    readonly workspaceID?: string
+    readonly project: { readonly id: string; readonly directory: string }
+  }
+  readonly data: ReadonlyArray<{
+    readonly file: string
+    readonly additions: number
+    readonly deletions: number
+    readonly status: "added" | "deleted" | "modified"
+  }>
+}
+
+export type VcsDiffInput = {
+  readonly location?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+    readonly mode: "working" | "branch"
+    readonly context?: number | undefined
+  }["location"]
+  readonly mode: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+    readonly mode: "working" | "branch"
+    readonly context?: number | undefined
+  }["mode"]
+  readonly context?: {
+    readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
+    readonly mode: "working" | "branch"
+    readonly context?: number | undefined
+  }["context"]
+}
+
+export type VcsDiffOutput = {
+  readonly location: {
+    readonly directory: string
+    readonly workspaceID?: string
+    readonly project: { readonly id: string; readonly directory: string }
+  }
+  readonly data: ReadonlyArray<{
+    readonly file: string
+    readonly additions: number
+    readonly deletions: number
+    readonly status: "added" | "deleted" | "modified"
+    readonly patch: string
+  }>
 }
 
 export type CommandsListInput = {
@@ -2805,3 +3126,16 @@ export type ProjectCopiesRefreshInput = {
 }
 
 export type ProjectCopiesRefreshOutput = void
+
+export type ProjectsListOutput = ReadonlyArray<{
+  readonly id: string
+  readonly worktree: string
+  readonly vcs?: "git"
+  readonly name?: string
+  readonly icon?: { readonly url?: string; readonly override?: string; readonly color?: string }
+  readonly commands?: { readonly start?: string }
+  readonly time: { readonly created: number; readonly updated: number; readonly initialized?: number }
+  readonly sandboxes: ReadonlyArray<string>
+}>
+
+export type LocationPathsGetOutput = { readonly home: string; readonly defaultDirectory: string }

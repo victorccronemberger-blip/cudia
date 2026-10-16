@@ -8,6 +8,7 @@ import { FileAttachment, Prompt } from "./prompt"
 import { DateTimeUtcFromMillis, RelativePath, statics } from "./schema"
 import { SessionID } from "./session-id"
 import { ascending } from "./identifier"
+import { ContextManifestSchema } from "./context-manifest"
 
 export const ID = Schema.String.check(Schema.isStartsWith("msg_")).pipe(
   Schema.brand("Session.Message.ID"),
@@ -63,6 +64,7 @@ export const System = Schema.Struct({
   ...Base,
   type: Schema.Literal("system"),
   text: Schema.String,
+  contextManifest: ContextManifestSchema.Manifest.pipe(optional),
 }).annotate({ identifier: "Session.Message.System" })
 
 export interface Shell extends Schema.Schema.Type<typeof Shell> {}

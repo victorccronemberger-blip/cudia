@@ -344,16 +344,25 @@ const layer = Layer.effect(
       const [cmd, ...args] = mcp.command
       const baseDir = yield* InstanceState.directory
       const cwd = mcp.cwd ? path.resolve(baseDir, mcp.cwd) : baseDir
+      const local =
+        cmd === "cudia:browser"
+          ? yield* Effect.gen(function* () {
+              const { prepare } = yield* Effect.promise(() => import("@opencode-ai/core/mcp/managed-browser"))
+              return yield* prepare(args, mcp.environment)
+            })
+          : {
+              command: cmd,
+              args,
+              env: {
+                ...process.env,
+                ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
+                ...mcp.environment,
+              },
+            }
       const transport = new StdioClientTransport({
+        ...local,
         stderr: "pipe",
-        command: cmd,
-        args,
         cwd,
-        env: {
-          ...process.env,
-          ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
-          ...mcp.environment,
-        },
       })
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT

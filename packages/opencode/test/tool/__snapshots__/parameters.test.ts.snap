@@ -285,14 +285,25 @@ exports[`tool parameters JSON Schema (wire shape) skill 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "limit": {
+      "exclusiveMinimum": 0,
+      "maximum": 16,
+      "type": "integer",
+    },
     "name": {
-      "description": "The name of the skill from available_skills",
+      "description": "Load this exact skill name",
+      "type": "string",
+    },
+    "offset": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer",
+    },
+    "query": {
+      "description": "Search names and descriptions; empty string browses",
       "type": "string",
     },
   },
-  "required": [
-    "name",
-  ],
   "type": "object",
 }
 `;
@@ -408,11 +419,13 @@ exports[`tool parameters JSON Schema (wire shape) websearch 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "contextMaxCharacters": {
-      "description": "Maximum characters for context string optimized for LLMs (default: 10000)",
-      "type": "number",
+      "description": "Maximum characters for context string optimized for models (default: 10000, maximum: 50000)",
+      "exclusiveMinimum": 0,
+      "maximum": 50000,
+      "type": "integer",
     },
     "livecrawl": {
-      "description": "Live crawl mode - 'fallback': use live crawling as backup if cached content unavailable, 'preferred': prioritize live crawling (default: 'fallback')",
+      "description": "Live crawl mode - 'fallback': use live crawling as backup if cached unavailable, 'preferred': prioritize live crawling (default: 'fallback')",
       "enum": [
         "fallback",
         "preferred",
@@ -420,8 +433,10 @@ exports[`tool parameters JSON Schema (wire shape) websearch 1`] = `
       "type": "string",
     },
     "numResults": {
-      "description": "Number of search results to return (default: 8)",
-      "type": "number",
+      "description": "Number of search results to return (default: 8, maximum: 20)",
+      "exclusiveMinimum": 0,
+      "maximum": 20,
+      "type": "integer",
     },
     "query": {
       "description": "Websearch query",

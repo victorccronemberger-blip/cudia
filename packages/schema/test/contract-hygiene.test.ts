@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
+import { fileURLToPath } from "node:url"
 import { Schema } from "effect"
 import { Agent } from "../src/agent"
 import { FileSystem } from "../src/filesystem"
 import { Model } from "../src/model"
+import { MCP } from "../src/mcp"
 import { Project } from "../src/project"
 import { Pty } from "../src/pty"
 import { Question } from "../src/question"
@@ -41,6 +43,10 @@ describe("contract hygiene", () => {
       Model.Capabilities,
       Model.Cost,
       Model.Api,
+      MCP.Status,
+      MCP.Authentication,
+      MCP.Failure,
+      MCP.Server,
       Project.Icon,
       Project.Commands,
       Project.Time,
@@ -54,7 +60,7 @@ describe("contract hygiene", () => {
   })
 
   test("current source avoids Any and mutable contract wrappers", async () => {
-    const files = [...new Bun.Glob("*.ts").scanSync(new URL("../src", import.meta.url).pathname)].filter(
+    const files = [...new Bun.Glob("*.ts").scanSync(fileURLToPath(new URL("../src", import.meta.url)))].filter(
       (file) => !file.endsWith("-v1.ts"),
     )
     const source = await Promise.all(
@@ -63,5 +69,16 @@ describe("contract hygiene", () => {
 
     expect(source).not.toContain("Schema.Any")
     expect(source).not.toContain("Schema.mutable")
+  })
+
+  test("MCP server metadata omits absent authentication and errors and validates counts", () => {
+    const server = { name: "fixture", status: "disconnected" as const, toolCount: 0, exposureCount: 0 }
+    expect(Schema.encodeSync(MCP.Server)({ ...server, authentication: undefined, error: undefined })).toEqual(server)
+    expect(Schema.is(MCP.Server)({ ...server, toolCount: -1 })).toBe(false)
+    expect(Schema.is(MCP.Server)({ ...server, exposureCount: 1.5 })).toBe(false)
+    expect(Schema.is(MCP.Server)({ ...server, status: "needs_auth" })).toBe(false)
+    expect(
+      [MCP.Status, MCP.Authentication, MCP.Failure, MCP.Server].map((value) => value.ast.annotations?.identifier),
+    ).toEqual(["MCP.Status", "MCP.Authentication", "MCP.Failure", "MCP.Server"])
   })
 })

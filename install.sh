@@ -1,86 +1,40 @@
-#!/usr/bin/env bash
-# cudia installer (Kali Linux / Debian-based)
-#  - installs the opencode CLI (official installer, latest stable)
-#  - clones the cudia harness repo to ~/cudia
-#  - creates the `cudia` launcher in ~/.local/bin
-set -uo pipefail
+#!/usr/bin/env sh
+# Install this checkout's custom engine and a launcher; no global OpenCode install.
+set -eu
 
-REPO_URL="${CUDIA_REPO_URL:-https://github.com/victorccronemberger-blip/cudia.git}"
-INSTALL_DIR="${CUDIA_DIR:-$HOME/cudia}"
-BIN_DIR="${CUDIA_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
+HERE=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd)
+. "$HERE/script/cudia-common.sh"
+REPO_URL=${CUDIA_REPO_URL:-https://github.com/victorccronemberger-blip/cudia.git}
+INSTALL_DIR=${CUDIA_DIR:-$HERE}
+BIN_DIR=${CUDIA_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}
 
-# 1. opencode CLI
-OPENCODE_BIN="$(command -v opencode || true)"
-if [ -z "$OPENCODE_BIN" ] && [ -x "$HOME/.opencode/bin/opencode" ]; then
-  OPENCODE_BIN="$HOME/.opencode/bin/opencode"
+command -v git >/dev/null 2>&1 || cudia_fail "Git is required."
+if [ ! -e "$INSTALL_DIR" ]; then
+  mkdir -p -- "$(dirname -- "$INSTALL_DIR")"
+  git clone -- "$REPO_URL" "$INSTALL_DIR"
 fi
-
-if [ -n "$OPENCODE_BIN" ]; then
-  echo "==> opencode already installed: $OPENCODE_BIN"
-else
-  echo "==> installing opencode CLI (latest stable)..."
-  if curl -fsSL https://opencode.ai/install | bash; then
-    OPENCODE_BIN="$(command -v opencode || true)"
-    [ -z "$OPENCODE_BIN" ] && [ -x "$HOME/.opencode/bin/opencode" ] && OPENCODE_BIN="$HOME/.opencode/bin/opencode"
-    [ -n "$OPENCODE_BIN" ] && echo "==> opencode installed: $OPENCODE_BIN"
-  else
-    echo "!! opencode installer failed (network?). Install it manually, then re-run:"
-    echo "   curl -fsSL https://opencode.ai/install | bash"
-  fi
+cudia_checkout "$INSTALL_DIR"
+INSTALL_DIR=$(CDPATH= cd -P -- "$INSTALL_DIR" && pwd)
+mkdir -p -- "$BIN_DIR"
+LAUNCHER=$BIN_DIR/cudia
+if [ -L "$LAUNCHER" ]; then
+  [ "$(readlink -- "$LAUNCHER")" = "$INSTALL_DIR/run.sh" ] ||
+    cudia_fail "A different launcher already exists at $LAUNCHER; move it before installing."
+elif [ -e "$LAUNCHER" ]; then
+  cudia_fail "A file already exists at $LAUNCHER; move it before installing."
 fi
-
-# 2. harness repo
-if [ -d "$INSTALL_DIR/.git" ]; then
-  echo "==> updating existing install at $INSTALL_DIR"
-  git -C "$INSTALL_DIR" pull --ff-only
-else
-  mkdir -p "$(dirname "$INSTALL_DIR")"
-  echo "==> cloning harness to $INSTALL_DIR"
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+cudia_build "$INSTALL_DIR"
+if [ ! -L "$LAUNCHER" ]; then
+  case "$CUDIA_PLATFORM" in
+    # Default Git Bash ln may copy the file when native symlinks are unavailable.
+    # MSYS shortcuts retain actual symlink behavior without administrator rights.
+    windows) MSYS="${MSYS:+$MSYS }winsymlinks:lnk" ln -s -- "$INSTALL_DIR/run.sh" "$LAUNCHER" ;;
+    *) ln -s -- "$INSTALL_DIR/run.sh" "$LAUNCHER" ;;
+  esac
 fi
-chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
-
-# 2a. monorepo dependencies (required by the custom source launcher)
-if command -v bun >/dev/null 2>&1; then
-  echo "==> installing cudia workspace dependencies..."
-  (cd "$INSTALL_DIR" && bun install --frozen-lockfile)
-  echo "==> building cudia local binary..."
-  (cd "$INSTALL_DIR/packages/opencode" && bun run script/build.ts --single --skip-install --skip-embed-web-ui)
-else
-  echo "!! bun not found. The custom /goal build requires Bun ${BUN_VERSION:-1.3.14}."
-  echo "   Install it with: curl -fsSL https://bun.sh/install | bash"
-fi
-
-# 2b. node/npm (needed by opencode to auto-install provider SDKs and plugins)
-if ! command -v npm >/dev/null 2>&1; then
-  echo "!! npm not found. opencode needs it to install provider SDKs (@ai-sdk/deepseek, etc.)."
-  echo "   Install with: sudo apt update && sudo apt install -y nodejs npm"
-fi
-
-# 2c. pre-install .opencode deps if present (normally opencode does this on first run)
-if [ -f "$INSTALL_DIR/.opencode/package.json" ] && command -v npm >/dev/null 2>&1; then
-  echo "==> pre-installing .opencode dependencies..."
-  (cd "$INSTALL_DIR/.opencode" && npm install --no-audit --no-fund) || true
-fi
-
-# 3. launcher
-mkdir -p "$BIN_DIR"
-ln -sfn "$INSTALL_DIR/run.sh" "$BIN_DIR/cudia"
-echo "==> launcher installed: $BIN_DIR/cudia"
+printf '==> launcher installed: %s\n' "$LAUNCHER"
 case ":$PATH:" in
-  *":$BIN_DIR:"*) echo "==> $BIN_DIR is already on PATH." ;;
-  *)
-    echo "!! $BIN_DIR is NOT on your PATH. Add one of these to your shell:"
-    echo "   bash/zsh:  export PATH=\"$BIN_DIR:\$PATH\""
-    echo "   or run:    ln -sfn $BIN_DIR/cudia /usr/local/bin/cudia   (with sudo)"
-    ;;
+  *":$BIN_DIR:"*) ;;
+  *) printf 'Add this directory to PATH: %s\n' "$BIN_DIR" ;;
 esac
-
-echo
-echo "Done. Usage:"
-echo "  cudia                      # opencode TUI with the cudia harness"
-echo "  cudia --model deepseek/deepseek-v4-pro"
-echo "  cudia /kali <target>       # run the Kali agent"
-echo
-echo "Update:  $INSTALL_DIR/update.sh"
-echo "Remove:  $INSTALL_DIR/remove.sh"
+printf 'Run: cudia\nUpdate: %s/update.sh\nRemove launcher: %s/remove.sh\n' "$INSTALL_DIR" "$INSTALL_DIR"

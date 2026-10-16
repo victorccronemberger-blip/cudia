@@ -1,0 +1,260 @@
+{
+  "schema": 1,
+  "product": "cudia",
+  "kind": "windows-client-build",
+  "source": {
+    "builder": {
+      "size": 10058,
+      "sha256": "1cc7f93000f7b8ed6b0a1a8cbdb4116c380f3ba8e796efd3206680959b1a0697"
+    },
+    "files": {
+      "cmd/bootstrap/main.go": {
+        "size": 135,
+        "sha256": "3b9346ecd574f9bbdc92f927eddfce86903b808611fd12b51e817f57c6b50db8"
+      },
+      "cmd/launcher/main.go": {
+        "size": 134,
+        "sha256": "d662327d173184ca54555bd99be3db8251a81e97d39b06b3d405fdd57b4f4628"
+      },
+      "go.mod": {
+        "size": 45,
+        "sha256": "bc50f637ddd8a4610097558f84b304224727d2fc4b3e2055d340b79faabc545c"
+      },
+      "internal/client/automatic_check_windows_test.go": {
+        "size": 20081,
+        "sha256": "8c6c72da5cbe96c37696c0c6700a872a3df7ef9afeb2fecf812d07af976171a2"
+      },
+      "internal/client/automatic_check_windows.go": {
+        "size": 14063,
+        "sha256": "6b1483ade84ac2b2bd56837ea7b67cda072f54ff94eb3dea3ff229ac8b5a8736"
+      },
+      "internal/client/automatic_console_windows_test.go": {
+        "size": 8234,
+        "sha256": "98adb7a443bbfe46c7e7fdfb5ac2d7975e0bb423fc2d6faf1ba181ad300b8a91"
+      },
+      "internal/client/automatic_install_windows_test.go": {
+        "size": 1277,
+        "sha256": "49f2301f60aa70716ab8a35e94876086e099a3b84997de9494ef1680b64818cf"
+      },
+      "internal/client/console_test.go": {
+        "size": 7943,
+        "sha256": "3724e2776c04b7075ea4e47f670d5f409024badd441c7a602fbfce51d5cd92d9"
+      },
+      "internal/client/filesystem_test.go": {
+        "size": 1539,
+        "sha256": "be296b018740fb65200634f62cfef1c204d2e17f8d90cd5f4d364990037e897f"
+      },
+      "internal/client/install_transaction_test.go": {
+        "size": 13856,
+        "sha256": "e60ea7f85469c64f72ea332c63835899221a3315b71aae250e3235e6960d1d47"
+      },
+      "internal/client/install_transaction.go": {
+        "size": 25769,
+        "sha256": "a822d0c535c0c12605b12ec580dd56d1e45b811c2900e8c64ab0072ceb68506f"
+      },
+      "internal/client/installer_cli_test.go": {
+        "size": 3224,
+        "sha256": "0870a79fbf043214dc580f521e1ce67933776ae68243ba7b14828d85e9d01928"
+      },
+      "internal/client/installer_cli.go": {
+        "size": 7703,
+        "sha256": "36e37a85706fe4eb6e3a0e70516839cb1ec7b11a32b1c3220245df9336a74ee5"
+      },
+      "internal/client/installer_context_windows_test.go": {
+        "size": 1994,
+        "sha256": "42627c99fc231a332a62575e362a6521f086a806f67b9dfeaf9f13cb64176d01"
+      },
+      "internal/client/installer_context_windows.go": {
+        "size": 2779,
+        "sha256": "5995cb8e42505de0bfbef23fcf8b3a28b75b8ae95d6ed9d0eb0616c24c3eed95"
+      },
+      "internal/client/json.go": {
+        "size": 3962,
+        "sha256": "b8c2dd69d025cc9275dab0ae94f12188817704ef8a76e977a28b25d41be7d269"
+      },
+      "internal/client/lifetime_race_windows_test.go": {
+        "size": 1661,
+        "sha256": "c9f8796d5c25e68d349855a2b6e2e78552444cec901010ce65c2554037a8518f"
+      },
+      "internal/client/lifetime_windows.go": {
+        "size": 6626,
+        "sha256": "6d6ae5dcb60ab78c1c0ca417fea0e03d0b95bf709691f774acf36494ad160007"
+      },
+      "internal/client/maintenance_temp_windows_test.go": {
+        "size": 1596,
+        "sha256": "d883bb728bd23e1ffb9b14a20719159f2ec6316058b1e3ac3de6c1bbe1f3cae8"
+      },
+      "internal/client/maintenance_temp_windows.go": {
+        "size": 1623,
+        "sha256": "68e8f1d782f35a7b579e9319dd2157555e5db58737001b31e7a6d8eedd45590e"
+      },
+      "internal/client/maintenance_test.go": {
+        "size": 12511,
+        "sha256": "38509bcc041b73de34f3cbc5dc44dcbe9e9a0f56e8a15aedb52126bd874896cf"
+      },
+      "internal/client/maintenance.go": {
+        "size": 11172,
+        "sha256": "ad2574d3b6d86d1146ba7c98183cb5d75ff2e3b5c13dd32f323c0309634f0838"
+      },
+      "internal/client/manifest_test.go": {
+        "size": 7937,
+        "sha256": "d089a6a843b3708d17e2cae7babf77f70ce374d560cc8faa6299271bb82920be"
+      },
+      "internal/client/manifest.go": {
+        "size": 6529,
+        "sha256": "53e84673b2f26e906c0fb83465c2583306de27b554aacbe8795f19113f34b8b1"
+      },
+      "internal/client/native_test.go": {
+        "size": 8893,
+        "sha256": "b0c4a5067ec24f3be50dbb7f61ebe86efed6108080688c9e2bb94adb171df65c"
+      },
+      "internal/client/package_test.go": {
+        "size": 7610,
+        "sha256": "4c17268918e89c4f977b4fd55deba5788ec923d8fa29a6a5152b1ce59f2313e5"
+      },
+      "internal/client/package.go": {
+        "size": 9261,
+        "sha256": "f78c02876970111c01638e73c541173d626eec6d4264815d65ed1972da75b4ba"
+      },
+      "internal/client/path_windows_test.go": {
+        "size": 17554,
+        "sha256": "12a4e30a98f28c40363386bdde07dd5bf5ea0403103127370e4a2f70905ceb16"
+      },
+      "internal/client/path_windows.go": {
+        "size": 19471,
+        "sha256": "b05cb36fcb96e5ef75f536423fc8cde70adb2e70ce61646f236c052ad8cb1cf3"
+      },
+      "internal/client/registration_lock_windows_test.go": {
+        "size": 13450,
+        "sha256": "a60fafe72d5dc3c3cf408019dbc65c9ad40debd4ccc12e8d60ee0780da308b09"
+      },
+      "internal/client/registration_lock_windows.go": {
+        "size": 7737,
+        "sha256": "53535e10868edcb132790cdc47d3c9cc4856b7be79b974eb7731a20b9f49f584"
+      },
+      "internal/client/registry_cleanup_native_windows.go": {
+        "size": 13863,
+        "sha256": "b8965371853d3cc03e90db7044dbc3bc140dc971f454572f8e8ffc2797e13157"
+      },
+      "internal/client/registry_cleanup_program_windows_test.go": {
+        "size": 39532,
+        "sha256": "8dad9f07dd65f5891e39bf531ad566136366b3d208a961e98ac4a9054aae108a"
+      },
+      "internal/client/registry_cleanup_program_windows.go": {
+        "size": 41801,
+        "sha256": "54e66157be26e85e2b18451b43e28bbcb0dd793ee831efc6fa6df05512b4f3ed"
+      },
+      "internal/client/run.go": {
+        "size": 8719,
+        "sha256": "cc55cefd8dcd7d563f3b04cf4f9d685d75104fcd9643878897efb5c7d7665267"
+      },
+      "internal/client/state.go": {
+        "size": 5413,
+        "sha256": "6b2324192130eedd27406e23c20385d5d5e50fc839c4cc9a5d6a99ad441378d6"
+      },
+      "internal/client/testdata/engine/main.go": {
+        "size": 2303,
+        "sha256": "6c15a1630a552dd8432b1d513bbbeff888d19c6d7bf3f102e70ef9148bf09861"
+      },
+      "internal/client/trust.json": {
+        "size": 151,
+        "sha256": "5a919ddb5e648ebab985d5e5f983d5902ea818457b5a212a095c0dc5f00828b1"
+      },
+      "internal/client/uninstall_cleanup_windows_test.go": {
+        "size": 28219,
+        "sha256": "83928dc980dea6ade688aba401dc27e96efe80c632714fbb04ec05598ab680bd"
+      },
+      "internal/client/uninstall_cleanup_windows.go": {
+        "size": 17762,
+        "sha256": "18fe6e33c065386f7abf9f4d80eb3b797502b4806ff75d008bdfeda334a545f6"
+      },
+      "internal/client/uninstall_tail_windows.go": {
+        "size": 18630,
+        "sha256": "185a64378c0a73870e4e648945ff05e99665a37821e5989f4f665028eccc63f1"
+      },
+      "internal/client/uninstall_ui_windows.go": {
+        "size": 25209,
+        "sha256": "80fd4eae6e7712c53f5cba3d3dd43f5e9fd13139c23f94855265e22e8dee991f"
+      },
+      "internal/client/update_test.go": {
+        "size": 9391,
+        "sha256": "e29036485c6fef0c099fd8da046a6e09d0d774ca3b6ba216c9dd79d6f40fbbe5"
+      },
+      "internal/client/update.go": {
+        "size": 11256,
+        "sha256": "afde1bde6b5eb094a4882d683022cd36a9a08fd7ff3af3c6391e4857d47078f4"
+      },
+      "internal/client/windows.go": {
+        "size": 3449,
+        "sha256": "03055abba428f16082333a8d781b456bef4ff521d62cb3f81e992681e6532d0c"
+      },
+      "internal/client/wizard_intent_windows_test.go": {
+        "size": 9616,
+        "sha256": "3bcdfce2480ea9df42665d218b4b66eb6df7c5cc9aac297cbb1e591a6ae88b7f"
+      },
+      "internal/client/wizard_intent_windows.go": {
+        "size": 7826,
+        "sha256": "9c33723d22b3f60cf956305e431e23add7c250cec5d7481b7d4f84635543edd7"
+      },
+      "internal/client/wizard_windows_test.go": {
+        "size": 17958,
+        "sha256": "61a25adf0c59b22d6a8d65b434a1a7740e7641fe9f2273eb3fd7b65bd0709b88"
+      },
+      "internal/client/wizard_windows.go": {
+        "size": 35648,
+        "sha256": "07d3c7393486b6c968bd53e315e566910cd1745d8550e6285652fe45063c086e"
+      }
+    }
+  },
+  "build": {
+    "goVersion": "go version go1.27.2 windows/amd64",
+    "goExecutable": {
+      "size": 17531904,
+      "sha256": "b8cd508a0a7aac883cd750e9e75eb306d219e726bdf1cde29009490729437fbf"
+    },
+    "powershellVersion": "7.6.5",
+    "powershellEdition": "Core",
+    "environment": {
+      "CGO_ENABLED": "0",
+      "GOTOOLCHAIN": "local",
+      "GOOS": "windows",
+      "GOARCH": "amd64"
+    },
+    "arguments": {
+      "bootstrap": [
+        "build",
+        "-trimpath",
+        "-ldflags",
+        "-s -w",
+        "-o",
+        "<temporary-output>",
+        "./cmd/bootstrap"
+      ],
+      "launcher": [
+        "build",
+        "-trimpath",
+        "-ldflags",
+        "-s -w",
+        "-o",
+        "<temporary-output>",
+        "./cmd/launcher"
+      ]
+    }
+  },
+  "trust": {
+    "schema": 1,
+    "bootstrapABI": 1,
+    "trustedKeys": 1,
+    "trustSha256": "5a919ddb5e648ebab985d5e5f983d5902ea818457b5a212a095c0dc5f00828b1"
+  },
+  "outputs": {
+    "cudia.exe": {
+      "size": 5384704,
+      "sha256": "e6422d69d0d44171d0ea222785e133c5e1f582270f0eb4b806f5e80e735d9bb1"
+    },
+    "launcher.exe": {
+      "size": 8343552,
+      "sha256": "f5f8fb008d8d602778991bc974f8fc56841816934ecb64608661fb021c6e96f8"
+    }
+  }
+}

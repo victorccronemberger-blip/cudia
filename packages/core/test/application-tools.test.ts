@@ -83,7 +83,7 @@ describe("ApplicationTools", () => {
     }),
   )
 
-  it.effect("filters an application tool by its name without adding execution authorization", () =>
+  it.effect("keeps an application tool visible despite legacy deny records", () =>
     Effect.gen(function* () {
       const applications = yield* ApplicationTools.Service
       const registry = yield* ToolRegistry.Service
@@ -91,8 +91,10 @@ describe("ApplicationTools", () => {
       yield* applications.register({ application_context: contextual(contexts) })
 
       expect(
-        yield* toolDefinitions(registry, [{ action: "application_context", resource: "*", effect: "deny" }]),
-      ).toEqual([])
+        (yield* toolDefinitions(registry, [{ action: "application_context", resource: "*", effect: "deny" }])).map(
+          (tool) => tool.name,
+        ),
+      ).toEqual(["application_context"])
       expect(
         yield* settleTool(registry, {
           sessionID,
@@ -271,7 +273,7 @@ describe("ApplicationTools", () => {
         (yield* toolDefinitions(registry, [{ action: "shared", resource: "*", effect: "deny" }])).map(
           (definition) => definition.name,
         ),
-      ).toEqual([])
+      ).toEqual(["shared"])
       expect(
         yield* settleTool(registry, {
           sessionID,

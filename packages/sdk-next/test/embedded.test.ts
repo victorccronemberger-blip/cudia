@@ -1,10 +1,20 @@
 import { expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Deferred, Effect, Latch, Option, Schema, Stream } from "effect"
 import type { OpenCodeEvent } from "../src"
+
+const cleanup = async (directory: string) => {
+  const target = resolve(directory)
+  const within = relative(resolve(tmpdir()), target)
+  if (!within || within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within))
+    throw new Error("Refusing to remove a fixture outside the temporary directory")
+  // Bun's SQLite close can wait for cached statements to be collected on Windows.
+  Bun.gc(true)
+  await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+}
 
 test("embedded client uses the real router and handlers", async () => {
   const directory = await mkdtemp(join(tmpdir(), "opencode-embedded-"))
@@ -17,6 +27,12 @@ test("embedded client uses the real router and handlers", async () => {
   try {
     const program = Effect.gen(function* () {
       const opencode = yield* OpenCode.create()
+      // Global metadata must work before a Session initializes any Location.
+      // These dependencies belong to the host, not the caller's request context.
+      const paths = yield* opencode.locationPaths.get()
+      expect(paths.defaultDirectory).toBe(AbsolutePath.make(process.cwd()))
+      expect(typeof paths.home).toBe("string")
+      expect(yield* opencode.projects.list()).toEqual([])
       yield* opencode.tools.register({
         embedded_tool: Tool.make({
           description: "Embedded test tool",
@@ -100,9 +116,68 @@ test("embedded client uses the real router and handlers", async () => {
     await Effect.runPromise(Effect.scoped(program))
   } finally {
     Flag.OPENCODE_DB = database
-    await rm(directory, { recursive: true, force: true })
+    await cleanup(directory)
   }
 })
+
+test("embedded router compacts empty sessions and maps missing or unavailable sessions", async () => {
+  const temporaryRoot = resolve(tmpdir())
+  const directory = resolve(await mkdtemp(join(temporaryRoot, "opencode-embedded-compaction-")))
+  const relativeDirectory = relative(temporaryRoot, directory)
+  if (
+    !relativeDirectory ||
+    relativeDirectory === ".." ||
+    relativeDirectory.startsWith(`..${sep}`) ||
+    isAbsolute(relativeDirectory)
+  )
+    throw new Error(`Refusing to clean a temp directory outside ${temporaryRoot}`)
+
+  const database = Flag.OPENCODE_DB
+  Flag.OPENCODE_DB = ":memory:"
+  const { AbsolutePath, Agent, Location, Model, OpenCode, Provider, Session } = await import("../src")
+  const sessionID = Session.ID.make(`ses_embedded_compact_${crypto.randomUUID()}`)
+  const unavailableSessionID = Session.ID.make(`ses_embedded_compact_unavailable_${crypto.randomUUID()}`)
+  const missingSessionID = Session.ID.make(`ses_embedded_compact_missing_${crypto.randomUUID()}`)
+  const unavailableModel = Model.Ref.make({
+    id: Model.ID.make("not-installed"),
+    providerID: Provider.ID.make("provider-not-installed"),
+  })
+
+  try {
+    const program = Effect.gen(function* () {
+      const opencode = yield* OpenCode.create()
+      const location = Location.Ref.make({ directory: AbsolutePath.make(directory) })
+      yield* opencode.sessions.create({
+        id: sessionID,
+        agent: Agent.ID.make("build"),
+        location,
+      })
+
+      yield* opencode.sessions.compact({ sessionID })
+      const emptyContext = yield* opencode.sessions.context({ sessionID })
+      expect(emptyContext.some((message) => message.type === "assistant")).toBe(false)
+
+      const missing = yield* Effect.flip(opencode.sessions.compact({ sessionID: missingSessionID }))
+      expect(missing._tag).toBe("SessionNotFoundError")
+
+      yield* opencode.sessions.create({
+        id: unavailableSessionID,
+        agent: Agent.ID.make("build"),
+        location,
+      })
+      yield* opencode.sessions.switchModel({ sessionID: unavailableSessionID, model: unavailableModel })
+      const unavailableContext = yield* opencode.sessions.context({ sessionID: unavailableSessionID })
+      expect(unavailableContext.length).toBeGreaterThan(0)
+
+      const unavailable = yield* Effect.flip(opencode.sessions.compact({ sessionID: unavailableSessionID }))
+      expect(unavailable._tag).toBe("ServiceUnavailableError")
+    })
+    await Effect.runPromise(Effect.scoped(program))
+  } finally {
+    Flag.OPENCODE_DB = database
+    await cleanup(directory)
+  }
+}, 10_000)
 
 test("Location-owned runner events reach the ready global client", async () => {
   const directory = await mkdtemp(join(tmpdir(), "opencode-embedded-events-"))
@@ -139,7 +214,7 @@ test("Location-owned runner events reach the ready global client", async () => {
     await Effect.runPromise(Effect.scoped(program))
   } finally {
     Flag.OPENCODE_DB = database
-    await rm(directory, { recursive: true, force: true })
+    await cleanup(directory)
   }
 }, 10_000)
 
@@ -182,7 +257,7 @@ test("independent embedded hosts do not share live notifications", async () => {
     await Effect.runPromise(Effect.scoped(program))
   } finally {
     Flag.OPENCODE_DB = database
-    await rm(directory, { recursive: true, force: true })
+    await cleanup(directory)
   }
 }, 10_000)
 
@@ -207,6 +282,6 @@ test("embedded client is available as a Layer service", async () => {
     expect(created.id).toBe(sessionID)
   } finally {
     Flag.OPENCODE_DB = database
-    await rm(directory, { recursive: true, force: true })
+    await cleanup(directory)
   }
 })

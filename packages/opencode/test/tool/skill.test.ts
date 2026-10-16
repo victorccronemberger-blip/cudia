@@ -2,10 +2,12 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { afterEach, describe, expect } from "bun:test"
 import path from "path"
-import type { Permission } from "../../src/permission"
+import { Permission } from "../../src/permission"
+import { Session } from "../../src/session/session"
 import type { Tool } from "@/tool/tool"
 import { SkillTool } from "../../src/tool/skill"
 import { ToolRegistry } from "@/tool/registry"
@@ -27,7 +29,11 @@ afterEach(async () => {
   await disposeAllInstances()
 })
 
-const it = testEffect(LayerNode.compile(LayerNode.group([ToolRegistry.node, CrossSpawnSpawner.node, Ripgrep.node])))
+const it = testEffect(
+  LayerNode.compile(
+    LayerNode.group([ToolRegistry.node, CrossSpawnSpawner.node, Ripgrep.node, Session.node, SessionProjector.node]),
+  ),
+)
 
 describe("tool.skill", () => {
   it.instance("execute returns skill content block with files", () =>
@@ -49,6 +55,24 @@ Use this skill.
         ),
       )
       yield* Effect.promise(() => Bun.write(path.join(skill, "scripts", "demo.txt"), "demo"))
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(dir, ".opencode", "skill", "hidden-skill", "SKILL.md"),
+          "---\nname: hidden-skill\ndescription: Hidden tool tests.\n---\nHidden body",
+        ),
+      )
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(dir, ".opencode", "skill", "session-skill", "SKILL.md"),
+          "---\nname: session-skill\ndescription: Session tool tests.\n---\nSession private body",
+        ),
+      )
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(dir, ".opencode", "opencode.json"),
+          JSON.stringify({ permission: { skill: { "hidden-skill": "deny" } } }),
+        ),
+      )
 
       const home = process.env.OPENCODE_TEST_HOME
       process.env.OPENCODE_TEST_HOME = dir
@@ -71,13 +95,50 @@ Use this skill.
       expect(tool.description).not.toContain("Skill for tool tests.")
 
       const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        permission: Permission.fromConfig({ skill: { "session-skill": "deny" } }),
+      })
       const ctx: Tool.Context = {
         ...baseCtx,
+        sessionID: session.id,
         ask: (req) =>
           Effect.sync(() => {
             requests.push(req)
           }),
       }
+
+      const discovery = yield* tool.execute({ query: "tool tests" }, ctx)
+      expect(discovery.output).toContain('"name":"tool-skill"')
+      expect(discovery.output).toContain('"name":"hidden-skill"')
+      expect(discovery.output).toContain('"name":"session-skill"')
+      expect(discovery.output).toContain("Hidden tool tests.")
+      expect(discovery.output).toContain("Session tool tests.")
+      expect(discovery.output).not.toContain("Use this skill.")
+      expect(discovery.output).not.toContain("SKILL.md")
+      expect(requests).toHaveLength(0)
+
+      for (const input of [
+        {},
+        { name: "tool-skill", query: "tool tests" },
+        { name: "tool-skill", offset: 1 },
+        { name: "tool-skill", limit: 1 },
+      ]) {
+        const exit = yield* tool.execute(input, ctx).pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause)
+          expect(error).toBeInstanceOf(Error)
+          if (error instanceof Error) {
+            expect(error.message).toBe(
+              input.name === undefined
+                ? "Provide a skill name or metadata query."
+                : "Use name to load, or query with pagination to search, not both.",
+            )
+          }
+        }
+      }
+      expect(requests).toHaveLength(0)
 
       const result = yield* tool.execute({ name: "tool-skill" }, ctx)
       const file = path.resolve(skill, "scripts", "demo.txt")
@@ -127,7 +188,10 @@ Use this skill.
       if (Exit.isFailure(exit)) {
         const error = Cause.squash(exit.cause)
         expect(error).toBeInstanceOf(Error)
-        if (error instanceof Error) expect(error.message).toContain('Skill "missing-skill" not found.')
+        if (error instanceof Error) {
+          expect(error.message).toBe('Skill "missing-skill" not found. Search metadata with query.')
+          expect(error.message).not.toContain("Available skills:")
+        }
       }
     }),
   )

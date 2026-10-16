@@ -12,6 +12,7 @@ import { SessionID } from "./session-id"
 import { Location } from "./location"
 import { SessionMessage } from "./session-message"
 import { Revert } from "./revert"
+import { ContextManifestSchema } from "./context-manifest"
 
 export { FileAttachment }
 
@@ -105,6 +106,7 @@ export const ContextUpdated = Event.define({
     ...Base,
     messageID: SessionMessage.ID,
     text: Schema.String,
+    contextManifest: ContextManifestSchema.Manifest.pipe(optional),
   },
 })
 export type ContextUpdated = typeof ContextUpdated.Type

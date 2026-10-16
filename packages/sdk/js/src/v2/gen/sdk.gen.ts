@@ -91,6 +91,8 @@ import type {
   InstanceDisposeErrors,
   InstanceDisposeResponses,
   LocationRef,
+  LspStatus2Errors,
+  LspStatus2Responses,
   LspStatusErrors,
   LspStatusResponses,
   McpAddErrors,
@@ -103,10 +105,16 @@ import type {
   McpAuthRemoveResponses,
   McpAuthStartErrors,
   McpAuthStartResponses,
+  McpConnect2Errors,
+  McpConnect2Responses,
   McpConnectErrors,
   McpConnectResponses,
+  McpDisconnect2Errors,
+  McpDisconnect2Responses,
   McpDisconnectErrors,
   McpDisconnectResponses,
+  McpListErrors,
+  McpListResponses,
   McpLocalConfig,
   McpRemoteConfig,
   McpStatusErrors,
@@ -297,6 +305,10 @@ import type {
   V2IntegrationListResponses,
   V2LocationGetErrors,
   V2LocationGetResponses,
+  V2LocationPathsGetErrors,
+  V2LocationPathsGetResponses,
+  V2ModelDefaultErrors,
+  V2ModelDefaultResponses,
   V2ModelListErrors,
   V2ModelListResponses,
   V2PermissionRequestListErrors,
@@ -311,6 +323,8 @@ import type {
   V2ProjectCopyRefreshResponses,
   V2ProjectCopyRemoveErrors,
   V2ProjectCopyRemoveResponses,
+  V2ProjectListErrors,
+  V2ProjectListResponses,
   V2ProviderGetErrors,
   V2ProviderGetResponses,
   V2ProviderListErrors,
@@ -385,14 +399,22 @@ import type {
   V2SessionWaitResponses,
   V2SkillListErrors,
   V2SkillListResponses,
+  V2VcsDiffErrors,
+  V2VcsDiffResponses,
+  V2VcsGetErrors,
+  V2VcsGetResponses,
+  V2VcsStatusErrors,
+  V2VcsStatusResponses,
   VcsApplyErrors,
   VcsApplyResponses,
+  VcsContext,
   VcsDiffErrors,
   VcsDiffRawErrors,
   VcsDiffRawResponses,
   VcsDiffResponses,
   VcsGetErrors,
   VcsGetResponses,
+  VcsMode,
   VcsStatusErrors,
   VcsStatusResponses,
   WorktreeCreateErrors,
@@ -1355,7 +1377,7 @@ export class Global extends HeyApiClient {
   /**
    * Upgrade opencode
    *
-   * Upgrade opencode to the specified version or latest if not specified.
+   * Upgrade opencode to the specified version.
    */
   public upgrade<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2218,6 +2240,28 @@ export class Lsp extends HeyApiClient {
       ...params,
     })
   }
+
+  /**
+   * Get language server status
+   *
+   * Observe Location-scoped language server metadata without discovering or starting processes.
+   */
+  public status2<ThrowOnError extends boolean = false>(
+    parameters?: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
+    return (options?.client ?? this.client).get<LspStatus2Responses, LspStatus2Errors, ThrowOnError>({
+      url: "/api/lsp",
+      ...options,
+      ...params,
+    })
+  }
 }
 
 export class Formatter extends HeyApiClient {
@@ -2516,6 +2560,94 @@ export class Mcp extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<McpDisconnectResponses, McpDisconnectErrors, ThrowOnError>({
       url: "/mcp/{name}/disconnect",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * List MCP servers
+   *
+   * Retrieve MCP server connection status and aggregate tool exposure counts.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
+    return (options?.client ?? this.client).get<McpListResponses, McpListErrors, ThrowOnError>({
+      url: "/api/mcp",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Connect MCP server
+   *
+   * Connect a configured MCP server for the selected location.
+   */
+  public connect2<ThrowOnError extends boolean = false>(
+    parameters: {
+      server: string
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "server" },
+            { in: "query", key: "location" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<McpConnect2Responses, McpConnect2Errors, ThrowOnError>({
+      url: "/api/mcp/{server}/connect",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Disconnect MCP server
+   *
+   * Disconnect a configured MCP server for the selected location.
+   */
+  public disconnect2<ThrowOnError extends boolean = false>(
+    parameters: {
+      server: string
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "server" },
+            { in: "query", key: "location" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<McpDisconnect2Responses, McpDisconnect2Errors, ThrowOnError>({
+      url: "/api/mcp/{server}/disconnect",
       ...options,
       ...params,
     })
@@ -5195,7 +5327,7 @@ export class Permission2 extends HeyApiClient {
   /**
    * Create permission request
    *
-   * Evaluate and, when approval is required, create a permission request for a session.
+   * Validate the session and agent and return allow. Legacy permission rules do not create approval requests.
    */
   public create<ThrowOnError extends boolean = false>(
     parameters: {
@@ -5658,7 +5790,7 @@ export class Session3 extends HeyApiClient {
   /**
    * Compact session
    *
-   * Compact a session conversation.
+   * Wait for a settled turn boundary and compact the current conversation. Returns after a completed checkpoint, or without a provider call when no older context is eligible. Queued user inputs remain pending until ordinary execution promotes them.
    */
   public compact<ThrowOnError extends boolean = false>(
     parameters: {
@@ -5891,6 +6023,28 @@ export class Model extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
     return (options?.client ?? this.client).get<V2ModelListResponses, V2ModelListErrors, ThrowOnError>({
       url: "/api/model",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get default model
+   *
+   * Retrieve the configured default model, or the available release fallback.
+   */
+  public default<ThrowOnError extends boolean = false>(
+    parameters?: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
+    return (options?.client ?? this.client).get<V2ModelDefaultResponses, V2ModelDefaultErrors, ThrowOnError>({
+      url: "/api/model/default",
       ...options,
       ...params,
     })
@@ -6498,6 +6652,81 @@ export class Fs extends HeyApiClient {
   }
 }
 
+export class Vcs2 extends HeyApiClient {
+  /**
+   * Read repository information
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
+    return (options?.client ?? this.client).get<V2VcsGetResponses, V2VcsGetErrors, ThrowOnError>({
+      url: "/api/vcs",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Read working changes
+   */
+  public status<ThrowOnError extends boolean = false>(
+    parameters?: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
+    return (options?.client ?? this.client).get<V2VcsStatusResponses, V2VcsStatusErrors, ThrowOnError>({
+      url: "/api/vcs/status",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Read repository differences
+   */
+  public diff<ThrowOnError extends boolean = false>(
+    parameters: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+      mode: VcsMode
+      context?: VcsContext
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "location" },
+            { in: "query", key: "mode" },
+            { in: "query", key: "context" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<V2VcsDiffResponses, V2VcsDiffErrors, ThrowOnError>({
+      url: "/api/vcs/diff",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Command2 extends HeyApiClient {
   /**
    * List commands
@@ -6987,6 +7216,34 @@ export class ProjectCopy2 extends HeyApiClient {
   }
 }
 
+export class Project2 extends HeyApiClient {
+  /**
+   * List projects
+   *
+   * Retrieve persisted project metadata without initializing a filesystem location.
+   */
+  public list<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<V2ProjectListResponses, V2ProjectListErrors, ThrowOnError>({
+      url: "/api/project",
+      ...options,
+    })
+  }
+}
+
+export class LocationPaths extends HeyApiClient {
+  /**
+   * Get server paths
+   *
+   * Retrieve the server home and process default directory, independent of the selected location.
+   */
+  public get<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<V2LocationPathsGetResponses, V2LocationPathsGetErrors, ThrowOnError>({
+      url: "/api/location/paths",
+      ...options,
+    })
+  }
+}
+
 export class V2 extends HeyApiClient {
   private _health?: Health
   get health(): Health {
@@ -7038,6 +7295,11 @@ export class V2 extends HeyApiClient {
     return (this._fs ??= new Fs({ client: this.client }))
   }
 
+  private _vcs?: Vcs2
+  get vcs(): Vcs2 {
+    return (this._vcs ??= new Vcs2({ client: this.client }))
+  }
+
   private _command?: Command2
   get command(): Command2 {
     return (this._command ??= new Command2({ client: this.client }))
@@ -7071,6 +7333,16 @@ export class V2 extends HeyApiClient {
   private _projectCopy?: ProjectCopy2
   get projectCopy(): ProjectCopy2 {
     return (this._projectCopy ??= new ProjectCopy2({ client: this.client }))
+  }
+
+  private _project?: Project2
+  get project(): Project2 {
+    return (this._project ??= new Project2({ client: this.client }))
+  }
+
+  private _locationPaths?: LocationPaths
+  get locationPaths(): LocationPaths {
+    return (this._locationPaths ??= new LocationPaths({ client: this.client }))
   }
 }
 

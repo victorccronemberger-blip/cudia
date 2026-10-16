@@ -4,6 +4,10 @@ import { Effect, Layer, Record, Result, Schema, Context } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { Global } from "@opencode-ai/core/global"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Flock } from "@opencode-ai/core/util/flock"
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { NativeChatGPT } from "../plugin/openai/chatgpt"
 
 export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
 
@@ -18,6 +22,7 @@ export class Oauth extends Schema.Class<Oauth>("OAuth")({
   expires: NonNegativeInt,
   accountId: Schema.optional(Schema.String),
   enterpriseUrl: Schema.optional(Schema.String),
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 }) {}
 
 export class Api extends Schema.Class<Api>("ApiAuth")({
@@ -34,6 +39,55 @@ export class WellKnown extends Schema.Class<WellKnown>("WellKnownAuth")({
 
 export const Info = Schema.Union([Oauth, Api, WellKnown]).annotate({ discriminator: "type", identifier: "Auth" })
 export type Info = Schema.Schema.Type<typeof Info>
+
+// Atomic replacement keeps a crash from leaving half a rotating token pair.
+// The shared lock also prevents concurrent provider updates from losing keys.
+export async function readStored(): Promise<Record<string, Info>> {
+  const text =
+    process.env.OPENCODE_AUTH_CONTENT ??
+    (await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return "{}"
+      throw error
+    }))
+  const data = JSON.parse(text)
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid auth data")
+  const decode = Schema.decodeUnknownOption(Info)
+  return Record.filterMap(data as Record<string, unknown>, (value) => Result.fromOption(decode(value), () => undefined))
+}
+
+export async function mutateStored(update: (data: Record<string, Info>) => Record<string, Info> | undefined) {
+  return Flock.withLock(`auth:${file}`, async () => {
+    const data = update(await readStored())
+    if (!data) return false
+    await mkdir(path.dirname(file), { recursive: true })
+    const temporary = `${file}.${randomUUID()}.tmp`
+    const handle = await open(temporary, "wx", 0o600)
+    try {
+      await handle.writeFile(JSON.stringify(data, null, 2))
+      await handle.sync()
+      await handle.close()
+      await rename(temporary, file)
+      return true
+    } finally {
+      await handle.close().catch(() => {})
+      await rm(temporary, { force: true })
+    }
+  })
+}
+
+export async function replaceStored(key: string, expected: Oauth, next: Oauth) {
+  return mutateStored((data) => {
+    const current = data[key]
+    if (
+      current?.type !== "oauth" ||
+      current.access !== expected.access ||
+      current.refresh !== expected.refresh ||
+      current.metadata?.clientId !== expected.metadata?.clientId
+    )
+      return
+    return { ...data, [key]: next }
+  })
+}
 
 export class AuthError extends Schema.TaggedErrorClass<AuthError>()("AuthError", {
   message: Schema.String,
@@ -52,19 +106,9 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Au
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const fsys = yield* FSUtil.Service
-    const decode = Schema.decodeUnknownOption(Info)
-
-    const all = Effect.fn("Auth.all")(function* () {
-      if (process.env.OPENCODE_AUTH_CONTENT) {
-        try {
-          return JSON.parse(process.env.OPENCODE_AUTH_CONTENT)
-        } catch (err) {}
-      }
-
-      const data = (yield* fsys.readJson(file).pipe(Effect.orElseSucceed(() => ({})))) as Record<string, unknown>
-      return Record.filterMap(data, (value) => Result.fromOption(decode(value), () => undefined))
-    })
+    const all = Effect.fn("Auth.all")(() =>
+      Effect.tryPromise({ try: readStored, catch: fail("Failed to read auth data") }),
+    )
 
     const get = Effect.fn("Auth.get")(function* (providerID: string) {
       return (yield* all())[providerID]
@@ -72,20 +116,42 @@ const layer = Layer.effect(
 
     const set = Effect.fn("Auth.set")(function* (key: string, info: Info) {
       const norm = key.replace(/\/+$/, "")
-      const data = yield* all()
-      if (norm !== key) delete data[key]
-      delete data[norm + "/"]
-      yield* fsys
-        .writeJson(file, { ...data, [norm]: info }, 0o600)
-        .pipe(Effect.mapError(fail("Failed to write auth data")))
+      yield* Effect.tryPromise({
+        try: () =>
+          mutateStored((data) => {
+            if (norm !== key) delete data[key]
+            delete data[norm + "/"]
+            return { ...data, [norm]: info }
+          }),
+        catch: fail("Failed to write auth data"),
+      })
     })
 
     const remove = Effect.fn("Auth.remove")(function* (key: string) {
       const norm = key.replace(/\/+$/, "")
-      const data = yield* all()
-      delete data[key]
-      delete data[norm]
-      yield* fsys.writeJson(file, data, 0o600).pipe(Effect.mapError(fail("Failed to write auth data")))
+      const selected = yield* get(norm)
+      const native = norm === "openai" && selected?.type === "oauth" && selected.metadata?.oauthMode === "chatgpt"
+      if (native) {
+        const result = yield* Effect.tryPromise({
+          try: () => NativeChatGPT.logout(selected),
+          catch: fail("Failed to sign out of ChatGPT"),
+        })
+        if (result.revocationError)
+          return yield* new AuthError({
+            message: "Credentials removed locally; remote ChatGPT revocation failed",
+            cause: result.revocationError,
+          })
+        return
+      }
+      yield* Effect.tryPromise({
+        try: () =>
+          mutateStored((data) => {
+            delete data[key]
+            delete data[norm]
+            return data
+          }),
+        catch: fail("Failed to write auth data"),
+      })
     })
 
     return Service.of({ get, all, set, remove })

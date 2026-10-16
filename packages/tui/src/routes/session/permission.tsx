@@ -369,6 +369,37 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
               }
             }
 
+            if (permission.startsWith("mcp.")) {
+              const metadata = props.request.metadata ?? {}
+              const details: ReadonlyArray<readonly [string, string]> = [
+                ...(typeof metadata.server === "string" ? ([["Server", metadata.server]] as const) : []),
+                ...(typeof metadata.tool === "string" ? ([["Tool", metadata.tool]] as const) : []),
+                ...(Array.isArray(metadata.tools)
+                  ? metadata.tools
+                      .filter((value): value is string => typeof value === "string")
+                      .map((value) => ["Tool", value] as const)
+                  : []),
+                ...(Array.isArray(metadata.servers)
+                  ? metadata.servers
+                      .filter((value): value is string => typeof value === "string")
+                      .map((value) => ["Server", value] as const)
+                  : []),
+              ]
+
+              return {
+                icon: "⚙",
+                title: `MCP ${permission.slice("mcp.".length)}`,
+                body: (
+                  <box paddingLeft={1} flexDirection="column">
+                    <text fg={theme.textMuted}>{"Action: " + JSON.stringify(permission.slice("mcp.".length))}</text>
+                    <For each={details}>
+                      {([label, value]) => <text fg={theme.textMuted}>{`${label}: ${JSON.stringify(value)}`}</text>}
+                    </For>
+                  </box>
+                ),
+              }
+            }
+
             return {
               icon: "⚙",
               title: `Call tool ${permission}`,
@@ -507,6 +538,7 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
           textColor={theme.text}
           focusedTextColor={theme.text}
           cursorColor={theme.primary}
+          cursorStyle={tuiConfig.cursor}
         />
         <box flexDirection="row" gap={2} flexShrink={0}>
           <text fg={theme.text}>

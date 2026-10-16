@@ -10,11 +10,14 @@ import { FileMutation } from "./file-mutation"
 import { FileSystem } from "./filesystem"
 import { FileSystemSearch } from "./filesystem/search"
 import { Watcher } from "./filesystem/watcher"
+import { Vcs } from "./vcs"
 import { Image } from "./image"
 import { Integration } from "./integration"
 import { Location } from "./location"
 import { LocationMutation } from "./location-mutation"
 import { LocationServiceMap } from "./location-service-map"
+import { MCPV2 } from "./mcp"
+import { LSPV2 } from "./lsp"
 import { PermissionV2 } from "./permission"
 import { PluginV2 } from "./plugin"
 import { PluginInternal } from "./plugin/internal"
@@ -55,6 +58,7 @@ export const locationServices = LayerNode.group([
   ProjectCopy.refreshNode,
   FileSystemSearch.node,
   FileSystem.node,
+  Vcs.node,
   Watcher.node,
   Pty.node,
   SkillV2.node,
@@ -66,6 +70,8 @@ export const locationServices = LayerNode.group([
   ToolOutputStore.node,
   ToolRegistry.node,
   ToolRegistry.toolsNode,
+  MCPV2.node,
+  LSPV2.node,
   Image.node,
   SkillGuidance.node,
   ReferenceGuidance.node,

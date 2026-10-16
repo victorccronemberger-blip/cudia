@@ -1,7 +1,8 @@
 import { Effect, Option, Schema, Scope, Stream } from "effect"
-import { NonNegativeInt } from "@opencode-ai/core/schema"
-import * as path from "path"
-import * as Tool from "./tool"
+import { NonNegativeInt, PositiveInt } from "@opencode-ai/core/schema"
+import path from "path"
+import { createHash } from "node:crypto"
+import { Tool } from "./tool"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
@@ -9,29 +10,42 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import { Truncate } from "./truncate"
+import { TextPage } from "../util/text-page"
+import { BoundedFile } from "@opencode-ai/core/util/bounded-file"
+import { OutputBudget } from "@opencode-ai/core/util/output-budget"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
-const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
+const MAX_MEDIA_INGEST_BYTES = 20 * 1024 * 1024
 const SAMPLE_BYTES = 4096
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 
-// `offset` and `limit` were originally `z.coerce.number()` — the runtime
-// coercion was useful when the tool was called from a shell but serves no
-// purpose in the LLM tool-call path (the model emits typed JSON). The JSON
-// Schema output is identical (`type: "number"`), so the LLM view is
-// unchanged; purely CLI-facing uses must now send numbers rather than strings.
 export const Parameters = Schema.Struct({
   filePath: Schema.String.annotate({ description: "The absolute path to the file or directory to read" }),
-  offset: Schema.optional(NonNegativeInt).annotate({
-    description: "The line number to start reading from (1-indexed)",
+  offset: Schema.optional(PositiveInt).annotate({
+    description: "The line or directory entry to start reading from (1-indexed)",
   }),
-  limit: Schema.optional(NonNegativeInt).annotate({
-    description: "The maximum number of lines to read (defaults to 2000)",
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(DEFAULT_READ_LIMIT))).annotate({
+    description: "The maximum number of lines or directory entries to read (1-2000; defaults to 2000)",
+  }),
+  snapshot: Schema.optional(Schema.String.check(Schema.isPattern(/^[\da-f]{64}$/))).annotate({
+    description:
+      "Directory snapshot from the first page; required with directory offsets above 1. A changed listing requires restarting at offset 1.",
+  }),
+  textPage: Schema.optional(
+    Schema.Struct({
+      offset: Schema.optional(NonNegativeInt),
+      limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(TextPage.MAX_UNITS))),
+      contentHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[\da-f]{64}$/))),
+    }),
+  ).annotate({
+    description:
+      "Read exact text in UTF-16 pages, including long lines. Start with {}; continue with returned nextOffset and contentHash. Do not combine with line offset/limit.",
   }),
 })
 
@@ -50,7 +64,7 @@ type Display =
       text: string
       lineStart: number
       lineEnd: number
-      totalLines: number
+      totalLines?: number
       truncated: boolean
     }
 
@@ -58,13 +72,17 @@ type Metadata = {
   preview: string
   truncated: boolean
   loaded: string[]
+  receipt?: { kind: "batch" | "page"; start: number; end: number }
+  pendingInstructions?: boolean
+  snapshot?: string
+  nextOffset?: number
   display?: Display
 }
 
 export const ReadTool = Tool.define<
   typeof Parameters,
   Metadata,
-  FSUtil.Service | Instruction.Service | LSP.Service | Scope.Scope
+  FSUtil.Service | Instruction.Service | LSP.Service | Truncate.Service | Scope.Scope
 >(
   "read",
   Effect.gen(function* () {
@@ -72,13 +90,48 @@ export const ReadTool = Tool.define<
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
     const scope = yield* Scope.Scope
+    const truncate = yield* Truncate.Service
+
+    const prerequisites = Effect.fn("ReadTool.prerequisites")(function* (
+      ctx: Tool.Context,
+      filepath: string,
+      authorize: (requested: string, canonical: string) => Effect.Effect<void>,
+      limits: OutputBudget.Limits,
+    ) {
+      if (limits.maxLines < 1) return yield* Effect.fail(new Error("Instruction response exceeds the output budget."))
+      // Durable storage alone does not prove that the model received an instruction.
+      const prepared = yield* instruction.prepare(
+        ctx.messages.filter((message) => message.info.sessionID === ctx.sessionID),
+        filepath,
+        authorize,
+        {
+          maxBytes: Math.min(16 * 1024, limits.maxBytes),
+        },
+      )
+      if (!OutputBudget.fits(prepared.output, limits))
+        return yield* Effect.fail(new Error("Instruction response exceeds the output budget."))
+      return prepared
+    })
+
+    const pending = (title: string, prepared: { output: string; loaded: string[] }) => ({
+      title,
+      output: prepared.output,
+      metadata: {
+        preview: prepared.output.slice(0, 2000),
+        truncated: false,
+        loaded: prepared.loaded,
+        pendingInstructions: true,
+        receipt: { kind: "batch" as const, start: 0, end: prepared.output.length },
+      },
+    })
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
-      const items = yield* fs.readDirectory(dir).pipe(
+      const items = yield* fs.readDirectoryEntriesBounded(dir).pipe(
         Effect.map((items) =>
           items
+            .map((item) => item.name)
             .filter(
               (item) =>
                 item.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(item.toLowerCase()),
@@ -99,7 +152,7 @@ export const ReadTool = Tool.define<
     })
 
     const list = Effect.fn("ReadTool.list")(function* (filepath: string) {
-      const items = yield* fs.readDirectoryEntries(filepath)
+      const items = yield* fs.readDirectoryEntriesBounded(filepath)
       return yield* Effect.forEach(
         items,
         Effect.fnUntraced(function* (item) {
@@ -110,7 +163,7 @@ export const ReadTool = Tool.define<
           if (target?.type === "Directory") return item.name + "/"
           return item.name
         }),
-        { concurrency: "unbounded" },
+        { concurrency: 16 },
       ).pipe(Effect.map((items: string[]) => items.sort((a, b) => a.localeCompare(b))))
     })
 
@@ -134,49 +187,77 @@ export const ReadTool = Tool.define<
       )
     })
 
-    const lines = Effect.fn("ReadTool.lines")(function* (filepath: string, opts: { limit: number; offset: number }) {
+    const lines = Effect.fn("ReadTool.lines")(function* (
+      filepath: string,
+      opts: { limit: number; offset: number; maxBytes: number },
+    ) {
       const start = opts.offset - 1
       const raw: string[] = []
-      const flags = { bytes: 0, count: 0, cut: false, more: false, done: false }
-
-      // Note: prefer manual TextDecoder over Stream.decodeText — when the source stream
-      // ends without flushing, decodeText drops the final unterminated line. We also
-      // avoid Stream.runForEachWhile (it currently swallows the final unterminated
-      // line of the upstream splitLines pipeline) and use a tagged error to stop the
-      // upstream file stream as soon as the byte cap is reached.
+      const flags = { bytes: 0, count: 0, cut: false, lineCut: false, more: false, complete: true }
+      let prefix = ""
+      let hasContent = false
       const decoder = new TextDecoder("utf-8")
-      yield* fs.stream(filepath).pipe(
-        Stream.map((bytes) => decoder.decode(bytes, { stream: true })),
-        Stream.splitLines,
-        Stream.runForEach((text) =>
-          Effect.gen(function* () {
-            if (flags.done) return yield* new ReadStop()
-            flags.count += 1
-            if (flags.count <= start) return
-
-            if (raw.length >= opts.limit) {
-              flags.more = true
-              return
-            }
-
-            const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
-            const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
-            if (flags.bytes + size <= MAX_BYTES) {
-              raw.push(line)
-              flags.bytes += size
-              return
-            }
-
-            flags.cut = true
-            flags.more = true
-            flags.done = true
-            return yield* new ReadStop()
-          }),
+      const stop = () => {
+        flags.more = true
+        flags.complete = false
+        return false
+      }
+      const append = (partial = false, eof = false) => {
+        flags.count++
+        const text = prefix.endsWith("\r") ? prefix.slice(0, -1) : prefix
+        prefix = ""
+        hasContent = false
+        if (flags.count <= start) return true
+        const abbreviated = partial || text.length > MAX_LINE_LENGTH
+        // Keep valid surrogate pairs together when abbreviating the human-readable view.
+        const end =
+          text.charCodeAt(MAX_LINE_LENGTH - 1) >= 0xd800 && text.charCodeAt(MAX_LINE_LENGTH - 1) <= 0xdbff
+            ? MAX_LINE_LENGTH - 1
+            : MAX_LINE_LENGTH
+        const line = abbreviated ? text.slice(0, end) + MAX_LINE_SUFFIX : text
+        const size = Buffer.byteLength(`${flags.count}: ${line}`, "utf8") + (raw.length > 0 ? 1 : 0)
+        if (flags.bytes + size > opts.maxBytes) {
+          flags.cut = true
+          return stop()
+        }
+        raw.push(line)
+        flags.bytes += size
+        if (abbreviated) {
+          flags.lineCut = true
+          if (eof) return true
+          return stop()
+        }
+        return true
+      }
+      const consume = (text: string) => {
+        let position = 0
+        while (position < text.length) {
+          if (raw.length >= opts.limit) return stop()
+          const newline = text.indexOf("\n", position)
+          const end = newline === -1 ? text.length : newline
+          if (end > position) hasContent = true
+          if (flags.count >= start) {
+            prefix += text.slice(position, Math.min(end, position + MAX_LINE_LENGTH + 2 - prefix.length))
+            // The extra two code units distinguish a trailing CR from an overlong line without buffering it.
+            if (prefix.length > MAX_LINE_LENGTH + 1) return append(true)
+          }
+          if (newline === -1) return true
+          if (!append()) return false
+          position = newline + 1
+        }
+        return true
+      }
+      yield* fs.stream(filepath, { chunkSize: 64 * 1024 }).pipe(
+        Stream.runForEach((bytes) =>
+          consume(decoder.decode(bytes, { stream: true })) ? Effect.void : Effect.fail(new ReadStop()),
         ),
         Effect.catchTag("ReadStop", () => Effect.void),
       )
-
-      return { raw, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset }
+      if (flags.complete) {
+        consume(decoder.decode())
+        if (flags.complete && hasContent) append(false, true)
+      }
+      return { raw, ...flags, offset: opts.offset }
     })
 
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
@@ -231,14 +312,9 @@ export const ReadTool = Tool.define<
       ctx: Tool.Context<Metadata>,
     ) {
       const instance = yield* InstanceState.context
-      let filepath = params.filePath
-      if (!path.isAbsolute(filepath)) {
-        filepath = path.resolve(instance.directory, filepath)
-      }
-      if (process.platform === "win32") {
-        filepath = FSUtil.normalizePath(filepath)
-      }
-      const title = path.relative(instance.worktree, filepath)
+      const requested = FSUtil.windowsPath(params.filePath)
+      const alias = path.resolve(path.isAbsolute(requested) ? requested : path.join(instance.directory, requested))
+      const filepath = process.platform === "win32" ? FSUtil.normalizePath(alias) : alias
 
       const stat = yield* fs.stat(filepath).pipe(
         Effect.catchIf(
@@ -247,47 +323,96 @@ export const ReadTool = Tool.define<
         ),
       )
 
-      yield* assertExternalDirectoryEffect(ctx, filepath, {
-        bypass: Boolean(ctx.extra?.["bypassCwdCheck"]),
-        kind: stat?.type === "Directory" ? "directory" : "file",
+      const canonical = stat ? yield* fs.realPath(filepath) : filepath
+      const canonicalWorktree = yield* fs.realPath(instance.worktree)
+      const title = path.relative(instance.worktree, canonical)
+      const kind = stat?.type === "Directory" ? "directory" : "file"
+      const bypass = Boolean(ctx.extra?.["bypassCwdCheck"])
+      const authorizeRead = Effect.fnUntraced(function* (requested: string, resolved: string, instruction = false) {
+        const paths = requested === resolved ? [resolved] : [requested, resolved]
+        for (const candidate of paths) {
+          yield* assertExternalDirectoryEffect(ctx, candidate, { bypass, kind: instruction ? "file" : kind })
+          yield* ctx.ask({
+            permission: "read",
+            patterns: [path.relative(candidate === resolved ? canonicalWorktree : instance.worktree, candidate)],
+            always: ["*"],
+            metadata: { filepath: candidate, instruction },
+          })
+        }
       })
 
-      yield* ctx.ask({
-        permission: "read",
-        patterns: [path.relative(instance.worktree, filepath)],
-        always: ["*"],
-        metadata: {},
+      yield* authorizeRead(alias, canonical)
+
+      const limits = OutputBudget.resolve(yield* truncate.limits(), {
+        maxLines: DEFAULT_READ_LIMIT,
+        maxBytes: MAX_BYTES,
       })
+
+      if (params.textPage && (params.offset !== undefined || params.limit !== undefined))
+        return yield* Effect.fail(
+          new Error("Use textPage offsets and limits without the line offset/limit parameters."),
+        )
 
       if (!stat) return yield* miss(filepath)
 
       if (stat.type === "Directory") {
-        const items = yield* list(filepath)
-        const limit = params.limit ?? DEFAULT_READ_LIMIT
-        const offset = params.offset || 1
+        if (params.textPage) return yield* Effect.fail(new Error("Text pages require a text file."))
+        const offset = params.offset ?? 1
+        if (offset > 1 && params.snapshot === undefined)
+          return yield* Effect.fail(new Error("Pass snapshot from the first directory page when continuing."))
+        const items = yield* list(canonical)
+        const snapshot = createHash("sha256")
+          .update(JSON.stringify([canonical, items]))
+          .digest("hex")
+        if (params.snapshot !== undefined && params.snapshot !== snapshot)
+          return yield* Effect.fail(new Error("Directory listing changed. Restart at offset 1 without snapshot."))
+        if (offset > items.length + 1)
+          return yield* Effect.fail(
+            new Error(`Offset ${offset} is out of range for this directory (${items.length} entries)`),
+          )
         const start = offset - 1
-        const sliced = items.slice(start, start + limit)
+        const sliced: string[] = []
+        let bytes = 0
+        for (const item of items.slice(start, start + Math.min(params.limit ?? DEFAULT_READ_LIMIT, limits.maxLines))) {
+          const size = Buffer.byteLength(item, "utf8") + (sliced.length ? 1 : 0)
+          if (bytes + size > limits.maxBytes) break
+          sliced.push(item)
+          bytes += size
+        }
+        const render = () =>
+          [
+            `<path>${canonical}</path>`,
+            `<type>directory</type>`,
+            `<entries>`,
+            sliced.join("\n"),
+            start + sliced.length < items.length
+              ? `\n(Showing ${sliced.length} of ${items.length} entries. Use offset=${offset + sliced.length} and snapshot=${snapshot} to continue.)`
+              : `\n(${items.length} entries; snapshot=${snapshot})`,
+            `</entries>`,
+          ].join("\n")
+        let output = render()
+        while (!OutputBudget.fits(output, limits) && sliced.length) {
+          sliced.pop()
+          output = render()
+        }
+        if (!OutputBudget.fits(output, limits) || (sliced.length === 0 && start < items.length))
+          return yield* Effect.fail(
+            new Error("Directory response cannot include the next complete entry within the output budget."),
+          )
         const truncated = start + sliced.length < items.length
 
         return {
           title,
-          output: [
-            `<path>${filepath}</path>`,
-            `<type>directory</type>`,
-            `<entries>`,
-            sliced.join("\n"),
-            truncated
-              ? `\n(Showing ${sliced.length} of ${items.length} entries. Use 'offset' parameter to read beyond entry ${offset + sliced.length})`
-              : `\n(${items.length} entries)`,
-            `</entries>`,
-          ].join("\n"),
+          output,
           metadata: {
             preview: sliced.slice(0, 20).join("\n"),
             truncated,
             loaded: [] as string[],
+            snapshot,
+            ...(truncated ? { nextOffset: offset + sliced.length } : {}),
             display: {
               type: "directory" as const,
-              path: filepath,
+              path: canonical,
               entries: sliced,
               offset,
               totalEntries: items.length,
@@ -297,22 +422,106 @@ export const ReadTool = Tool.define<
         }
       }
 
-      const loaded = yield* instruction.resolve(ctx.messages, filepath, ctx.messageID)
-      const sample = yield* readSample(filepath, Number(stat.size), SAMPLE_BYTES)
+      if (stat.type !== "File") return yield* Effect.fail(new Error(`Cannot read a nonregular file: ${canonical}`))
+      if (params.snapshot !== undefined)
+        return yield* Effect.fail(new Error("snapshot is only supported for directory pages."))
 
-      const mime = sniffAttachmentMime(sample, FSUtil.mimeType(filepath))
+      const sample = yield* readSample(canonical, Number(stat.size), SAMPLE_BYTES)
+
+      const mime = sniffAttachmentMime(sample, FSUtil.mimeType(canonical))
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
 
+      if (params.textPage) {
+        if (isImage || isPdfAttachment(mime) || isBinaryFile(canonical, sample))
+          return yield* Effect.fail(new Error("Text pages require a text file."))
+        const document = yield* instruction.isDocument(canonical)
+        if (!document) {
+          const prepared = yield* prerequisites(
+            ctx,
+            canonical,
+            (requested, resolved) => authorizeRead(requested, resolved, true),
+            limits,
+          )
+          // Deliver a bounded instruction batch first; it becomes authoritative only after recording.
+          if (prepared.pending || prepared.loaded.length) return pending(title, prepared)
+        }
+
+        const offset = params.textPage.offset ?? 0
+        const limit = params.textPage.limit ?? TextPage.MAX_UNITS
+        const snapshot = yield* TextPage.snapshot(fs.stream(canonical), { offset, limit })
+        if (params.textPage.contentHash !== undefined && params.textPage.contentHash !== snapshot.contentHash)
+          return yield* Effect.fail(
+            new Error("File content changed. Restart textPage at offset 0 without contentHash."),
+          )
+        if (offset > 0 && params.textPage.contentHash === undefined)
+          return yield* Effect.fail(new Error("Pass contentHash from the first text page when continuing."))
+        if (offset > snapshot.totalLength) return yield* Effect.fail(new Error("Text page offset is outside the file."))
+        if (limits.maxLines < 1) return yield* Effect.fail(new Error("Text page exceeds the output budget."))
+        const page = TextPage.format(
+          snapshot.text,
+          {
+            offset: offset - snapshot.start,
+            limit,
+            maxBytes: Math.min(TextPage.MAX_BYTES, limits.maxBytes),
+          },
+          (end) =>
+            JSON.stringify({
+              filepath: canonical,
+              contentHash: snapshot.contentHash,
+              text: snapshot.text.slice(offset - snapshot.start, end),
+              offset,
+              nextOffset: snapshot.start + end,
+              totalLength: snapshot.totalLength,
+              complete: snapshot.start + end === snapshot.totalLength,
+              offsetUnit: "utf16_code_units",
+            }),
+        )
+        if (!page.ok) {
+          const message = {
+            offset: "Text page offset is outside the file.",
+            surrogate: "Text page offset falls inside a Unicode surrogate pair.",
+            character: "Text page limit cannot include the next Unicode character.",
+            budget: "Text page envelope exceeds the output budget.",
+          }[page.error]
+          return yield* Effect.fail(new Error(message))
+        }
+        return {
+          title,
+          output: page.output,
+          metadata: {
+            preview: snapshot.text.slice(offset - snapshot.start, Math.min(page.end, offset - snapshot.start + 2000)),
+            truncated: false,
+            loaded: [] as string[],
+            ...(document ? { receipt: { kind: "page" as const, start: 0, end: page.output.length } } : {}),
+          },
+        }
+      }
+
       if (isImage || isPdfAttachment(mime)) {
-        const bytes = yield* fs.readFile(filepath)
+        const prepared = yield* prerequisites(
+          ctx,
+          canonical,
+          (requested, resolved) => authorizeRead(requested, resolved, true),
+          limits,
+        )
+        if (prepared.pending || prepared.loaded.length) return pending(title, prepared)
         const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
+        if (!OutputBudget.fits(msg, limits))
+          return yield* Effect.fail(new Error("Media response exceeds the output budget."))
+        const bytes = yield* BoundedFile.read(fs, canonical, MAX_MEDIA_INGEST_BYTES).pipe(
+          Effect.mapError((error) =>
+            error instanceof BoundedFile.LimitError
+              ? new Error(`Media exceeds ${MAX_MEDIA_INGEST_BYTES} byte ingestion limit: ${canonical}`)
+              : error,
+          ),
+        )
         return {
           title,
           output: msg,
           metadata: {
             preview: msg,
             truncated: false,
-            loaded: loaded.map((item) => item.filepath),
+            loaded: [] as string[],
           },
           attachments: [
             {
@@ -324,52 +533,82 @@ export const ReadTool = Tool.define<
         }
       }
 
-      if (isBinaryFile(filepath, sample)) {
-        return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
+      if (isBinaryFile(canonical, sample)) {
+        return yield* Effect.fail(new Error(`Cannot read binary file: ${canonical}`))
       }
 
-      const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 })
+      const prepared = yield* prerequisites(
+        ctx,
+        canonical,
+        (requested, resolved) => authorizeRead(requested, resolved, true),
+        limits,
+      )
+      if (prepared.pending || prepared.loaded.length) return pending(title, prepared)
+
+      const file = yield* lines(canonical, {
+        limit: Math.min(params.limit ?? DEFAULT_READ_LIMIT, limits.maxLines),
+        offset: params.offset ?? 1,
+        maxBytes: limits.maxBytes,
+      })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(
           new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`),
         )
       }
 
-      let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
-      output += file.raw.map((line, i) => `${i + file.offset}: ${line}`).join("\n")
-
-      const last = file.offset + file.raw.length - 1
-      const next = last + 1
-      const truncated = file.more || file.cut
-      if (file.cut) {
-        output += `\n\n(Output capped at ${MAX_BYTES_LABEL}. Showing lines ${file.offset}-${last}. Use offset=${next} to continue.)`
-      } else if (file.more) {
-        output += `\n\n(Showing lines ${file.offset}-${last} of ${file.count}. Use offset=${next} to continue.)`
-      } else {
-        output += `\n\n(End of file - total ${file.count} lines)`
+      const raw = [...file.raw]
+      const render = () => {
+        const last = file.offset + raw.length - 1
+        const more = file.more || raw.length < file.raw.length
+        const footer =
+          file.lineCut && raw.length === file.raw.length
+            ? "(Some lines were abbreviated. Use textPage: {} to read exact text, then continue with nextOffset and contentHash.)"
+            : file.cut || raw.length < file.raw.length
+              ? `(Output capped at ${limits.maxBytes === MAX_BYTES ? "50 KB" : `${limits.maxBytes} bytes`} or ${limits.maxLines} lines. Showing lines ${file.offset}-${last}. Use offset=${last + 1} to continue.)`
+              : more
+                ? `(Showing lines ${file.offset}-${last}. Use offset=${last + 1} to continue.)`
+                : `(End of file - total ${file.count} lines)`
+        return [
+          `<path>${canonical}</path>`,
+          `<type>file</type>`,
+          "<content>\n",
+          raw.map((line, index) => `${index + file.offset}: ${line}`).join("\n"),
+          `\n${footer}`,
+          "</content>",
+        ].join("\n")
       }
-      output += "\n</content>"
-
-      yield* warm(filepath)
-
-      if (loaded.length > 0) {
-        output += `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`
+      let output = render()
+      while (!OutputBudget.fits(output, limits) && raw.length) {
+        raw.pop()
+        output = render()
       }
+      if (!OutputBudget.fits(output, limits) || (raw.length === 0 && (file.raw.length > 0 || file.more)))
+        return yield* Effect.fail(
+          new Error(
+            "File response cannot include the next line within the output budget. Use textPage: {} for exact bounded text.",
+          ),
+        )
+      const last = file.offset + raw.length - 1
+      const lineCut = file.lineCut && raw.length === file.raw.length
+      const truncated = file.more || file.cut || file.lineCut || raw.length < file.raw.length
+
+      yield* warm(canonical)
 
       return {
         title,
         output,
         metadata: {
-          preview: file.raw.slice(0, 20).join("\n"),
+          preview: raw.slice(0, 20).join("\n"),
           truncated,
-          loaded: loaded.map((item) => item.filepath),
+          loaded: [] as string[],
+          ...(!lineCut && truncated ? { nextOffset: last + 1 } : {}),
           display: {
             type: "file" as const,
-            path: filepath,
-            text: file.raw.join("\n"),
+            path: canonical,
+            text: raw.join("\n"),
             lineStart: file.offset,
             lineEnd: last,
-            totalLines: file.count,
+            ...(file.complete ? { totalLines: file.count } : {}),
             truncated,
           },
         },

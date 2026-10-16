@@ -20,6 +20,12 @@ export class Info extends Schema.Class<Info>("Location.Info")({
   }),
 }) {}
 
+export interface Paths extends Schema.Schema.Type<typeof Paths> {}
+export const Paths = Schema.Struct({
+  home: AbsolutePath,
+  defaultDirectory: AbsolutePath,
+}).annotate({ identifier: "Location.Paths" })
+
 export function response<S extends Schema.Top>(data: S) {
   return Schema.Struct({ location: Info, data })
 }

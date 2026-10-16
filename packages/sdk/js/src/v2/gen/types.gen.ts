@@ -48,6 +48,7 @@ export type Event =
   | EventSessionNextRevertStaged
   | EventSessionNextRevertCleared
   | EventSessionNextRevertCommitted
+  | EventMessageToolOutputCompacted
   | EventMessagePartDelta
   | EventSessionDiff
   | EventSessionError
@@ -113,6 +114,9 @@ export type OAuth = {
   expires: number
   accountId?: string
   enterpriseUrl?: string
+  metadata?: {
+    [key: string]: string
+  }
 }
 
 export type ApiAuth = {
@@ -878,6 +882,7 @@ export type GlobalEvent = {
           sessionID: string
           messageID: string
           text: string
+          contextManifest?: ContextManifestManifest
         }
       }
     | {
@@ -1188,6 +1193,18 @@ export type GlobalEvent = {
           timestamp: number
           sessionID: string
           messageID: string
+        }
+      }
+    | {
+        id: string
+        type: "message.tool-output.compacted"
+        properties: {
+          sessionID: string
+          messageID: string
+          partID: string
+          tool: string
+          outputHash: string
+          time: number
         }
       }
     | {
@@ -1636,6 +1653,7 @@ export type GlobalEvent = {
     | SyncEventSessionNextRevertStaged
     | SyncEventSessionNextRevertCleared
     | SyncEventSessionNextRevertCommitted
+    | SyncEventMessageToolOutputCompacted
 }
 
 /**
@@ -1751,11 +1769,14 @@ export type ProviderConfig = {
      */
     timeout?: number | false
     /**
-     * Timeout in milliseconds to wait for response headers. Provider integrations may set defaults. Set to false to disable timeout.
+     * Timeout in milliseconds to wait for response headers (default: 300000). Set to false to disable timeout.
      */
     headerTimeout?: number | false
-    chunkTimeout?: number
-    [key: string]: unknown | string | boolean | number | false | number | false | number | undefined
+    /**
+     * Timeout in milliseconds between streamed SSE chunks for this provider (default: 300000). If no chunk arrives within this window, the request is aborted. Set to false to disable timeout.
+     */
+    chunkTimeout?: number | false
+    [key: string]: unknown | string | boolean | number | false | number | false | number | false | undefined
   }
   models?: {
     [key: string]: {
@@ -1842,6 +1863,7 @@ export type McpLocalConfig = {
 export type McpOAuthConfig = {
   clientId?: string
   clientSecret?: string
+  clientMetadataUrl?: string
   scope?: string
   callbackPort?: number
   redirectUri?: string
@@ -2017,6 +2039,10 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
+    keep?: {
+      tokens?: number
+    }
+    buffer?: number
   }
   experimental?: {
     disable_paste_summary?: boolean
@@ -2787,6 +2813,58 @@ export type ProviderNotFoundError = {
   message: string
 }
 
+export type McpStatus2 = "disabled" | "disconnected" | "connecting" | "connected" | "failed" | "authentication_required"
+
+export type McpServerNotFoundError2 = {
+  _tag: "MCPServerNotFoundError"
+  server: string
+  message: string
+}
+
+export type LspStatus2 = {
+  id: string
+  name: string
+  root: string
+  status: "not_started" | "starting" | "connected" | "error" | "missing" | "disabled"
+  failure?: string
+  diagnosticMode?: "pull" | "push" | "none"
+}
+
+export type VcsInfo2 = {
+  branch?: string
+  defaultBranch?: string
+}
+
+export type VcsOperationError = {
+  _tag: "VcsOperationError"
+  reason: "command" | "output_limit" | "invalid_input" | "unavailable"
+  operation: string
+  message: string
+  limit?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type VcsOutputLimitError = {
+  _tag: "VcsOutputLimitError"
+  operation: string
+  message: string
+  limit?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type VcsFileStatus2 = {
+  file: string
+  additions: number
+  deletions: number
+  status: "added" | "deleted" | "modified"
+}
+
+export type VcsFileDiff2 = {
+  file: string
+  additions: number
+  deletions: number
+  status: "added" | "deleted" | "modified"
+  patch: string
+}
+
 export type OutputFormat1 =
   | {
       type: "text"
@@ -2896,6 +2974,7 @@ export type V2Event =
   | SessionNextRevertStaged
   | SessionNextRevertCleared
   | SessionNextRevertCommitted
+  | MessageToolOutputCompacted
   | MessagePartDelta
   | SessionDiff
   | SessionError
@@ -3063,6 +3142,32 @@ export type PromptFileAttachment = {
 export type PromptAgentAttachment = {
   name: string
   source?: PromptSource
+}
+
+export type ContextManifestOrigin = {
+  kind: "file" | "skill" | "reference" | "runtime" | "unknown"
+  id: string
+  start: number
+  end: number
+  sha256?: string
+  bytes?: number
+}
+
+export type ContextManifestPart = {
+  producer: string
+  phase: "baseline" | "update" | "removed"
+  start: number
+  end: number
+  origins: Array<ContextManifestOrigin>
+}
+
+export type ContextManifestManifest = {
+  version: 1
+  hashEncoding: "json-utf8"
+  length: number
+  bytes: number
+  sha256: string
+  parts: Array<ContextManifestPart>
 }
 
 export type SessionErrorUnknown = {
@@ -3398,6 +3503,7 @@ export type SyncEventSessionNextContextUpdated = {
       sessionID: string
       messageID: string
       text: string
+      contextManifest?: ContextManifestManifest
     }
   }
 }
@@ -3823,6 +3929,25 @@ export type SyncEventSessionNextRevertCommitted = {
   }
 }
 
+export type SyncEventMessageToolOutputCompacted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "message.tool-output.compacted.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      messageID: string
+      partID: string
+      tool: string
+      outputHash: string
+      time: number
+    }
+  }
+}
+
 export type ConfigV2ReferenceGit = {
   repository: string
   branch?: string
@@ -4007,6 +4132,7 @@ export type SessionMessageSystem = {
   }
   type: "system"
   text: string
+  contextManifest?: ContextManifestManifest
 }
 
 export type SessionMessageShell = {
@@ -4281,6 +4407,7 @@ export type SessionNextContextUpdated = {
     sessionID: string
     messageID: string
     text: string
+    contextManifest?: ContextManifestManifest
   }
 }
 
@@ -4980,6 +5107,25 @@ export type IntegrationAttemptStatus =
       }
     }
 
+export type McpAuthentication = {
+  integrationID: string
+  methodID: string
+}
+
+export type McpFailure = {
+  kind: string
+  message: string
+}
+
+export type McpServer = {
+  name: string
+  status: McpStatus2
+  toolCount: number
+  exposureCount: number
+  authentication?: McpAuthentication
+  error?: McpFailure
+}
+
 export type PermissionV2Request = {
   id: string
   sessionID: string
@@ -5003,6 +5149,10 @@ export type FileSystemEntry = {
   path: string
   type: "file" | "directory"
 }
+
+export type VcsMode = "working" | "branch"
+
+export type VcsContext = string
 
 export type CommandV2Info = {
   name: string
@@ -5297,6 +5447,28 @@ export type SessionNextCompactionDelta = {
     sessionID: string
     messageID: string
     text: string
+  }
+}
+
+export type MessageToolOutputCompacted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "message.tool-output.compacted"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    messageID: string
+    partID: string
+    tool: string
+    outputHash: string
+    time: number
   }
 }
 
@@ -6151,6 +6323,11 @@ export type ProjectCopyCopy = {
   directory: string
 }
 
+export type LocationPaths = {
+  home: string
+  defaultDirectory: string
+}
+
 export type EventModelsDevRefreshed = {
   id: string
   type: "models-dev.refreshed"
@@ -6313,6 +6490,7 @@ export type EventSessionNextContextUpdated = {
     sessionID: string
     messageID: string
     text: string
+    contextManifest?: ContextManifestManifest
   }
 }
 
@@ -6649,6 +6827,19 @@ export type EventSessionNextRevertCommitted = {
     timestamp: number
     sessionID: string
     messageID: string
+  }
+}
+
+export type EventMessageToolOutputCompacted = {
+  id: string
+  type: "message.tool-output.compacted"
+  properties: {
+    sessionID: string
+    messageID: string
+    partID: string
+    tool: string
+    outputHash: string
+    time: number
   }
 }
 
@@ -7055,9 +7246,10 @@ export type EventGlobalDisposed = {
 export type CredentialOAuth = {
   type: "oauth"
   methodID: string
-  refresh: string
+  refresh?: string
   access: string
-  expires: number
+  expires?: number
+  issued?: number
   metadata?: {
     [key: string]: unknown
   }
@@ -7353,7 +7545,7 @@ export type GlobalDisposeResponse = GlobalDisposeResponses[keyof GlobalDisposeRe
 
 export type GlobalUpgradeData = {
   body?: {
-    target?: string
+    target: string
   }
   path?: never
   query?: never
@@ -11253,6 +11445,7 @@ export type V2HealthGetResponses = {
    */
   200: {
     healthy: true
+    protocol: "v2"
   }
 }
 
@@ -12072,6 +12265,47 @@ export type V2ModelListResponses = {
 
 export type V2ModelListResponse = V2ModelListResponses[keyof V2ModelListResponses]
 
+export type V2ModelDefaultData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/model/default"
+}
+
+export type V2ModelDefaultErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
+}
+
+export type V2ModelDefaultError = V2ModelDefaultErrors[keyof V2ModelDefaultErrors]
+
+export type V2ModelDefaultResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: ModelV2Info
+  }
+}
+
+export type V2ModelDefaultResponse = V2ModelDefaultResponses[keyof V2ModelDefaultResponses]
+
 export type V2ProviderListData = {
   body?: never
   path?: never
@@ -12437,6 +12671,160 @@ export type V2IntegrationAttemptCompleteResponses = {
 
 export type V2IntegrationAttemptCompleteResponse =
   V2IntegrationAttemptCompleteResponses[keyof V2IntegrationAttemptCompleteResponses]
+
+export type McpListData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/mcp"
+}
+
+export type McpListErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type McpListError = McpListErrors[keyof McpListErrors]
+
+export type McpListResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: Array<McpServer>
+  }
+}
+
+export type McpListResponse = McpListResponses[keyof McpListResponses]
+
+export type McpConnect2Data = {
+  body?: never
+  path: {
+    server: string
+  }
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/mcp/{server}/connect"
+}
+
+export type McpConnect2Errors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * MCPServerNotFoundError
+   */
+  404: McpServerNotFoundError2
+}
+
+export type McpConnect2Error = McpConnect2Errors[keyof McpConnect2Errors]
+
+export type McpConnect2Responses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type McpConnect2Response = McpConnect2Responses[keyof McpConnect2Responses]
+
+export type McpDisconnect2Data = {
+  body?: never
+  path: {
+    server: string
+  }
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/mcp/{server}/disconnect"
+}
+
+export type McpDisconnect2Errors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * MCPServerNotFoundError
+   */
+  404: McpServerNotFoundError2
+}
+
+export type McpDisconnect2Error = McpDisconnect2Errors[keyof McpDisconnect2Errors]
+
+export type McpDisconnect2Responses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type McpDisconnect2Response = McpDisconnect2Responses[keyof McpDisconnect2Responses]
+
+export type LspStatus2Data = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/lsp"
+}
+
+export type LspStatus2Errors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type LspStatus2Error = LspStatus2Errors[keyof LspStatus2Errors]
+
+export type LspStatus2Responses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: Array<LspStatus2>
+  }
+}
+
+export type LspStatus2Response = LspStatus2Responses[keyof LspStatus2Responses]
 
 export type V2CredentialRemoveData = {
   body?: never
@@ -12890,6 +13278,155 @@ export type V2FsFindResponses = {
 }
 
 export type V2FsFindResponse = V2FsFindResponses[keyof V2FsFindResponses]
+
+export type V2VcsGetData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/vcs"
+}
+
+export type V2VcsGetErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * VcsOutputLimitError
+   */
+  413: VcsOutputLimitError
+  /**
+   * VcsOperationError
+   */
+  500: VcsOperationError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
+}
+
+export type V2VcsGetError = V2VcsGetErrors[keyof V2VcsGetErrors]
+
+export type V2VcsGetResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: VcsInfo2
+  }
+}
+
+export type V2VcsGetResponse = V2VcsGetResponses[keyof V2VcsGetResponses]
+
+export type V2VcsStatusData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/vcs/status"
+}
+
+export type V2VcsStatusErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * VcsOutputLimitError
+   */
+  413: VcsOutputLimitError
+  /**
+   * VcsOperationError
+   */
+  500: VcsOperationError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
+}
+
+export type V2VcsStatusError = V2VcsStatusErrors[keyof V2VcsStatusErrors]
+
+export type V2VcsStatusResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: Array<VcsFileStatus2>
+  }
+}
+
+export type V2VcsStatusResponse = V2VcsStatusResponses[keyof V2VcsStatusResponses]
+
+export type V2VcsDiffData = {
+  body?: never
+  path?: never
+  query: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+    mode: VcsMode
+    context?: VcsContext
+  }
+  url: "/api/vcs/diff"
+}
+
+export type V2VcsDiffErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * VcsOutputLimitError
+   */
+  413: VcsOutputLimitError
+  /**
+   * VcsOperationError
+   */
+  500: VcsOperationError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
+}
+
+export type V2VcsDiffError = V2VcsDiffErrors[keyof V2VcsDiffErrors]
+
+export type V2VcsDiffResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: Array<VcsFileDiff2>
+  }
+}
+
+export type V2VcsDiffResponse = V2VcsDiffResponses[keyof V2VcsDiffResponses]
 
 export type V2CommandListData = {
   body?: never
@@ -13584,6 +14121,64 @@ export type V2ProjectCopyRefreshResponses = {
 }
 
 export type V2ProjectCopyRefreshResponse = V2ProjectCopyRefreshResponses[keyof V2ProjectCopyRefreshResponses]
+
+export type V2ProjectListData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/api/project"
+}
+
+export type V2ProjectListErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2ProjectListError = V2ProjectListErrors[keyof V2ProjectListErrors]
+
+export type V2ProjectListResponses = {
+  /**
+   * Success
+   */
+  200: Array<Project>
+}
+
+export type V2ProjectListResponse = V2ProjectListResponses[keyof V2ProjectListResponses]
+
+export type V2LocationPathsGetData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/api/location/paths"
+}
+
+export type V2LocationPathsGetErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2LocationPathsGetError = V2LocationPathsGetErrors[keyof V2LocationPathsGetErrors]
+
+export type V2LocationPathsGetResponses = {
+  /**
+   * Location.Paths
+   */
+  200: LocationPaths
+}
+
+export type V2LocationPathsGetResponse = V2LocationPathsGetResponses[keyof V2LocationPathsGetResponses]
 
 export type PtyConnectData = {
   body?: never

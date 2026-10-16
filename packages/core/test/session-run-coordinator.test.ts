@@ -58,7 +58,9 @@ describe("SessionRunCoordinator", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const drained = yield* Deferred.make<void>()
-        const coordinator = yield* SessionRunCoordinator.make({ drain: () => Deferred.succeed(drained, undefined) })
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () => Deferred.succeed(drained, undefined).pipe(Effect.asVoid),
+        })
 
         yield* coordinator.wake("session")
         yield* Deferred.await(drained)
@@ -75,9 +77,9 @@ describe("SessionRunCoordinator", () => {
         const secondGate = yield* Deferred.make<void>()
         const coordinator = yield* SessionRunCoordinator.make({
           drain: (key: string) =>
-            Deferred.succeed(key === "first" ? firstStarted : secondStarted, undefined).pipe(
-              Effect.andThen(Deferred.await(key === "first" ? firstGate : secondGate)),
-            ),
+            Deferred.succeed(key === "first" ? firstStarted : secondStarted, undefined)
+              .pipe(Effect.andThen(Deferred.await(key === "first" ? firstGate : secondGate)))
+              .pipe(Effect.asVoid),
         })
 
         expect(Array.from(yield* coordinator.active)).toEqual([])
@@ -147,13 +149,15 @@ describe("SessionRunCoordinator", () => {
         let runs = 0
         const coordinator = yield* SessionRunCoordinator.make({
           drain: () =>
-            Effect.sync(() => ++runs).pipe(
-              Effect.flatMap((run) =>
-                run === 1
-                  ? Deferred.succeed(firstStarted, undefined).pipe(Effect.andThen(Deferred.await(firstGate)))
-                  : Deferred.succeed(secondStarted, undefined),
-              ),
-            ),
+            Effect.sync(() => ++runs)
+              .pipe(
+                Effect.flatMap((run) =>
+                  run === 1
+                    ? Deferred.succeed(firstStarted, undefined).pipe(Effect.andThen(Deferred.await(firstGate)))
+                    : Deferred.succeed(secondStarted, undefined),
+                ),
+              )
+              .pipe(Effect.asVoid),
         })
 
         const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
@@ -180,15 +184,17 @@ describe("SessionRunCoordinator", () => {
         let runs = 0
         const coordinator = yield* SessionRunCoordinator.make({
           drain: () =>
-            Effect.sync(() => ++runs).pipe(
-              Effect.flatMap((run) =>
-                run === 1
-                  ? Deferred.await(firstGate)
-                  : run === 2
-                    ? Deferred.succeed(secondStarted, undefined).pipe(Effect.andThen(Deferred.await(secondGate)))
-                    : Deferred.succeed(thirdStarted, undefined),
-              ),
-            ),
+            Effect.sync(() => ++runs)
+              .pipe(
+                Effect.flatMap((run) =>
+                  run === 1
+                    ? Deferred.await(firstGate)
+                    : run === 2
+                      ? Deferred.succeed(secondStarted, undefined).pipe(Effect.andThen(Deferred.await(secondGate)))
+                      : Deferred.succeed(thirdStarted, undefined),
+                ),
+              )
+              .pipe(Effect.asVoid),
         })
 
         const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
@@ -254,18 +260,20 @@ describe("SessionRunCoordinator", () => {
         let runs = 0
         const coordinator = yield* SessionRunCoordinator.make({
           drain: () =>
-            Effect.sync(() => ++runs).pipe(
-              Effect.flatMap((run) =>
-                run === 1
-                  ? Deferred.succeed(firstStarted, undefined).pipe(
-                      Effect.andThen(Effect.never),
-                      Effect.onInterrupt(() =>
-                        Deferred.succeed(cleanupStarted, undefined).pipe(Effect.andThen(Deferred.await(cleanupGate))),
-                      ),
-                    )
-                  : Deferred.succeed(secondStarted, undefined),
-              ),
-            ),
+            Effect.sync(() => ++runs)
+              .pipe(
+                Effect.flatMap((run) =>
+                  run === 1
+                    ? Deferred.succeed(firstStarted, undefined).pipe(
+                        Effect.andThen(Effect.never),
+                        Effect.onInterrupt(() =>
+                          Deferred.succeed(cleanupStarted, undefined).pipe(Effect.andThen(Deferred.await(cleanupGate))),
+                        ),
+                      )
+                    : Deferred.succeed(secondStarted, undefined).pipe(Effect.asVoid),
+                ),
+              )
+              .pipe(Effect.asVoid),
         })
 
         yield* coordinator.wake("session")
@@ -294,13 +302,15 @@ describe("SessionRunCoordinator", () => {
           drain: (_key, force) => {
             forces.push(force)
             return forces.length === 1
-              ? Deferred.succeed(firstStarted, undefined).pipe(
-                  Effect.andThen(Effect.never),
-                  Effect.onInterrupt(() =>
-                    Deferred.succeed(cleanupStarted, undefined).pipe(Effect.andThen(Deferred.await(cleanupGate))),
-                  ),
-                )
-              : Deferred.succeed(secondStarted, undefined)
+              ? Deferred.succeed(firstStarted, undefined)
+                  .pipe(
+                    Effect.andThen(Effect.never),
+                    Effect.onInterrupt(() =>
+                      Deferred.succeed(cleanupStarted, undefined).pipe(Effect.andThen(Deferred.await(cleanupGate))),
+                    ),
+                  )
+                  .pipe(Effect.asVoid)
+              : Deferred.succeed(secondStarted, undefined).pipe(Effect.asVoid)
           },
         })
 
@@ -327,13 +337,15 @@ describe("SessionRunCoordinator", () => {
         let runs = 0
         const coordinator = yield* SessionRunCoordinator.make({
           drain: () =>
-            Effect.sync(() => ++runs).pipe(
-              Effect.flatMap((run) =>
-                run === 1
-                  ? Deferred.await(gate).pipe(Effect.andThen(Effect.fail(failure)))
-                  : Deferred.succeed(secondStarted, undefined),
-              ),
-            ),
+            Effect.sync(() => ++runs)
+              .pipe(
+                Effect.flatMap((run) =>
+                  run === 1
+                    ? Deferred.await(gate).pipe(Effect.andThen(Effect.fail(failure)))
+                    : Deferred.succeed(secondStarted, undefined).pipe(Effect.asVoid),
+                ),
+              )
+              .pipe(Effect.asVoid),
         })
 
         const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
@@ -412,6 +424,338 @@ describe("SessionRunCoordinator", () => {
         yield* Deferred.await(completed)
 
         expect(runs).toBe(limit)
+      }),
+    ),
+  )
+
+  it.effect("runs an idle operation without starting a normal drain", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const operations: string[] = []
+        let drains = 0
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+          drain: () => Effect.sync(() => drains++).pipe(Effect.asVoid),
+          operate: (_key, operation) => Effect.sync(() => operations.push(operation)),
+        })
+
+        yield* coordinator.operate("session", "inspect")
+
+        expect(operations).toEqual(["inspect"])
+        expect(drains).toBe(0)
+        expect(Array.from(yield* coordinator.active)).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("runs queued operations before the saved continuation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const gate = yield* Deferred.make<void>()
+        const trace: string[] = []
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, number, never>({
+          drain: (_key, _force, control) => {
+            if (control.continuation !== undefined) return Effect.sync(() => trace.push("resume")).pipe(Effect.asVoid)
+            return Deferred.await(gate).pipe(
+              Effect.andThen(
+                Effect.sync(() => (control.shouldYield() ? { continuation: 1 } : (trace.push("finish"), undefined))),
+              ),
+            )
+          },
+          operate: (_key, operation) => Effect.sync(() => trace.push(operation)),
+        })
+
+        const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        const first = yield* coordinator.operate("session", "first").pipe(Effect.forkChild)
+        const second = yield* coordinator.operate("session", "second").pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(gate, undefined)
+        yield* Effect.all([Fiber.join(first), Fiber.join(second), Fiber.join(resumed)])
+
+        expect(trace).toEqual(["first", "second", "resume"])
+      }),
+    ),
+  )
+
+  it.effect("runs a forced drain after an explicit resume joins an idle operation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const operationStarted = yield* Deferred.make<void>()
+        const operationGate = yield* Deferred.make<void>()
+        const forces: boolean[] = []
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+          drain: (_key, force) => Effect.sync(() => forces.push(force)).pipe(Effect.asVoid),
+          operate: (_key) =>
+            Deferred.succeed(operationStarted, undefined).pipe(Effect.andThen(Deferred.await(operationGate))),
+        })
+
+        const operation = yield* coordinator.operate("session", "inspect").pipe(Effect.forkChild)
+        yield* Deferred.await(operationStarted)
+        const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
+        yield* Deferred.succeed(operationGate, undefined)
+        yield* Effect.all([Fiber.join(operation), Fiber.join(resumed)])
+
+        expect(forces).toEqual([true])
+      }),
+    ),
+  )
+
+  it.effect("preserves a forced resume when a wake arrives during an idle operation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const operationStarted = yield* Deferred.make<void>()
+        const operationGate = yield* Deferred.make<void>()
+        const forces: boolean[] = []
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+          drain: (_key, force) => Effect.sync(() => forces.push(force)).pipe(Effect.asVoid),
+          operate: () =>
+            Deferred.succeed(operationStarted, undefined).pipe(Effect.andThen(Deferred.await(operationGate))),
+        })
+
+        const operation = yield* coordinator.operate("session", "inspect").pipe(Effect.forkChild)
+        yield* Deferred.await(operationStarted)
+        const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* coordinator.wake("session")
+        yield* Deferred.succeed(operationGate, undefined)
+        yield* Effect.all([Fiber.join(operation), Fiber.join(resumed)])
+
+        expect(forces).toEqual([true])
+      }),
+    ),
+  )
+
+  it.effect("forces a resume during an operation after a completed ordinary drain", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const drainGate = yield* Deferred.make<void>()
+        const operationStarted = yield* Deferred.make<void>()
+        const operationGate = yield* Deferred.make<void>()
+        const forces: boolean[] = []
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+          drain: (_key, force) =>
+            Effect.sync(() => forces.push(force)).pipe(Effect.andThen(force ? Effect.void : Deferred.await(drainGate))),
+          operate: () =>
+            Deferred.succeed(operationStarted, undefined).pipe(Effect.andThen(Deferred.await(operationGate))),
+        })
+
+        yield* coordinator.wake("session")
+        yield* Effect.yieldNow
+        const operation = yield* coordinator.operate("session", "after-drain").pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(drainGate, undefined)
+        yield* Deferred.await(operationStarted)
+        const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
+        yield* Deferred.succeed(operationGate, undefined)
+        yield* Effect.all([Fiber.join(operation), Fiber.join(resumed)])
+
+        expect(forces).toEqual([false, true])
+      }),
+    ),
+  )
+
+  it.effect("fails an operation waiter when no operation handler is configured", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+          drain: () => Effect.void,
+        })
+
+        const exit = yield* coordinator.operate("session", "unsupported").pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBeTrue()
+        expect(Array.from(yield* coordinator.active)).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("keeps an active operation running when its caller waiter is cancelled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const operationStarted = yield* Deferred.make<void>()
+        const operationGate = yield* Deferred.make<void>()
+        const committed = yield* Deferred.make<void>()
+        let commits = 0
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+          drain: () => Effect.void,
+          operate: () =>
+            Deferred.succeed(operationStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(operationGate)),
+              Effect.andThen(Effect.sync(() => ++commits)),
+              Effect.tap(() => Deferred.succeed(committed, undefined)),
+              Effect.asVoid,
+            ),
+        })
+
+        const caller = yield* coordinator.operate("session", "commit").pipe(Effect.forkChild)
+        yield* Deferred.await(operationStarted)
+        yield* Fiber.interrupt(caller)
+        const callerExit = yield* Fiber.await(caller)
+        expect(Exit.isFailure(callerExit) && Cause.hasInterruptsOnly(callerExit.cause)).toBeTrue()
+        expect(Array.from(yield* coordinator.active)).toEqual(["session"])
+
+        const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
+        yield* Deferred.succeed(operationGate, undefined)
+        yield* Effect.all([Fiber.join(resumed), Deferred.await(committed)])
+
+        expect(commits).toBe(1)
+        expect(Array.from(yield* coordinator.active)).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("fails queued operation and run waiters with the same drain failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const drainStarted = yield* Deferred.make<void>()
+        const drainGate = yield* Deferred.make<void>()
+        const failure = new Error("drain failed")
+        let operations = 0
+        const coordinator = yield* SessionRunCoordinator.make<string, Error, string, never, never>({
+          drain: () =>
+            Deferred.succeed(drainStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(drainGate)),
+              Effect.andThen(Effect.fail(failure)),
+            ),
+          operate: () => Effect.sync(() => operations++).pipe(Effect.asVoid),
+        })
+
+        const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
+        yield* Deferred.await(drainStarted)
+        const operation = yield* coordinator.operate("session", "queued").pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(drainGate, undefined)
+        const [runExit, operationExit] = yield* Effect.all([Fiber.await(resumed), Fiber.await(operation)])
+
+        expect(Exit.isFailure(runExit) && Cause.hasFails(runExit.cause)).toBeTrue()
+        expect(Exit.isFailure(operationExit) && Cause.hasFails(operationExit.cause)).toBeTrue()
+        expect(yield* Fiber.join(resumed).pipe(Effect.flip)).toBe(failure)
+        expect(yield* Fiber.join(operation).pipe(Effect.flip)).toBe(failure)
+        expect(operations).toBe(0)
+        expect(Array.from(yield* coordinator.active)).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("settles active and queued operation waiters when the coordinator scope closes", () =>
+    Effect.gen(function* () {
+      const operationStarted = yield* Deferred.make<void>()
+      const coordinator = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+            drain: () => Effect.void,
+            operate: () => Deferred.succeed(operationStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          })
+          const active = yield* coordinator.operate("session", "active").pipe(Effect.forkDetach)
+          yield* Deferred.await(operationStarted)
+          const queued = yield* coordinator.operate("session", "queued").pipe(Effect.forkDetach)
+          yield* Effect.yieldNow
+          return { coordinator, active, queued }
+        }),
+      )
+      const [activeExit, queuedExit] = yield* Effect.all([
+        Fiber.await(coordinator.active),
+        Fiber.await(coordinator.queued),
+      ])
+
+      expect(Exit.isFailure(activeExit) && Cause.hasInterruptsOnly(activeExit.cause)).toBeTrue()
+      expect(Exit.isFailure(queuedExit) && Cause.hasInterruptsOnly(queuedExit.cause)).toBeTrue()
+      expect(Array.from(yield* coordinator.coordinator.active)).toEqual([])
+    }),
+  )
+
+  it.effect("settles the active operation waiter when its owner is interrupted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const operationStarted = yield* Deferred.make<void>()
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+          drain: () => Effect.void,
+          operate: () => Deferred.succeed(operationStarted, undefined).pipe(Effect.andThen(Effect.never)),
+        })
+
+        const operation = yield* coordinator.operate("session", "active").pipe(Effect.forkChild)
+        yield* Deferred.await(operationStarted)
+        yield* coordinator.interrupt("session")
+        const exit = yield* Fiber.await(operation)
+
+        expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBeTrue()
+        expect(Array.from(yield* coordinator.active)).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("continues after one operation fails and coalesces a wake during an operation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const operationStarted = yield* Deferred.make<void>()
+        const operationGate = yield* Deferred.make<void>()
+        const failure = new Error("operation failed")
+        const trace: string[] = []
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, Error>({
+          drain: (_key, force) => Effect.sync(() => trace.push(`drain:${force}`)).pipe(Effect.asVoid),
+          operate: (_key, operation) =>
+            operation === "fail"
+              ? Effect.fail(failure)
+              : Deferred.succeed(operationStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(operationGate)),
+                  Effect.tap(() => Effect.sync(() => trace.push(operation))),
+                ),
+        })
+
+        const failed = yield* coordinator.operate("session", "fail").pipe(Effect.exit)
+        expect(Exit.isFailure(failed) && Cause.hasFails(failed.cause)).toBeTrue()
+        const operation = yield* coordinator.operate("session", "finish").pipe(Effect.forkChild)
+        yield* Deferred.await(operationStarted)
+        yield* Effect.all([coordinator.wake("session"), coordinator.wake("session")], { concurrency: "unbounded" })
+        yield* Deferred.succeed(operationGate, undefined)
+        yield* Fiber.join(operation)
+
+        expect(trace).toEqual(["finish", "drain:false"])
+      }),
+    ),
+  )
+
+  it.effect("settles queued operations on interruption and preserves a wake during cleanup", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const cleanupStarted = yield* Deferred.make<void>()
+        const cleanupGate = yield* Deferred.make<void>()
+        const followup = yield* Deferred.make<void>()
+        let drains = 0
+        const coordinator = yield* SessionRunCoordinator.make<string, never, string, never, never>({
+          drain: () =>
+            Effect.sync(() => ++drains)
+              .pipe(
+                Effect.flatMap((run) =>
+                  run === 1
+                    ? Deferred.succeed(started, undefined).pipe(
+                        Effect.andThen(Effect.never),
+                        Effect.onInterrupt(() =>
+                          Deferred.succeed(cleanupStarted, undefined).pipe(Effect.andThen(Deferred.await(cleanupGate))),
+                        ),
+                      )
+                    : Deferred.succeed(followup, undefined),
+                ),
+              )
+              .pipe(Effect.asVoid),
+          operate: () => Effect.never,
+        })
+
+        const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
+        yield* Deferred.await(started)
+        const operation = yield* coordinator.operate("session", "queued").pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        const interrupt = yield* coordinator.interrupt("session").pipe(Effect.forkChild)
+        yield* Deferred.await(cleanupStarted)
+        yield* coordinator.wake("session")
+        yield* Deferred.succeed(cleanupGate, undefined)
+        yield* Effect.all([Fiber.join(interrupt), Fiber.await(operation), Fiber.await(resumed)])
+        yield* Deferred.await(followup)
+
+        const operationExit = yield* Fiber.await(operation)
+        expect(Exit.isFailure(operationExit) && Cause.hasInterruptsOnly(operationExit.cause)).toBeTrue()
+        expect(drains).toBe(2)
       }),
     ),
   )

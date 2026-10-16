@@ -207,6 +207,8 @@ function exchange(code: string, redirect: string, pkce: Pkce) {
 }
 
 function refresh(methodID: Integration.MethodID, value: Pick<Credential.OAuth, "refresh" | "metadata">) {
+  if (!value.refresh)
+    return Effect.fail(new Error("OpenAI authorization must be renewed; no refresh token is available"))
   return request<TokenResponse>(`${issuer}/oauth/token`, {
     method: "POST",
     headers: headers("application/x-www-form-urlencoded"),

@@ -53,10 +53,30 @@ const brokenPluginLayer = Layer.succeed(
 const root = LayerNode.group([ToolRegistry.node, Agent.node])
 const replacements = [
   [Config.node, configLayer],
-  [RuntimeFlags.node, RuntimeFlags.layer()],
+  [RuntimeFlags.node, RuntimeFlags.layer({ enableExa: false, enableParallel: false })],
 ] as const
 
 const it = testEffect(LayerNode.compile(root, replacements))
+const withDistribution = testEffect(
+  LayerNode.compile(root, [
+    [
+      Config.node,
+      TestConfig.layer({
+        directories: () =>
+          InstanceState.directory.pipe(
+            Effect.map((dir) => [
+              path.join(dir, "defaults"),
+              path.join(dir, "alias"),
+              path.join(dir, "user"),
+              path.join(dir, ".opencode"),
+              path.join(dir, "custom"),
+            ]),
+          ),
+      }),
+    ],
+    [RuntimeFlags.node, RuntimeFlags.layer()],
+  ]),
+)
 const withCodeMode = testEffect(
   LayerNode.compile(root, [
     [Config.node, configLayer],
@@ -76,6 +96,8 @@ const withCodeMode = testEffect(
             },
           }),
         clients: () => Effect.succeed({ weather: {} as any }),
+        status: () => Effect.succeed({ weather: { status: "connected" as const } }),
+        instructions: () => Effect.succeed([]),
       }),
     ],
   ]),
@@ -89,17 +111,130 @@ const withEmptyCodeMode = testEffect(
       Layer.mock(MCP.Service, {
         tools: () => Effect.succeed({}),
         clients: () => Effect.succeed({}),
+        status: () => Effect.succeed({}),
+        instructions: () => Effect.succeed([]),
       }),
     ],
   ]),
 )
 const withBrokenPlugin = testEffect(LayerNode.compile(root, [...replacements, [Plugin.node, brokenPluginLayer]]))
+const withGuidanceCodeMode = testEffect(
+  LayerNode.compile(root, [
+    [Config.node, configLayer],
+    [RuntimeFlags.node, RuntimeFlags.layer({ experimentalCodeMode: true })],
+    [
+      MCP.node,
+      Layer.mock(MCP.Service, {
+        tools: () => Effect.succeed({}),
+        clients: () => Effect.succeed({}),
+        status: () => Effect.succeed({ guide: { status: "disabled" as const } }),
+        instructions: () => Effect.succeed([{ name: "guide", instructions: "Detailed guidance", tools: [] }]),
+      }),
+    ],
+  ]),
+)
 
 afterEach(async () => {
   await disposeAllInstances()
 })
 
 describe("tool.registry", () => {
+  it.instance("offers web search across providers without backend-enabling flags", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const agent = yield* agents.defaultInfo()
+      for (const providerID of ["openai", "xai", "qwencloud", "opencode", "custom-provider"]) {
+        const tools = yield* registry.tools({
+          providerID: ProviderV2.ID.make(providerID),
+          modelID: ModelV2.ID.make("catalog-fixture"),
+          agent,
+        })
+        const search = tools.find((tool) => tool.id === "websearch")
+        expect(search).toBeDefined()
+        expect(typeof search?.execute).toBe("function")
+        expect(ToolJsonSchema.fromTool(search!).required).toContain("query")
+      }
+    }),
+  )
+
+  it.instance("offers the same executable editors across model names and inert legacy rules", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const agent = yield* agents.defaultInfo()
+      const definitions = yield* Effect.forEach(
+        ["gpt-5.2", "gpt-4.1", "gpt-oss-120b", "qwen3.8-flash", "claude-sonnet-4-6", "custom-model"],
+        (modelID) =>
+          Effect.gen(function* () {
+            const tools = yield* registry.tools({
+              providerID: ProviderV2.ID.make("custom-provider"),
+              modelID: ModelV2.ID.make(modelID),
+              agent: { ...agent, permission: [{ permission: "*", pattern: "*", action: "deny" }] },
+              permission: [{ permission: "edit", pattern: "*", action: "ask" }],
+            })
+            const editors = tools.filter((tool) => ["write", "edit", "apply_patch"].includes(tool.id))
+            expect(editors.map((tool) => tool.id).sort()).toEqual(["apply_patch", "edit", "write"])
+            for (const editor of editors) expect(typeof editor.execute).toBe("function")
+            return editors.map((editor) => ({ id: editor.id, schema: ToolJsonSchema.fromTool(editor) }))
+          }),
+      )
+      for (const definition of definitions.slice(1)) expect(definition).toEqual(definitions[0])
+    }),
+  )
+
+  withDistribution.instance(
+    "skips distribution executable tools through canonical aliases while retaining user tools",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const defaults = path.join(test.directory, "defaults")
+        yield* Effect.promise(async () => {
+          for (const folder of ["tool", "tools"]) {
+            await fs.mkdir(path.join(defaults, folder), { recursive: true })
+            for (const ext of ["js", "ts"]) {
+              await Bun.write(
+                path.join(defaults, folder, `forbidden.${ext}`),
+                "throw new Error('distribution executable imported')",
+              )
+            }
+          }
+          await fs.symlink(
+            defaults,
+            path.join(test.directory, "alias"),
+            process.platform === "win32" ? "junction" : "dir",
+          )
+          for (const folder of ["user", ".opencode", "custom"]) {
+            await Bun.write(
+              path.join(test.directory, folder, "tools", `hello-${folder.replace(".", "")}.js`),
+              "export default { description: 'ordinary tool', args: {}, execute: async () => 'ok' }",
+            )
+          }
+        })
+        yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            const previous = process.env.CUDIA_DISTRIBUTION_DIR
+            process.env.CUDIA_DISTRIBUTION_DIR = defaults
+            return previous
+          }),
+          () =>
+            Effect.gen(function* () {
+              const registry = yield* ToolRegistry.Service
+              const ids = yield* registry.ids()
+              expect(ids).toContain("hello-user")
+              expect(ids).toContain("hello-opencode")
+              expect(ids).toContain("hello-custom")
+              expect(ids).not.toContain("forbidden")
+            }),
+          (previous) =>
+            Effect.sync(() => {
+              if (previous === undefined) delete process.env.CUDIA_DISTRIBUTION_DIR
+              else process.env.CUDIA_DISTRIBUTION_DIR = previous
+            }),
+        )
+      }),
+  )
+
   it.instance("does not expose task_status", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
@@ -132,7 +267,10 @@ describe("tool.registry", () => {
 
       expect(ids).toContain("execute")
       expect(tools.map((tool) => tool.id)).toContain("execute")
-      expect(execute?.description).toContain("tools.weather.current(input: {\n  city: string,\n})")
+      expect(execute?.description).toContain("- weather (1 tool, none shown)")
+      expect(execute?.description).not.toContain("city: string")
+      expect(execute?.description).toContain("tools.$codemode.search(")
+      expect(execute?.description).toContain("Use $mcp.servers")
     }),
   )
 
@@ -147,6 +285,39 @@ describe("tool.registry", () => {
       })
 
       expect(tools.map((tool) => tool.id)).not.toContain("execute")
+    }),
+  )
+
+  withCodeMode.instance("keeps available code mode exposed despite an inert legacy deny record", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const agent = yield* agents.defaultInfo()
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: {
+          ...agent,
+          permission: [...agent.permission, { permission: "execute", pattern: "*", action: "deny" }],
+        },
+      })
+
+      expect(tools.map((tool) => tool.id)).toContain("execute")
+    }),
+  )
+
+  withGuidanceCodeMode.instance("exposes local guidance for instruction-only MCP servers", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: yield* agents.defaultInfo(),
+      })
+      const execute = tools.find((tool) => tool.id === "execute")
+      expect(execute?.description).toContain("Use $mcp.servers")
+      expect(execute?.description).not.toContain("Detailed guidance")
     }),
   )
 

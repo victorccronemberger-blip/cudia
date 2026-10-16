@@ -150,6 +150,34 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("bounds large formatted results and saves the full output", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "large.txt")
+      const lines = Array.from({ length: 100 }, (_, index) => `needle-${index + 1} ${"x".repeat(900)}`)
+      yield* Effect.promise(() => Bun.write(file, lines.join("\n")))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "large.txt" }, ctx)
+
+      expect(result.metadata.matches).toBe(100)
+      expect(result.metadata.truncated).toBe(true)
+      expect(Buffer.byteLength(result.output, "utf8")).toBeLessThan(52 * 1024)
+
+      const outputPath = (result.metadata as { outputPath?: unknown }).outputPath
+      expect(outputPath).toBeDefined()
+      if (typeof outputPath !== "string") throw new Error("expected full output path")
+      const expected = [
+        "Found 100 matches (more matches available)",
+        `${file}:`,
+        ...lines.map((line, index) => `  Line ${index + 1}: ${line}${index < lines.length - 1 ? "\n" : ""}`),
+        "",
+        "(Results truncated. Consider using a more specific path or pattern.)",
+      ].join("\n")
+      expect(yield* Effect.promise(() => Bun.file(outputPath).text())).toBe(expected)
+    }),
+  )
+
   it.instance("supports exact file paths", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

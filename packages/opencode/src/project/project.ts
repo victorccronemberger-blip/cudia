@@ -15,6 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AppProcess } from "@opencode-ai/core/process"
 import { ProjectV2 } from "@opencode-ai/core/project"
+import { ProjectStore } from "@opencode-ai/core/project/store"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
@@ -30,32 +31,7 @@ export const Event = {
   Updated: Project.Event.Updated,
 }
 
-type Row = typeof ProjectTable.$inferSelect
-
-export function fromRow(row: Row): Info {
-  const icon =
-    row.icon_url || row.icon_url_override || row.icon_color
-      ? {
-          url: row.icon_url ?? undefined,
-          override: row.icon_url_override ?? undefined,
-          color: row.icon_color ?? undefined,
-        }
-      : undefined
-  return {
-    id: row.id,
-    worktree: row.worktree,
-    vcs: row.vcs ? Schema.decodeUnknownSync(Project.Vcs)(row.vcs) : undefined,
-    name: row.name ?? undefined,
-    icon,
-    time: {
-      created: row.time_created,
-      updated: row.time_updated,
-      initialized: row.time_initialized ?? undefined,
-    },
-    sandboxes: row.sandboxes,
-    commands: row.commands ?? undefined,
-  }
-}
+export const fromRow = ProjectStore.fromRow
 
 export const UpdateInput = Schema.Struct({
   projectID: ProjectV2.ID,
@@ -109,6 +85,7 @@ const layer = Layer.effect(
     const fs = yield* FSUtil.Service
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const projectV2 = yield* ProjectV2.Service
+    const projectStore = yield* ProjectStore.Service
     const projectDirectories = yield* ProjectDirectories.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
@@ -334,12 +311,11 @@ const layer = Layer.effect(
     })
 
     const list = Effect.fn("Project.list")(function* () {
-      return (yield* db.select().from(ProjectTable).all().pipe(Effect.orDie)).map(fromRow)
+      return yield* projectStore.list()
     })
 
     const get = Effect.fn("Project.get")(function* (id: ProjectV2.ID) {
-      const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get().pipe(Effect.orDie)
-      return row ? fromRow(row) : undefined
+      return yield* projectStore.get(id)
     })
 
     const update = Effect.fn("Project.update")(function* (input: UpdateInput) {
@@ -473,6 +449,7 @@ export const node = LayerNode.make({
     AppProcess.node,
     CrossSpawnSpawner.node,
     ProjectV2.node,
+    ProjectStore.node,
     ProjectDirectories.node,
     EventV2Bridge.node,
     RuntimeFlags.node,

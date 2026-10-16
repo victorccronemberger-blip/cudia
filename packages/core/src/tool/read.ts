@@ -8,6 +8,10 @@ import { Image } from "../image"
 import { LocationMutation } from "../location-mutation"
 import { PermissionV2 } from "../permission"
 import { AbsolutePath } from "../schema"
+import { FSUtil } from "../fs-util"
+import { ToolOutputStore } from "../tool-output-store"
+import { BoundedFile } from "../util/bounded-file"
+import { OutputBudget } from "../util/output-budget"
 import { ReadToolFileSystem } from "./read-filesystem"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -23,9 +27,21 @@ const LocationInput = Schema.Struct({
   limit: ReadToolFileSystem.PageInput.fields.limit.annotate({
     description: "The maximum number of directory entries or text lines to read",
   }),
+  snapshot: ReadToolFileSystem.PageInput.fields.snapshot.annotate({
+    description: "Required with a directory offset beyond 1; use the previous page's snapshot",
+  }),
+  textPage: Schema.optional(ReadToolFileSystem.ExactInput).annotate({
+    description:
+      "Exact current file text in UTF-16 units, including long lines. Start with {}; continue with nextOffset and contentHash. Do not combine with line offset/limit or a directory snapshot.",
+  }),
 })
 const Input = LocationInput
-const Output = Schema.Union([FileSystem.Content, ReadToolFileSystem.TextPage, ReadToolFileSystem.ListPage])
+const Output = Schema.Union([
+  FileSystem.Content,
+  ReadToolFileSystem.TextPage,
+  ReadToolFileSystem.ExactPage,
+  ReadToolFileSystem.ListPage,
+])
 
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -34,17 +50,18 @@ const layer = Layer.effectDiscard(
     const mutation = yield* LocationMutation.Service
     const image = yield* Image.Service
     const permission = yield* PermissionV2.Service
+    const outputStore = yield* ToolOutputStore.Service
 
     yield* tools
       .register({
         [name]: Tool.make({
           description:
-            "Read a text file or supported image, page through a large UTF-8 text file by line offset, or list a directory page. Relative paths resolve from the current location; absolute paths inside it are accepted, while external absolute paths require external_directory approval.",
+            "Read a text file or supported image, or page directory entries. Line pages may abbreviate long lines; textPage reads exact current text with hash-checked UTF-16 offsets. Directory continuation requires its snapshot. Paths resolve against the active Location; parent-relative, absolute, and symlink-resolved paths can target elsewhere. Resolved targets use canonical paths.",
           input: Input,
           output: Output,
           toModelOutput: ({ input, output }) => {
             if (!("encoding" in output) || output.encoding !== "base64" || !SUPPORTED_IMAGE_MIMES.has(output.mime))
-              return []
+              return [{ type: "text", text: JSON.stringify(output) }]
             return [
               { type: "text", text: "Image read successfully" },
               { type: "file", data: output.content, mime: output.mime, name: input.path },
@@ -77,13 +94,38 @@ const layer = Layer.effectDiscard(
                 agent: context.agent,
                 source,
               })
-              if (type === "directory")
-                return yield* reader.list(absolute, { offset: input.offset, limit: input.limit })
-              const content = yield* reader.read(absolute, resource, {
-                offset: input.offset,
-                limit: input.limit,
-              })
+              const budget = OutputBudget.resolve(yield* outputStore.limits(), ReadToolFileSystem.DEFAULT_BUDGET)
+              if (budget.maxLines < 1 || budget.maxBytes < 1) return yield* new ReadToolFileSystem.BudgetError()
+              if (
+                input.textPage &&
+                (input.offset !== undefined || input.limit !== undefined || input.snapshot !== undefined)
+              )
+                return yield* new ReadToolFileSystem.TextPageError({
+                  reason: "do not combine exact and line/directory paging",
+                })
+              if (type === "directory") {
+                if (input.textPage)
+                  return yield* new ReadToolFileSystem.TextPageError({ reason: "text pages require a text file" })
+                return yield* reader.list(
+                  absolute,
+                  { offset: input.offset, limit: input.limit, snapshot: input.snapshot },
+                  budget,
+                )
+              }
+              if (input.textPage) return yield* reader.exact(absolute, resource, input.textPage, budget)
+              const content = yield* reader.read(
+                absolute,
+                resource,
+                {
+                  offset: input.offset,
+                  limit: input.limit,
+                  snapshot: input.snapshot,
+                },
+                budget,
+              )
               if ("encoding" in content && content.encoding === "base64" && SUPPORTED_IMAGE_MIMES.has(content.mime)) {
+                if (!OutputBudget.fits("Image read successfully", budget))
+                  return yield* new ReadToolFileSystem.BudgetError()
                 return yield* image
                   .normalize(resource, { ...content, encoding: "base64" })
                   .pipe(Effect.catchTag("Image.ResizerUnavailableError", () => Effect.succeed(content)))
@@ -96,6 +138,13 @@ const layer = Layer.effectDiscard(
                 const message =
                   error instanceof ReadToolFileSystem.BinaryFileError ||
                   error instanceof ReadToolFileSystem.MediaIngestLimitError ||
+                  error instanceof ReadToolFileSystem.MalformedUtf8Error ||
+                  error instanceof ReadToolFileSystem.OffsetOutOfRangeError ||
+                  error instanceof ReadToolFileSystem.BudgetError ||
+                  error instanceof ReadToolFileSystem.SnapshotError ||
+                  error instanceof ReadToolFileSystem.TextPageError ||
+                  error instanceof BoundedFile.SourceError ||
+                  error instanceof FSUtil.DirectoryLimitError ||
                   error instanceof Image.DecodeError ||
                   error instanceof Image.SizeError
                     ? error.message
@@ -113,5 +162,12 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/read",
   layer,
-  deps: [ToolRegistry.node, ReadToolFileSystem.node, LocationMutation.node, Image.node, PermissionV2.node],
+  deps: [
+    ToolRegistry.node,
+    ReadToolFileSystem.node,
+    LocationMutation.node,
+    Image.node,
+    PermissionV2.node,
+    ToolOutputStore.node,
+  ],
 })

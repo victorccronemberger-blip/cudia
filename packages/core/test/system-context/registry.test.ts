@@ -3,6 +3,7 @@ import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
+import { ContextManifest } from "@opencode-ai/core/harness/context-manifest"
 import { testEffect } from "../lib/effect"
 
 const entry = (key: string, text: string, sourceKey = key) => ({
@@ -25,7 +26,10 @@ describe("SystemContextRegistry", () => {
     Effect.gen(function* () {
       const registry = yield* SystemContextRegistry.Service
 
-      expect(yield* SystemContext.initialize(yield* registry.load())).toEqual({ baseline: "", snapshot: {} })
+      const initialized = yield* SystemContext.initialize(yield* registry.load())
+      expect(initialized).toMatchObject({ baseline: "", snapshot: {} })
+      expect(ContextManifest.verify(initialized.baseline, initialized.manifest)).toBe("valid")
+      expect(initialized.manifest.parts).toEqual([])
     }),
   )
 
@@ -108,7 +112,10 @@ describe("SystemContextRegistry", () => {
       expect((yield* SystemContext.initialize(yield* registry.load())).baseline).toBe("scoped")
 
       yield* Scope.close(scope, Exit.void)
-      expect(yield* SystemContext.initialize(yield* registry.load())).toEqual({ baseline: "", snapshot: {} })
+      const initialized = yield* SystemContext.initialize(yield* registry.load())
+      expect(initialized).toMatchObject({ baseline: "", snapshot: {} })
+      expect(ContextManifest.verify(initialized.baseline, initialized.manifest)).toBe("valid")
+      expect(initialized.manifest.parts).toEqual([])
     }),
   )
 })

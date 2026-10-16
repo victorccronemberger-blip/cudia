@@ -29,6 +29,11 @@ const readCalls: {
   input: AbsolutePath
   page: ReadToolFileSystem.PageInput
 }[] = []
+const exactCalls: {
+  input: AbsolutePath
+  resource: string
+  page: ReadToolFileSystem.ExactInput
+}[] = []
 const listCalls: ReadToolFileSystem.PageInput[] = []
 let resolvedType: "file" | "directory" = "file"
 let resolveFailure: unknown
@@ -50,6 +55,21 @@ const reader = Layer.succeed(
       if (readFailure !== undefined) return Effect.fail(readFailure)
       return Effect.succeed(readResult)
     },
+    exact: (input, resource, page = {}) => {
+      exactCalls.push({ input, resource, page })
+      return Effect.succeed(
+        new ReadToolFileSystem.ExactPage({
+          path: resource,
+          text: "exact",
+          contentHash: "a".repeat(64),
+          offset: page.offset ?? 0,
+          nextOffset: null,
+          totalLength: 5,
+          complete: true,
+          offsetUnit: "utf16_code_units",
+        }),
+      )
+    },
     list: (_path, input = {}) =>
       Effect.sync(() => {
         listCalls.push(input)
@@ -61,6 +81,7 @@ let allow = true
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
+    check: () => Effect.die("unused"),
     assert: (input) =>
       Effect.sync(() => {
         assertions.push(input)
@@ -149,6 +170,7 @@ describe("ReadTool", () => {
   beforeEach(() => {
     assertions.length = 0
     readCalls.length = 0
+    exactCalls.length = 0
     listCalls.length = 0
     allow = true
     resolvedType = "file"
@@ -169,22 +191,30 @@ describe("ReadTool", () => {
       const registry = yield* ToolRegistry.Service
 
       expect(yield* toolDefinitions(registry)).toMatchObject([{ name: "read" }])
-      expect(yield* toolDefinitions(registry, [{ action: "read", resource: "*", effect: "deny" }])).toEqual([])
-      expect(
-        yield* executeTool(registry, {
-          sessionID,
-          ...toolIdentity,
-          call: { type: "tool-call", id: "call-read", name: "read", input: { path: "README.md" } },
-        }),
-      ).toEqual({
-        type: "json",
-        value: {
+      expect(yield* toolDefinitions(registry, [{ action: "read", resource: "*", effect: "deny" }])).toMatchObject([
+        { name: "read" },
+      ])
+      const settled = yield* settleTool(registry, {
+        sessionID,
+        ...toolIdentity,
+        call: { type: "tool-call", id: "call-read", name: "read", input: { path: "README.md" } },
+      })
+      expect(settled.result).toEqual({
+        type: "text",
+        value: JSON.stringify({
           uri: "file:///README.md",
           name: "README.md",
           content: "hello",
           encoding: "utf8",
           mime: "text/plain",
-        },
+        }),
+      })
+      expect(settled.output?.structured).toEqual({
+        uri: "file:///README.md",
+        name: "README.md",
+        content: "hello",
+        encoding: "utf8",
+        mime: "text/plain",
       })
       expect(assertions).toMatchObject([{ sessionID, action: "read", resources: ["README.md"], save: ["*"] }])
       expect(readCalls).toEqual([
@@ -207,7 +237,7 @@ describe("ReadTool", () => {
           ...toolIdentity,
           call: { type: "tool-call", id: "call-external-read", name: "read", input: { path: external } },
         }),
-      ).toMatchObject({ type: "json" })
+      ).toMatchObject({ type: "text", value: expect.any(String) })
       expect(assertions).toMatchObject([
         {
           sessionID,
@@ -541,6 +571,81 @@ describe("ReadTool", () => {
         }),
       ).toEqual({ type: "error", value: "Unable to read README.md" })
       expect(readCalls).toEqual([])
+      expect(exactCalls).toEqual([])
+    }),
+  )
+
+  it.effect("reads exact text pages only after authorization and settles the canonical output", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const settled = yield* settleTool(registry, {
+        sessionID,
+        ...toolIdentity,
+        call: {
+          type: "tool-call",
+          id: "call-exact",
+          name: "read",
+          input: { path: "large.txt", textPage: { offset: 4, limit: 100, contentHash: "b".repeat(64) } },
+        },
+      })
+
+      expect(exactCalls).toEqual([
+        {
+          input: AbsolutePath.make(path.join(process.cwd(), "large.txt")),
+          resource: "large.txt",
+          page: { offset: 4, limit: 100, contentHash: "b".repeat(64) },
+        },
+      ])
+      expect(assertions).toMatchObject([{ action: "read", resources: ["large.txt"] }])
+      expect(settled.output?.structured).toMatchObject({
+        path: "large.txt",
+        text: "exact",
+        offset: 4,
+        offsetUnit: "utf16_code_units",
+      })
+      expect(settled.result.type).toBe("text")
+    }),
+  )
+
+  it.effect("does not invoke exact readers when permission is denied", () =>
+    Effect.gen(function* () {
+      allow = false
+      const registry = yield* ToolRegistry.Service
+
+      expect(
+        yield* executeTool(registry, {
+          sessionID,
+          ...toolIdentity,
+          call: {
+            type: "tool-call",
+            id: "call-exact-denied",
+            name: "read",
+            input: { path: "large.txt", textPage: {} },
+          },
+        }),
+      ).toEqual({ type: "error", value: "Unable to read large.txt" })
+      expect(exactCalls).toEqual([])
+    }),
+  )
+
+  it.effect("rejects exact paging mixed with line paging before invoking either reader", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+
+      expect(
+        yield* executeTool(registry, {
+          sessionID,
+          ...toolIdentity,
+          call: {
+            type: "tool-call",
+            id: "call-exact-mixed",
+            name: "read",
+            input: { path: "large.txt", textPage: {}, offset: 2 },
+          },
+        }),
+      ).toMatchObject({ type: "error", value: expect.stringContaining("do not combine exact") })
+      expect(exactCalls).toEqual([])
+      expect(readCalls).toEqual([])
     }),
   )
 
@@ -576,7 +681,7 @@ describe("ReadTool", () => {
             input: { path: "src", offset: 2, limit: 10 },
           },
         }),
-      ).toEqual({ type: "json", value: { entries: [], truncated: false } })
+      ).toEqual({ type: "text", value: JSON.stringify({ entries: [], truncated: false }) })
       expect(assertions).toMatchObject([{ sessionID, action: "read", resources: ["src"], save: ["*"] }])
       expect(listCalls).toEqual([{ offset: 2, limit: 10 }])
     }),
@@ -642,8 +747,15 @@ describe("ReadTool", () => {
           },
         }),
       ).toEqual({
-        type: "json",
-        value: { type: "text-page", content: "hello", mime: "text/plain", offset: 2, truncated: true, next: 3 },
+        type: "text",
+        value: JSON.stringify({
+          type: "text-page",
+          content: "hello",
+          mime: "text/plain",
+          offset: 2,
+          truncated: true,
+          next: 3,
+        }),
       })
       expect(readCalls).toEqual([
         { input: AbsolutePath.make(path.join(process.cwd(), "large.txt")), page: { offset: 2, limit: 1 } },

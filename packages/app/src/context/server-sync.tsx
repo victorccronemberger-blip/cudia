@@ -54,11 +54,22 @@ import type {
   McpResource,
   McpResourceCatalogInput,
   McpResourceCatalogOutput,
-  McpServer,
   SessionActiveOutput,
 } from "@opencode-ai/client/promise"
 import { toggleMcp } from "./global-sync/mcp"
 import { createServerSession, type ServerSession } from "./server-session"
+import {
+  mutateNativeMcp,
+  presentNativeMcp,
+  type McpPresentation,
+  type NativeMcpClient,
+  type NativeMcpListApi,
+} from "@/utils/native-mcp"
+import type { NativeCatalogClient } from "@/utils/native-catalog"
+import type { NativeWorkspaceClient } from "@/utils/native-workspace"
+import { createNativeLspClient, type NativeLspApi } from "@/utils/native-lsp"
+import { usePlatform } from "./platform"
+import type { LspPresentation } from "./global-sync/types"
 
 type GlobalStore = {
   ready: boolean
@@ -96,16 +107,21 @@ export const loadMcpQuery = (
   api: McpListApi,
   legacy?: OpencodeClient,
   protocol?: Promise<"v1" | "v2">,
-): ApiQueryOptions<Record<string, McpServer["status"]>, readonly [ServerScope, string, "mcp"]> =>
+  nativeMcp?: NativeMcpListApi,
+): ApiQueryOptions<Record<string, McpPresentation>, readonly [ServerScope, string, "mcp"]> =>
   queryOptions<
-    Record<string, McpServer["status"]>,
+    Record<string, McpPresentation>,
     Error,
-    Record<string, McpServer["status"]>,
+    Record<string, McpPresentation>,
     readonly [ServerScope, string, "mcp"]
   >({
     queryKey: [scope, directory, "mcp"] as const,
     queryFn: async () => {
       if ((await protocol) === "v1" && legacy) return (await legacy.mcp.status()).data ?? {}
+      if (nativeMcp)
+        return nativeMcp.mcp
+          .list({ location: { directory } })
+          .then((result) => Object.fromEntries(result.data.map((server) => [server.name, presentNativeMcp(server)])))
       return api
         .list({ location: { directory } })
         .then((result) => Object.fromEntries(result.data.map((server) => [server.name, server.status])))
@@ -144,10 +160,21 @@ export const loadMcpResourcesQuery = (
     placeholderData: {},
   })
 
-export const loadLspQuery = (scope: ServerScope, directory: string, sdk: OpencodeClient) =>
-  queryOptions({
+export const loadLspQuery = (
+  scope: ServerScope,
+  directory: string,
+  sdk: OpencodeClient,
+  protocol: Promise<"v1" | "v2">,
+  protocolKind: () => "v1" | "v2" | undefined,
+  native: NativeLspApi,
+) =>
+  queryOptions<readonly LspPresentation[]>({
     queryKey: [scope, directory, "lsp"] as const,
-    queryFn: () => sdk.lsp.status().then((r) => r.data ?? []),
+    enabled: protocolKind() !== undefined,
+    queryFn: async () => {
+      if ((await protocol) === "v1") return sdk.lsp.status().then((r) => r.data ?? [])
+      return native.status({ location: { directory } }).then((result) => result.data)
+    },
   })
 
 export const loadActiveSessionsQuery = (
@@ -180,23 +207,31 @@ function makeQueryOptionsApi(
   scope: ServerScope,
   serverSDK: () => OpencodeClient,
   serverAPI: ServerApi,
+  nativeCatalog: NativeCatalogClient,
+  nativeWorkspace: NativeWorkspaceClient,
   sdkFor: (dir: PathKey) => OpencodeClient,
+  nativeMcp: NativeMcpListApi,
+  nativeLsp: NativeLspApi,
   protocol: Promise<"v1" | "v2">,
+  protocolKind: () => "v1" | "v2" | undefined,
 ) {
   return {
-    globalConfig: () => loadGlobalConfigQuery(scope, serverSDK()),
-    projects: () => loadProjectsQuery(scope, serverAPI.project),
+    globalConfig: () => loadGlobalConfigQuery(scope, serverSDK(), protocol),
+    projects: () => loadProjectsQuery(scope, serverAPI.project, nativeWorkspace, protocol),
     providers: (directory: PathKey | null) =>
-      loadProvidersQuery(scope, directory, serverAPI, directory ? sdkFor(directory) : serverSDK(), protocol),
+      loadProvidersQuery(scope, directory, nativeCatalog, directory ? sdkFor(directory) : serverSDK(), protocol),
     path: (directory: PathKey | null) =>
-      loadPathQuery(scope, directory, directory ? sdkFor(directory) : serverSDK(), protocol),
-    agents: (directory: PathKey) => loadAgentsQuery(scope, directory, serverAPI.agent, sdkFor(directory), protocol),
+      loadPathQuery(scope, directory, directory ? sdkFor(directory) : serverSDK(), protocol, nativeWorkspace),
+    agents: (directory: PathKey) =>
+      loadAgentsQuery(scope, directory, nativeCatalog.agents, sdkFor(directory), protocol),
     references: (directory: PathKey) =>
       loadReferencesQuery(scope, directory, serverAPI.reference, sdkFor(directory), protocol),
-    mcp: (directory: PathKey) => loadMcpQuery(scope, directory, serverAPI.mcp, sdkFor(directory), protocol),
-    mcpResources: (directory: PathKey) =>
-      loadMcpResourcesQuery(scope, directory, serverAPI.mcp, sdkFor(directory), protocol),
-    lsp: (directory: PathKey) => loadLspQuery(scope, directory, sdkFor(directory)),
+    mcp: (directory: PathKey) => loadMcpQuery(scope, directory, serverAPI.mcp, sdkFor(directory), protocol, nativeMcp),
+    mcpResources: (directory: PathKey): ReturnType<typeof loadMcpResourcesQuery> => ({
+      ...loadMcpResourcesQuery(scope, directory, serverAPI.mcp, sdkFor(directory), protocol),
+      enabled: protocolKind() === "v1",
+    }),
+    lsp: (directory: PathKey) => loadLspQuery(scope, directory, sdkFor(directory), protocol, protocolKind, nativeLsp),
     sessions: (directory: PathKey) => ({ queryKey: [scope, directory, "loadSessions"] as const }),
   }
 }
@@ -204,6 +239,7 @@ export type QueryOptionsApi = ReturnType<typeof makeQueryOptionsApi>
 
 export function createServerSyncContextInner(serverSDK: ServerSDK) {
   const language = useLanguage()
+  const platform = usePlatform()
   const owner = getOwner()
   if (!owner) throw new Error("ServerSync must be created within owner")
 
@@ -231,8 +267,13 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     serverSDK.scope,
     () => serverSDK.client,
     serverSDK.api,
+    serverSDK.nativeCatalog,
+    serverSDK.nativeWorkspace,
     sdkFor,
+    serverSDK.nativeMcp,
+    createNativeLspClient({ server: serverSDK.server.http, fetch: platform.fetch }),
     serverSDK.protocol,
+    serverSDK.protocolKind,
   )
 
   const [configQuery, providerQuery, pathQuery] = useQueries(() => ({
@@ -323,6 +364,8 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
       await bootstrapGlobal({
         serverSDK: serverSDK.client,
         serverAPI: serverSDK.api,
+        nativeCatalog: serverSDK.nativeCatalog,
+        nativeWorkspace: serverSDK.nativeWorkspace,
         protocol: serverSDK.protocol,
         scope: serverSDK.scope,
         requestFailedTitle: language.t("common.requestFailed"),
@@ -484,6 +527,9 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         directory,
         scope: serverSDK.scope,
         mcp: children.mcp(key),
+        nativeMcp: serverSDK.nativeMcp,
+        nativeCatalog: serverSDK.nativeCatalog,
+        nativeWorkspace: serverSDK.nativeWorkspace,
         global: {
           config: globalStore.config,
           path: globalStore.path,
@@ -693,23 +739,26 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
       toggle: async (directory: string, name: string) => {
         const key = directoryKey(directory)
         const sdk = sdkFor(key)
-        const status = children.child(key, { bootstrap: false })[0].mcp[name]?.status
-        if (!status) return
+        const item = children.child(key, { bootstrap: false })[0].mcp[name]
+        const status = item?.status
+        if (!status || item.nativeStatus === "authentication_required" || item.nativeStatus === "connecting") return
+        if ((await serverSDK.protocol) === "v2") {
+          await mutateNativeMcp({
+            client: serverSDK.nativeMcp,
+            server: name,
+            directory: key,
+            action: item.nativeStatus === "connected" ? "disconnect" : "connect",
+            refresh: () => queryClient.refetchQueries(queryOptionsApi.mcp(key)),
+          })
+          return
+        }
         await toggleMcp({
           status,
           connect: async () => {
-            if ((await serverSDK.protocol) === "v1") {
-              await sdk.mcp.connect({ name })
-              return
-            }
-            await serverSDK.api.mcp.connect({ server: name, location: { directory: key } })
+            await sdk.mcp.connect({ name })
           },
           disconnect: async () => {
-            if ((await serverSDK.protocol) === "v1") {
-              await sdk.mcp.disconnect({ name })
-              return
-            }
-            await serverSDK.api.mcp.disconnect({ server: name, location: { directory: key } })
+            await sdk.mcp.disconnect({ name })
           },
           authenticate: async () => {
             await sdk.mcp.auth.authenticate({ name })
@@ -719,6 +768,34 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
             await queryClient.refetchQueries(queryOptionsApi.mcpResources(key))
           },
         })
+      },
+      beginOAuth: async (directory: string, name: string) => {
+        const key = directoryKey(directory)
+        const authentication = children.child(key, { bootstrap: false })[0].mcp[name]?.authentication
+        if (!authentication) return
+        return serverSDK.nativeMcp.integrations
+          .connectOauth({
+            integrationID: authentication.integrationID,
+            methodID: authentication.methodID,
+            inputs: {},
+            location: { directory: key },
+          })
+          .then((result) => result.data)
+      },
+      attemptStatus: async (directory: string, attemptID: string) => {
+        const key = directoryKey(directory)
+        const result = await serverSDK.nativeMcp.integrations.attemptStatus({ attemptID, location: { directory: key } })
+        if (result.data.status === "complete") await queryClient.refetchQueries(queryOptionsApi.mcp(key))
+        return result
+      },
+      completeOAuth: async (directory: string, attemptID: string, code?: string) => {
+        const key = directoryKey(directory)
+        await serverSDK.nativeMcp.integrations.attemptComplete({ attemptID, code, location: { directory: key } })
+        await queryClient.refetchQueries(queryOptionsApi.mcp(key))
+      },
+      cancelOAuth: async (directory: string, attemptID: string) => {
+        const key = directoryKey(directory)
+        await serverSDK.nativeMcp.integrations.attemptCancel({ attemptID, location: { directory: key } })
       },
     },
   }

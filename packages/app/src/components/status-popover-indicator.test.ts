@@ -3,6 +3,7 @@ import {
   hasNonBlockingServiceIssue,
   hasServiceNeedingAttention,
   serverStatusDotClass,
+  lspStatusDotClass,
 } from "./status-popover-indicator"
 
 describe("serverStatusDotClass", () => {
@@ -41,7 +42,23 @@ describe("hasNonBlockingServiceIssue", () => {
 
   test("detects LSP failures that do not block chatting", () => {
     expect(hasNonBlockingServiceIssue({ mcp: [], lsp: ["error"] })).toBe(true)
+    expect(hasNonBlockingServiceIssue({ mcp: [], lsp: ["missing"] })).toBe(true)
     expect(hasNonBlockingServiceIssue({ mcp: [], lsp: ["connected"] })).toBe(false)
+    expect(hasNonBlockingServiceIssue({ mcp: [], lsp: ["not_started", "starting", "disabled"] })).toBe(false)
+  })
+})
+
+describe("lspStatusDotClass", () => {
+  test("keeps cold, starting, and disabled native servers neutral", () => {
+    for (const status of ["not_started", "starting", "disabled"] as const)
+      expect(lspStatusDotClass(status)).toBe("bg-border-weak-base")
+  })
+  test("uses a warning for missing or failed language servers", () => {
+    expect(lspStatusDotClass("missing")).toBe("bg-icon-warning-base")
+    expect(lspStatusDotClass("error")).toBe("bg-icon-warning-base")
+  })
+  test("uses success only for connected language servers", () => {
+    expect(lspStatusDotClass("connected")).toBe("bg-icon-success-base")
   })
 })
 

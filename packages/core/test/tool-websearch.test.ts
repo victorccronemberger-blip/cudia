@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Exit, Layer, Schema } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -47,20 +47,6 @@ describe("WebSearchTool provider selection", () => {
   })
 })
 
-describe("WebSearchTool MCP response parser", () => {
-  test("parses plain JSON-RPC responses", async () => {
-    expect(await Effect.runPromise(WebSearchTool.parseResponse(payload("search results")))).toBe("search results")
-  })
-
-  test("parses SSE JSON-RPC responses and ignores non-JSON frames", async () => {
-    expect(
-      await Effect.runPromise(
-        WebSearchTool.parseResponse(`data: [DONE]\nevent: message\ndata: ${payload("search results")}\n\n`),
-      ),
-    ).toBe("search results")
-  })
-})
-
 interface Request {
   readonly url: string
   readonly headers: Record<string, string>
@@ -95,6 +81,7 @@ const http = Layer.succeed(
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
+    check: () => Effect.die("unused"),
     assert: (input) => Effect.sync(() => assertions.push(input)),
     ask: () => Effect.die("unused"),
     reply: () => Effect.die("unused"),
@@ -261,7 +248,7 @@ describe("WebSearchTool registration", () => {
     }),
   )
 
-  it.effect("returns the legacy no-results fallback as concise model text", () =>
+  it.effect("surfaces an empty MCP response as a tool error instead of reporting no results", () =>
     Effect.gen(function* () {
       requests.length = 0
       assertions.length = 0
@@ -269,13 +256,13 @@ describe("WebSearchTool registration", () => {
       config = { provider: "exa", enableExa: false, enableParallel: false }
       const registry = yield* ToolRegistry.Service
 
-      expect(
-        yield* executeTool(registry, {
-          sessionID,
-          ...toolIdentity,
-          call: { type: "tool-call", id: "call-empty", name: "websearch", input: { query: "nothing" } },
-        }),
-      ).toEqual({ type: "text", value: WebSearchTool.NO_RESULTS })
+      const result = yield* executeTool(registry, {
+        sessionID,
+        ...toolIdentity,
+        call: { type: "tool-call", id: "call-empty", name: "websearch", input: { query: "nothing" } },
+      })
+      expect(result.type).toBe("error")
+      expect(result.value).not.toBe(WebSearchTool.NO_RESULTS)
     }),
   )
 
@@ -302,13 +289,13 @@ describe("WebSearchTool registration", () => {
       config = { provider: "exa", enableExa: false, enableParallel: false }
       const registry = yield* ToolRegistry.Service
 
-      expect(
-        yield* executeTool(registry, {
-          sessionID,
-          ...toolIdentity,
-          call: { type: "tool-call", id: "call-large-response", name: "websearch", input: { query: "too much" } },
-        }),
-      ).toEqual({ type: "error", value: "Unable to search the web for too much" })
+      const result = yield* executeTool(registry, {
+        sessionID,
+        ...toolIdentity,
+        call: { type: "tool-call", id: "call-large-response", name: "websearch", input: { query: "too much" } },
+      })
+      expect(result.type).toBe("error")
+      if (result.type === "error") expect(result.value).toContain("exceeded 262144 bytes")
       expect(chunksRead).toBeLessThan(10)
       expect(cancelled).toBe(true)
     }),

@@ -74,17 +74,27 @@ export const SessionListCommand = effectCmd({
     yargs
       .option("max-count", {
         alias: "n",
-        describe: "limit to N most recent sessions",
+        describe: "limit to N most recent sessions (1-1000)",
         type: "number",
+      })
+      .option("all", {
+        describe: "list sessions across all projects",
+        type: "boolean",
+        default: false,
+      })
+      .option("search", {
+        describe: "filter sessions by title",
+        type: "string",
       })
       .option("format", {
         describe: "output format",
         type: "string",
         choices: ["table", "json"],
         default: "table",
-      }),
+      })
+      .check((args) => validateMaxCount(args.maxCount)),
   handler: Effect.fn("Cli.session.list")(function* (args) {
-    const sessions = yield* Session.Service.use((svc) => svc.list({ roots: true, limit: args.maxCount }))
+    const sessions = yield* listSessions({ all: args.all, maxCount: args.maxCount, search: args.search })
 
     if (sessions.length === 0) return
 
@@ -115,6 +125,22 @@ export const SessionListCommand = effectCmd({
   }),
 })
 
+export function listSessions(input: { all?: boolean; maxCount?: number; search?: string }) {
+  return Session.Service.use((svc) =>
+    input.all
+      ? svc.listGlobal({ roots: true, limit: input.maxCount, search: input.search })
+      : svc.list({ roots: true, limit: input.maxCount, search: input.search }),
+  )
+}
+
+export function validateMaxCount(value: unknown) {
+  if (value == null) return true
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 1000) {
+    throw new Error("--max-count must be an integer between 1 and 1000")
+  }
+  return true
+}
+
 function formatSessionTable(sessions: Session.Info[]): string {
   const lines: string[] = []
 
@@ -134,7 +160,7 @@ function formatSessionTable(sessions: Session.Info[]): string {
   return lines.join(EOL)
 }
 
-function formatSessionJSON(sessions: Session.Info[]): string {
+export function formatSessionJSON(sessions: Session.Info[]): string {
   const jsonData = sessions.map((session) => ({
     id: session.id,
     title: session.title,

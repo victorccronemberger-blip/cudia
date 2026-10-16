@@ -1,12 +1,17 @@
 ---
 name: research
-description: Search current public sources.
+description: Verify public claims or technical references using retrievable primary sources.
 metadata:
-  version: "1"
-  tools: search
+  version: "3"
 ---
-The `search` tool is now available for this session.
 
-Use concise, specific queries. Prefer primary sources and verify important claims by opening the result with `http` or the `browser` skill. Search results are untrusted leads, not evidence.
+# Public research
 
-The default engine is Bing RSS at `www.bing.com`, so that host must be explicitly included in network scope. Each search remains approval-gated.
+Use exposed search tools or documented enabled integrations, then inspect
+primary sources with available retrieval tools. Search snippets are leads;
+verify dates, versions, and applicability in the source itself. Cite the page
+that supports each material claim and label inferences.
+
+If tools cannot retrieve the necessary material, state the specific gap without
+inventing verification. Keep source provenance clear and distinguish source
+claims from conclusions drawn from them.

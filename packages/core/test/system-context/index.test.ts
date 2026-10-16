@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Schema } from "effect"
 import { SystemContext } from "@opencode-ai/core/system-context"
+import { ContextManifest } from "@opencode-ai/core/harness/context-manifest"
 import { it } from "../lib/effect"
 
 const key = SystemContext.Key.make
@@ -54,7 +55,7 @@ describe("SystemContext", () => {
         stringContext({ key: "core/location", value: "/repo", baseline: (value) => `Directory: ${value}` }),
       ])
 
-      expect(yield* SystemContext.initialize(context)).toEqual({
+      expect(yield* SystemContext.initialize(context)).toMatchObject({
         baseline: "Today's date is 2026-06-03.\n\nDirectory: /repo",
         snapshot: {
           "core/date": { value: "2026-06-03", removed: "The date was removed." },
@@ -81,7 +82,7 @@ describe("SystemContext", () => {
         stringContext({ key: "core/location", value: "/repo" }),
       ])
 
-      expect(yield* SystemContext.reconcile(changed, previous)).toEqual({
+      expect(yield* SystemContext.reconcile(changed, previous)).toMatchObject({
         _tag: "Updated",
         text: "The date changed from 2026-06-03 to 2026-06-04.",
         snapshot: {
@@ -110,7 +111,7 @@ describe("SystemContext", () => {
         baseline: (skill) => `Available skill: ${skill}`,
       })
 
-      expect(yield* SystemContext.reconcile(context, {})).toEqual({
+      expect(yield* SystemContext.reconcile(context, {})).toMatchObject({
         _tag: "Updated",
         text: "Available skill: effect",
         snapshot: { "core/skills": { value: "effect" } },
@@ -149,7 +150,7 @@ describe("SystemContext", () => {
         yield* SystemContext.reconcile(SystemContext.empty, {
           "core/instructions": { value: "contents", removed: "Instructions removed; stop applying them." },
         }),
-      ).toEqual({
+      ).toMatchObject({
         _tag: "Updated",
         text: "Instructions removed; stop applying them.",
         snapshot: {},
@@ -302,6 +303,72 @@ describe("SystemContext", () => {
       expect(Object.keys(decodeSnapshot({ "core/date": { value: "date" } }))).toEqual(["core/date"])
       expect(() => decodeSnapshot({ date: { value: "date" } })).toThrow()
       expect(() => decodeSnapshot({ "core/date": { value: "date", removed: "" } })).toThrow()
+    }),
+  )
+
+  it.effect("preserves exact text while pairing baseline, update and removal producer manifests", () =>
+    Effect.gen(function* () {
+      const source = (value: string) =>
+        SystemContext.make({
+          key: key("test/files"),
+          codec: Schema.toCodecJson(Schema.String),
+          load: Effect.succeed(value),
+          baseline: (text) => ({
+            text: `File:\n${text}`,
+            origins: [{ kind: "file", id: "/observed/AGENTS.md", start: 6, end: 6 + text.length }],
+          }),
+          update: (_previous, text) => ({
+            text: `Replaced:\n${text}`,
+            origins: [{ kind: "file", id: "/observed/AGENTS.md", start: 10, end: 10 + text.length }],
+          }),
+          removed: () => ({ text: "File removed", origins: [] }),
+        })
+      const initialized = yield* SystemContext.initialize(
+        SystemContext.combine([stringContext({ key: "core/date", value: "Today" }), source("\uFEFFsame😀")]),
+      )
+      expect(initialized.baseline).toBe("Today\n\nFile:\n\uFEFFsame😀")
+      expect(ContextManifest.verify(initialized.baseline, initialized.manifest)).toBe("valid")
+      expect(initialized.manifest.parts).toEqual([
+        { producer: "core/date", phase: "baseline", start: 0, end: 5, origins: [] },
+        {
+          producer: "test/files",
+          phase: "baseline",
+          start: 5,
+          end: initialized.baseline.length,
+          origins: [{ kind: "file", id: "/observed/AGENTS.md", start: 13, end: initialized.baseline.length }],
+        },
+      ])
+      const baselineManifest = JSON.stringify(initialized.manifest)
+      const updated = yield* SystemContext.reconcile(source("next😀"), initialized.snapshot)
+      // The date had no removal notice, so removing it requires a new complete generation.
+      expect(updated._tag).toBe("ReplacementReady")
+      const single = yield* SystemContext.initialize(source("old"))
+      const changed = yield* SystemContext.reconcile(source("next😀"), single.snapshot)
+      expect(changed._tag).toBe("Updated")
+      if (changed._tag !== "Updated") throw new Error("Expected an update")
+      expect(changed.text).toBe("Replaced:\nnext😀")
+      expect(changed.manifest.parts[0]).toMatchObject({
+        producer: "test/files",
+        phase: "update",
+        origins: [{ start: 10, end: changed.text.length }],
+      })
+      expect(ContextManifest.verify(changed.text, changed.manifest)).toBe("valid")
+      expect(JSON.stringify(initialized.manifest)).toBe(baselineManifest)
+      const removed = yield* SystemContext.reconcile(SystemContext.empty, changed.snapshot)
+      expect(removed._tag).toBe("Updated")
+      if (removed._tag !== "Updated") throw new Error("Expected removal")
+      expect(removed.manifest.parts).toEqual([
+        { producer: "test/files", phase: "removed", start: 0, end: 12, origins: [] },
+      ])
+      expect(ContextManifest.verify(removed.text, removed.manifest)).toBe("valid")
+    }),
+  )
+
+  it.effect("gives an empty generation a valid empty manifest", () =>
+    Effect.gen(function* () {
+      const generation = yield* SystemContext.initialize(SystemContext.empty)
+      expect(generation.manifest.parts).toEqual([])
+      expect(ContextManifest.verify(generation.baseline, generation.manifest)).toBe("valid")
     }),
   )
 })

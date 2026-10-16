@@ -9,6 +9,7 @@ import type { Provider } from "../../src/provider/provider"
 import { SystemPrompt } from "../../src/session/system"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
+import { RuntimeFlags } from "../../src/effect/runtime-flags"
 
 const skills: Skill.Info[] = [
   {
@@ -43,8 +44,9 @@ const build: Agent.Info = {
   options: {},
 }
 
-const it = testEffect(
+const systemLayer = (codeMode = false) =>
   LayerNode.compile(SystemPrompt.node, [
+    [RuntimeFlags.node, RuntimeFlags.layer({ experimentalCodeMode: codeMode })],
     [
       MCP.node,
       Layer.mock(MCP.Service, {
@@ -80,14 +82,35 @@ const it = testEffect(
         }),
       ),
     ],
-  ]),
-)
+  ])
+
+const it = testEffect(systemLayer())
+const withCodeMode = testEffect(systemLayer(true))
 
 describe("session.system", () => {
   test("selects the Meta prompt for Muse Spark model IDs", () => {
-    expect(SystemPrompt.provider({ api: { id: "meta/muse-spark-preview" } } as Provider.Model)[0]).toContain(
-      "Meta Muse Spark",
-    )
+    for (const id of ["meta/muse-spark-preview", "muse-spark-1.1", "muse-spark-1.2"]) {
+      const prompt = SystemPrompt.provider({ api: { id } } as Provider.Model)[0]
+      expect(prompt).toContain("powered by Muse Spark,")
+      expect(prompt).toContain("using Meta Muse Spark.")
+      expect(prompt).not.toContain("{{MODEL_NAME}}")
+    }
+  })
+
+  test("selects the Meta prompt for Muse Glimmer model IDs", () => {
+    for (const id of ["meta/muse-glimmer", "meta/muse-glimmer-30b", "muse-glimmer-30b"]) {
+      const prompt = SystemPrompt.provider({ api: { id } } as Provider.Model)[0]
+      expect(prompt).toContain("powered by Muse Glimmer,")
+      expect(prompt).toContain("using Meta Muse Glimmer.")
+      expect(prompt).not.toContain("{{MODEL_NAME}}")
+    }
+  })
+
+  test("selects the Kimi prompt for official provider model IDs", () => {
+    for (const providerID of ["kimi-for-coding", "moonshotai", "moonshotai-cn"]) {
+      const prompt = SystemPrompt.provider({ providerID, api: { id: "k3" } } as Provider.Model)[0]
+      expect(prompt).toContain("# Prompt and Tool Use")
+    }
   })
 
   it.effect("skills output is sorted by name and stable across calls", () =>
@@ -99,14 +122,16 @@ describe("session.system", () => {
 
       expect(first).toBe(second)
 
-      const alpha = output.indexOf("<name>alpha-skill</name>")
-      const middle = output.indexOf("<name>middle-skill</name>")
-      const zeta = output.indexOf("<name>zeta-skill</name>")
+      const alpha = output.indexOf("- alpha-skill: Alpha skill.")
+      const middle = output.indexOf("- middle-skill: Middle skill.")
+      const zeta = output.indexOf("- zeta-skill: Zeta skill.")
 
       expect(alpha).toBeGreaterThan(-1)
       expect(middle).toBeGreaterThan(alpha)
       expect(zeta).toBeGreaterThan(middle)
       expect(output).not.toContain("manual-skill")
+      expect(output).not.toContain("/tmp/")
+      expect(output).not.toContain("# alpha-skill")
     }),
   )
 
@@ -144,6 +169,38 @@ describe("session.system", () => {
           "</mcp_instructions>",
         ].join("\n"),
       )
+    }),
+  )
+
+  withCodeMode.effect("MCP guidance is indexed without its body in code mode", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.mcp(build)
+      expect(output).toContain('MCP servers with guidance: "guide-server", "tool-server".')
+      expect(output).toContain("return await tools.$mcp.instructions(")
+      expect(output).not.toContain("Use lookup before mutate.")
+      expect(output).not.toContain("Prefer search before update.")
+      expect(output?.length).toBeLessThan(350)
+    }),
+  )
+
+  withCodeMode.effect("MCP guidance index respects tool permissions and keeps resource-only servers", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.mcp(build, Permission.fromConfig({ "tool-server_*": "deny" }))
+      expect(output).toContain('MCP servers with guidance: "guide-server".')
+      expect(output).not.toContain("tool-server")
+      expect(output).not.toContain("Use lookup before mutate.")
+    }),
+  )
+
+  withCodeMode.effect("MCP guidance remains available when execute is denied", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.mcp(build, Permission.fromConfig({ execute: "deny" }))
+      expect(output).toContain("Use lookup before mutate.")
+      expect(output).toContain("Prefer search before update.")
+      expect(output).not.toContain("tools.$mcp.instructions")
     }),
   )
 })

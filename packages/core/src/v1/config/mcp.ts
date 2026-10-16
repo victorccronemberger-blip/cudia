@@ -30,6 +30,10 @@ export const OAuth = Schema.Struct({
   clientSecret: Schema.optional(Schema.String).annotate({
     description: "OAuth client secret (if required by the authorization server)",
   }),
+  clientMetadataUrl: Schema.optional(Schema.String).annotate({
+    description:
+      "OAuth client metadata document URL for Core V2 authorization servers that support URL-based client IDs.",
+  }),
   scope: Schema.optional(Schema.String).annotate({ description: "OAuth scopes to request during authorization" }),
   callbackPort: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))).annotate({
     description:

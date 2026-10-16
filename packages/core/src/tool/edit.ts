@@ -1,8 +1,7 @@
 /**
- * Model-facing V2 exact-edit leaf. Relative paths resolve within the active
- * Location. Absolute paths inside that Location are accepted, while explicit
- * absolute external paths retain mutation capability through a separate
- * external_directory approval before edit approval.
+ * Model-facing V2 exact-edit leaf. Paths resolve against the active Location;
+ * parent-relative, absolute, and symlink-resolved paths can target elsewhere.
+ * Resolved targets use canonical paths.
  */
 export * as EditTool from "./edit"
 
@@ -14,6 +13,7 @@ import { makeLocationNode } from "../effect/app-node"
 import { FileMutation } from "../file-mutation"
 import { FSUtil } from "../fs-util"
 import { LocationMutation } from "../location-mutation"
+import { LSPMutation } from "../lsp/mutation"
 import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -24,7 +24,7 @@ export const name = "edit"
 export const Input = Schema.Struct({
   path: Schema.String.annotate({
     description:
-      "File path to edit. Relative paths resolve within the active Location. Absolute paths inside that Location are accepted; external absolute paths require external_directory approval.",
+      "File path to edit. Paths resolve against the active Location; parent-relative, absolute, and symlink-resolved paths can target elsewhere. Resolved targets use canonical paths.",
   }),
   oldString: Schema.String.annotate({ description: "Exact text to replace" }),
   newString: Schema.String.annotate({ description: "Replacement text, which must differ from oldString" }),
@@ -36,6 +36,7 @@ export const Input = Schema.Struct({
 export const Output = Schema.Struct({
   files: Schema.Array(FileDiff.Info),
   replacements: Schema.Number,
+  lsp: LSPMutation.Result.pipe(Schema.optional),
 })
 export type Output = typeof Output.Type
 
@@ -78,14 +79,13 @@ export const toModelOutput = (output: Output, oldString: string, newString: stri
     ...previewLines(oldString, "-"),
     ...previewLines(newString, "+"),
     "```",
-  ].join("\n")
+  ].join("\n") + LSPMutation.format(output.lsp)
 
 /** Deferred V2 edit behavior and UX integrations remain visible at the model-facing seam. */
 // TODO: Port V1 fuzzy correction strategies only after exact-edit behavior is established: line-trimmed matching, block-anchor fallback, indentation correction, and similarity-threshold review.
 // TODO: Add formatter integration after V2 formatter runtime exists.
 // TODO: Publish watcher/file-edit events after V2 watcher integration exists.
 // TODO: Add snapshots / undo after design exists.
-// TODO: Add LSP notification and diagnostics after V2 LSP runtime exists.
 
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -94,13 +94,14 @@ const layer = Layer.effectDiscard(
     const files = yield* FileMutation.Service
     const fs = yield* FSUtil.Service
     const permission = yield* PermissionV2.Service
+    const lsp = yield* LSPMutation.Service
 
     yield* tools
       .register({
         [name]: Tool.withPermission(
           Tool.make({
             description:
-              "Replace exact text in one file. Relative paths resolve within the active Location. Absolute paths inside the Location are accepted. Explicit external absolute paths require external_directory approval before edit approval.",
+              "Replace exact text in one file using exact oldString matching. Paths resolve against the active Location; parent-relative, absolute, and symlink-resolved paths can target elsewhere. Resolved targets use canonical paths.",
             input: Input,
             output: Output,
             toModelOutput: ({ input, output }) => [
@@ -112,7 +113,7 @@ const layer = Layer.effectDiscard(
                   Effect.mapError((error) =>
                     error instanceof FileMutation.StaleContentError
                       ? new ToolFailure({
-                          message: "File changed after permission approval. Read it again before editing.",
+                          message: "File changed before the edit could commit. Read it again before editing.",
                         })
                       : new ToolFailure({ message: `Unable to edit ${input.path}` }),
                   ),
@@ -195,6 +196,7 @@ const layer = Layer.effectDiscard(
                     content: joinBom(next.text, source.bom || next.bom),
                   }),
                 )
+                const report = yield* lsp.after([{ filePath: result.target, kind: "changed" }])
                 return {
                   files: [
                     {
@@ -205,6 +207,7 @@ const layer = Layer.effectDiscard(
                     },
                   ],
                   replacements,
+                  ...(report ? { lsp: report } : {}),
                 } satisfies Output
               })
             },
@@ -219,5 +222,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/edit",
   layer,
-  deps: [ToolRegistry.node, LocationMutation.node, FileMutation.node, FSUtil.node, PermissionV2.node],
+  deps: [ToolRegistry.node, LocationMutation.node, FileMutation.node, FSUtil.node, PermissionV2.node, LSPMutation.node],
 })

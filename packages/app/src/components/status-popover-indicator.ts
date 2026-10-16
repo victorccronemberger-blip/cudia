@@ -1,4 +1,4 @@
-import type { LspStatus } from "@opencode-ai/sdk/v2/client"
+import type { LspPresentation } from "@/context/global-sync/types"
 import type { McpServer } from "@opencode-ai/client/promise"
 
 export function hasServiceNeedingAttention(input: { mcp: Array<McpServer["status"]["status"]> }) {
@@ -7,12 +7,18 @@ export function hasServiceNeedingAttention(input: { mcp: Array<McpServer["status
 
 export function hasNonBlockingServiceIssue(input: {
   mcp: Array<McpServer["status"]["status"]>
-  lsp: Array<LspStatus["status"]>
+  lsp: Array<LspPresentation["status"]>
 }) {
   return (
     input.mcp.some((status) => status !== "connected" && status !== "pending" && status !== "disabled") ||
-    input.lsp.some((status) => status === "error")
+    input.lsp.some((status) => status === "error" || status === "missing")
   )
+}
+
+export function lspStatusDotClass(status: LspPresentation["status"]) {
+  if (status === "connected") return "bg-icon-success-base"
+  if (status === "error" || status === "missing") return "bg-icon-warning-base"
+  return "bg-border-weak-base"
 }
 
 export function serverStatusDotClass(input: {

@@ -36,6 +36,12 @@ type CatalogEntry = {
   tool: MCP.McpTool
 }
 
+type ServerSummary = { name: string; status: string }
+type Lifecycle = {
+  servers: () => Effect.Effect<readonly ServerSummary[], unknown>
+  run: (action: "connect" | "disconnect", input: unknown) => Effect.Effect<unknown, unknown>
+}
+
 function groupByServer(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): Map<string, CatalogEntry[]> {
   const byLongest = [...servers].sort((a, b) => b.length - a.length)
   const groups = new Map<string, CatalogEntry[]>()
@@ -55,13 +61,29 @@ function groupByServer(mcpTools: Record<string, MCP.McpTool>, servers: readonly 
   return groups
 }
 
-export function describeCatalog(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): string {
-  return CodeMode.make({
-    tools: toolTree(
-      [...groupByServer(mcpTools, servers).values()].flat(),
-      () => () => Effect.fail(toolError("Tool preview is not executable.")),
-    ),
-  }).instructions()
+export function describeCatalog(
+  mcpTools: Record<string, MCP.McpTool>,
+  servers: readonly string[],
+  instructions: readonly MCP.ServerInstructions[] = [],
+  lifecycleServers: readonly ServerSummary[] = [],
+): string {
+  return (
+    CodeMode.make({
+      discovery: { catalogBudget: 0 },
+      tools: toolTree(
+        [...groupByServer(mcpTools, servers).values()].flat(),
+        () => () => Effect.fail(toolError("Tool preview is not executable.")),
+        instructions,
+        lifecycleServers.length > 0
+          ? {
+              servers: () => Effect.fail(toolError("Tool preview is not executable.")),
+              run: (_action, _input) => Effect.fail(toolError("Tool preview is not executable.")),
+            }
+          : undefined,
+      ),
+    }).instructions() +
+    "\nUse $codemode.search to discover connected tools. Use $mcp.servers to inspect configured server status, and connect or disconnect only by exact configured name. Newly connected tools appear in the next execute call. Read $mcp.instructions for cached server guidance when available."
+  )
 }
 
 const lastSegment = (uri: string) => {
@@ -117,16 +139,55 @@ function projectMcpResult(result: CallToolResult, collect: (attachment: Attachme
 
 type Run = (input: unknown) => Effect.Effect<unknown, unknown>
 
-function toolTree(catalog: readonly CatalogEntry[], run: (entry: CatalogEntry) => Run) {
-  const tree: Record<string, Record<string, SandboxTool.Definition>> = {}
+function toolTree(
+  catalog: readonly CatalogEntry[],
+  run: (entry: CatalogEntry) => Run,
+  instructions: readonly MCP.ServerInstructions[] = [],
+  lifecycle?: Lifecycle,
+) {
+  const tree: Record<string, Record<string, SandboxTool.Definition>> = Object.create(null)
   for (const entry of catalog) {
-    const namespace = (tree[entry.server] ??= {})
+    const namespace: Record<string, SandboxTool.Definition> = (tree[entry.server] ??= Object.create(null))
     namespace[entry.local] = SandboxTool.make({
       description: entry.tool.def.description ?? "",
       input: entry.tool.def.inputSchema as SandboxTool.JsonSchema,
       output: entry.tool.def.outputSchema as SandboxTool.JsonSchema | undefined,
       run: run(entry),
     })
+  }
+  if (instructions.length > 0 || lifecycle) {
+    const namespace: Record<string, SandboxTool.Definition> = (tree.$mcp ??= Object.create(null))
+    if (lifecycle) {
+      namespace.servers = SandboxTool.make({
+        description: "List configured MCP servers and their lifecycle status. This only shows name and status.",
+        input: Schema.Struct({}),
+        output: Schema.Array(Schema.Struct({ name: Schema.String, status: Schema.String })),
+        run: () => lifecycle.servers(),
+      })
+      namespace.connect = SandboxTool.make({
+        description: "Connect one exact configured MCP server. Its tools are available in the next execute call.",
+        input: Schema.Struct({ server: Schema.String.annotate({ description: "Exact configured MCP server name" }) }),
+        run: (input) => lifecycle.run("connect", input),
+      })
+      namespace.disconnect = SandboxTool.make({
+        description: "Disconnect one exact configured MCP server.",
+        input: Schema.Struct({ server: Schema.String.annotate({ description: "Exact configured MCP server name" }) }),
+        run: (input) => lifecycle.run("disconnect", input),
+      })
+    }
+    if (instructions.length > 0) {
+      namespace.instructions = SandboxTool.make({
+        description: "Read cached guidance for one connected MCP server without calling that server.",
+        input: Schema.Struct({ server: Schema.String.annotate({ description: "Exact connected MCP server name" }) }),
+        output: Schema.String,
+        run: (input) => {
+          const item = instructions.find((item) => item.name === input.server)
+          return item
+            ? Effect.succeed(item.instructions)
+            : Effect.fail(toolError(`No available MCP instructions for server ${input.server}`))
+        },
+      })
+    }
   }
   return tree
 }
@@ -207,16 +268,24 @@ export const CodeModeTool = Tool.define(
         const agent = yield* agents.get(ctx.agent)
         const session = yield* sessions.get(ctx.sessionID).pipe(Effect.orDie)
         const ruleset = Permission.merge(agent.permission, session.permission ?? [])
+        if (Permission.disabled([CODE_MODE_TOOL], ruleset).has(CODE_MODE_TOOL)) {
+          return yield* Effect.fail(toolError("Code Mode execution is denied by the effective permission rules."))
+        }
         const mcpTools = Permission.visibleTools(yield* mcp.tools(), ruleset)
+        const instructions = (yield* mcp.instructions()).filter(
+          (item) => item.tools.length === 0 || Permission.disabled(item.tools, ruleset).size < item.tools.length,
+        )
         const servers = Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize)
         const catalog = [...groupByServer(mcpTools, servers).values()].flat()
+
+        let childCalls = 0
+        const nextCallID = (name: string) => `${ctx.callID ?? name}/${childCalls}`
 
         const calls: CallEntry[] = []
         const attachments: Attachment[] = []
         const publish = () =>
           ctx.metadata({ title: CODE_MODE_TOOL, metadata: { toolCalls: calls.map((c) => ({ ...c })) } })
 
-        let childCalls = 0
         const callTool = (entry: CatalogEntry) => (input: unknown) =>
           Effect.gen(function* () {
             childCalls += 1
@@ -236,8 +305,107 @@ export const CodeModeTool = Tool.define(
             }),
           )
 
+        const lifecycle: Lifecycle = {
+          servers: () =>
+            Effect.gen(function* () {
+              childCalls += 1
+              const callID = nextCallID("$mcp.servers")
+              const before = yield* plugin.trigger(
+                "tool.execute.before",
+                { tool: "$mcp.servers", sessionID: ctx.sessionID, callID },
+                { args: {} as Record<string, unknown> },
+              )
+              void before
+              if (Permission.evaluate("mcp.servers", "*", ruleset).action === "deny") {
+                return yield* Effect.fail(toolError("Permission denied for mcp.servers"))
+              }
+              yield* ctx.ask({ permission: "mcp.servers", metadata: {}, patterns: ["*"], always: ["*"] })
+              const result = Object.entries(yield* mcp.status()).map(([name, status]) => ({
+                name,
+                status: status.status,
+              }))
+              yield* plugin.trigger(
+                "tool.execute.after",
+                { tool: "$mcp.servers", sessionID: ctx.sessionID, callID, args: {} },
+                result,
+              )
+              return result
+            }).pipe(
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
+                const error = Cause.squash(cause)
+                return Effect.fail(toolError(error instanceof Error ? error.message : String(error), error))
+              }),
+            ),
+          run: (action, input) =>
+            Effect.gen(function* () {
+              childCalls += 1
+              const tool = `$mcp.${action}`
+              const callID = nextCallID(tool)
+              const before = yield* plugin.trigger(
+                "tool.execute.before",
+                { tool, sessionID: ctx.sessionID, callID },
+                { args: (input ?? {}) as Record<string, unknown> },
+              )
+              const server = before.args?.server
+              if (typeof server !== "string" || server.length === 0) {
+                return yield* Effect.fail(toolError("MCP server name must be a non-empty exact configured name."))
+              }
+
+              const permission = `mcp.${action}`
+              if (Permission.evaluate(permission, server, ruleset).action === "deny") {
+                return yield* Effect.fail(toolError(`Permission denied for ${permission}: ${server}`))
+              }
+              const statuses = yield* mcp.status()
+              if (!Object.hasOwn(statuses, server)) {
+                return yield* Effect.fail(toolError(`Unknown configured MCP server: ${server}`))
+              }
+              yield* ctx.ask({ permission, metadata: { server }, patterns: [server], always: [server] })
+
+              let result: { name: string; status: string; message: string }
+              if (action === "connect") {
+                if (statuses[server]!.status === "connected") {
+                  result = { name: server, status: "connected", message: "Already connected." }
+                } else {
+                  yield* mcp.connect(server)
+                  const status = (yield* mcp.status())[server]?.status ?? "unknown"
+                  result = {
+                    name: server,
+                    status,
+                    message: "Connection requested. Newly available tools appear in the next execute call.",
+                  }
+                }
+              } else if (statuses[server]!.status !== "connected") {
+                result = { name: server, status: statuses[server]!.status, message: "Already disconnected." }
+              } else {
+                yield* mcp.disconnect(server)
+                const status = (yield* mcp.status())[server]?.status ?? "unknown"
+                result = { name: server, status, message: "Disconnected." }
+              }
+
+              yield* plugin.trigger(
+                "tool.execute.after",
+                { tool, sessionID: ctx.sessionID, callID, args: before.args },
+                result,
+              )
+              return result
+            }).pipe(
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
+                const error = Cause.squash(cause)
+                return Effect.fail(toolError(error instanceof Error ? error.message : String(error), error))
+              }),
+            ),
+        }
+
         const runtime = CodeMode.make({
-          tools: toolTree(catalog, callTool),
+          discovery: { catalogBudget: 0 },
+          tools: toolTree(
+            catalog,
+            callTool,
+            instructions,
+            Object.keys(yield* mcp.status()).length ? lifecycle : undefined,
+          ),
           onToolCallStart: ({ index, name, input }) =>
             Effect.suspend(() => {
               const shown = (() => {
