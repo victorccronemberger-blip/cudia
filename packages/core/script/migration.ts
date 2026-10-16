@@ -78,12 +78,19 @@ async function check() {
 
     await fs.mkdir(full)
     await drizzle(temporary, full, "schema")
-    if ((await Bun.file(schema).text()) !== (await formatTypescript(renderSchema(await generatedSql(full))))) {
+    // Git may check generated sources out with CRLF on Windows.
+    if (
+      (await Bun.file(schema).text()).replaceAll("\r\n", "\n") !==
+      (await formatTypescript(renderSchema(await generatedSql(full)))).replaceAll("\r\n", "\n")
+    ) {
       throw new Error("Current database schema is stale. Run `bun script/migration.ts` from packages/core.")
     }
 
     const migrations = await typescriptMigrations()
-    if ((await Bun.file(registry).text()) !== (await formatTypescript(renderRegistry(migrations)))) {
+    if (
+      (await Bun.file(registry).text()).replaceAll("\r\n", "\n") !==
+      (await formatTypescript(renderRegistry(migrations))).replaceAll("\r\n", "\n")
+    ) {
       throw new Error("Database migration registry is stale. Run `bun script/migration.ts` from packages/core.")
     }
   } finally {
