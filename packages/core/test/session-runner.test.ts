@@ -55,9 +55,11 @@ import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
 import { ContextManifest } from "@opencode-ai/core/harness/context-manifest"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ToolProvenance } from "@opencode-ai/core/tool/provenance"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -672,6 +674,138 @@ describe("SessionRunnerLLM", () => {
             },
           ],
         },
+      ])
+    }),
+  )
+
+  it.effect("persists and replays skill provenance while keeping receipts out of provider requests", () =>
+    Effect.gen(function* () {
+      yield* setup
+      requests.length = 0
+      const session = yield* SessionV2.Service
+      const applicationTools = yield* ApplicationTools.Service
+      const skillBody = "Synthetic skill instructions for this test."
+      const prefix = "Loaded fixture skill:\n"
+      const suffix = "\nEnd fixture skill."
+      const outputText = `${prefix}${skillBody}${suffix}`
+      yield* applicationTools.register({
+        skill: Tool.make({
+          description: "Load a named skill fixture",
+          input: Schema.Struct({ name: Schema.String }),
+          output: Schema.Struct({ text: Schema.String }),
+          toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
+          execute: ({ name }) => {
+            expect(name).toBe("fixture-skill")
+            const output = { text: outputText }
+            return Effect.succeed(
+              ToolProvenance.attach(output, [
+                {
+                  contentIndex: 0,
+                  receipt: ToolSource.create({
+                    kind: "skill",
+                    origin: "fixture/SKILL.md",
+                    output: outputText,
+                    start: prefix.length,
+                    end: prefix.length + skillBody.length,
+                  }),
+                },
+              ]),
+            )
+          },
+        }),
+      })
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Load the fixture skill" }), resume: false })
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({ id: "call-skill-provenance", name: "skill", input: { name: "fixture-skill" } }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "skill-provenance-answer" }),
+          LLMEvent.textDelta({ id: "skill-provenance-answer", text: "Done." }),
+          LLMEvent.textEnd({ id: "skill-provenance-answer" }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        ],
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(2)
+      expect(audits).toHaveLength(2)
+      const toolRequest = requests[1]!
+      const toolRequestJson = JSON.stringify({ messages: toolRequest.messages, tools: toolRequest.tools })
+      expect(
+        toolRequest.messages.flatMap((message) =>
+          message.role === "tool"
+            ? message.content.flatMap((part) => (part.type === "tool-result" ? [part.result.value] : []))
+            : [],
+        ),
+      ).toContain(outputText)
+      expect(toolRequestJson).not.toContain("fixture/SKILL.md")
+      expect(toolRequestJson).not.toContain("contextSources")
+      expect(toolRequestJson).not.toContain("hashEncoding")
+
+      const toolSource = audits[1]?.historySnapshot?.sources.find((source) => source.source === "loaded-tool-result")
+      expect(toolSource).toMatchObject({
+        source: "loaded-tool-result",
+        text: outputText,
+        tool: {
+          name: "skill",
+          callID: "call-skill-provenance",
+          contentIndex: 0,
+          observation: {
+            state: "matched",
+            kind: "skill",
+            origin: "fixture/SKILL.md",
+            body: {
+              type: "utf16-span",
+              start: prefix.length,
+              end: prefix.length + skillBody.length,
+            },
+          },
+        },
+      })
+      expect(toolSource?.messageID).toMatch(/^msg_/)
+      expect(toolSource?.partID).toBe("call-skill-provenance")
+
+      yield* replaySessionProjection(sessionID)
+      const projected = yield* session.context(sessionID)
+      expect(projected).toMatchObject([
+        { type: "user", text: "Load the fixture skill" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: "call-skill-provenance",
+              name: "skill",
+              state: {
+                status: "completed",
+                content: [{ type: "text", text: outputText }],
+                contextSources: {
+                  version: 1,
+                  projection: "original",
+                  entries: [
+                    {
+                      contentIndex: 0,
+                      receipt: {
+                        kind: "skill",
+                        origin: "fixture/SKILL.md",
+                        body: { type: "utf16-span", start: prefix.length, end: prefix.length + skillBody.length },
+                      },
+                    },
+                  ],
+                  omitted: 0,
+                },
+              },
+            },
+          ],
+        },
+        { type: "assistant", content: [{ type: "text", text: "Done." }] },
       ])
     }),
   )

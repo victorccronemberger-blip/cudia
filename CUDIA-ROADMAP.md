@@ -71,8 +71,17 @@ Não representa comprovação completa da linhagem nem nova versão do instalado
 recibos locais sem alterar as saídas ou os schemas do provedor. A auditoria
 observa resultados armazenados e distingue corpo carregado de framing, com estados
 de correspondência/divergência/ausência/indisponibilidade. Alterações e truncamento
-não recebem atribuição verificada. A proveniência dos demais loaders e do V2,
-assim como o vínculo com partes finais após conversão, permanece pendente.
+não recebem atribuição verificada. A proveniência dos demais loaders e o vínculo
+com partes finais após conversão permanecem pendentes.
+
+**Skills V2, em fonte:** recibos locais seguem a execução canônica por identidade,
+sem campos extras no contrato enviado ao modelo. O sucesso persiste resultado e
+recibos no mesmo evento, com reconstrução por replay. O snapshot opt-in verifica
+o texto selecionado; projeção substituída pelo limitador e resultados podados não
+recebem origem verificada. O cliente público foi regenerado para o campo opcional
+de estado. A regressão passou com 200 testes/1.122 verificações em 14 arquivos.
+Recursos/guidance MCP V2 e demais loaders continuam pendentes. Esse incremento não
+altera o instalador Preview 12 nem declara concluída a meta geral.
 
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no

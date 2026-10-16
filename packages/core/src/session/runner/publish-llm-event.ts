@@ -5,6 +5,7 @@ import { ModelV2 } from "../../model"
 import { SessionEvent } from "../event"
 import { SessionMessage } from "../message"
 import { SessionSchema } from "../schema"
+import type { ToolContextSource } from "@opencode-ai/schema/tool-context-source"
 
 type Input = {
   readonly sessionID: SessionSchema.ID
@@ -239,6 +240,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
   const publish = Effect.fn("SessionRunner.publishLLMEvent")(function* (
     event: LLMEvent,
     outputPaths: ReadonlyArray<string> = [],
+    contextSources?: ToolContextSource.Bundle,
   ) {
     switch (event.type) {
       case "step-start":
@@ -368,6 +370,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
           callID: event.id,
           ...result,
           outputPaths,
+          ...(contextSources === undefined || provider.executed ? {} : { contextSources }),
           ...(provider.executed ? { result: event.result } : {}),
           provider,
         })

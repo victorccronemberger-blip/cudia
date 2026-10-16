@@ -5,6 +5,7 @@ import { Effect, JsonSchema, Schema } from "effect"
 import type { AgentV2 } from "../agent"
 import type { SessionMessage } from "../session/message"
 import type { SessionSchema } from "../session/schema"
+import { ToolProvenance } from "./provenance"
 
 export interface Context {
   readonly sessionID: SessionSchema.ID
@@ -115,38 +116,47 @@ export function make<
       Schema.decodeUnknownEffect(config.input)(call.input).pipe(
         Effect.mapError((error) => new ToolFailure({ message: `Invalid tool input: ${error.message}` })),
         Effect.flatMap((input) =>
-          config.execute(input, context).pipe(
-            Effect.flatMap((output) =>
-              Schema.encodeEffect(config.output)(output).pipe(
-                Effect.flatMap((output) => {
-                  if (!config.structured || !config.toStructuredOutput)
-                    return Effect.succeed({ output, structured: output })
-                  return Schema.encodeEffect(config.structured)(config.toStructuredOutput({ input, output })).pipe(
-                    Effect.map((structured) => ({ output, structured })),
-                  )
-                }),
-                Effect.mapError(
-                  (error) =>
-                    new ToolFailure({
-                      message: `Tool returned an invalid value for its output schema: ${error.message}`,
+          Effect.uninterruptibleMask((restore) =>
+            restore(config.execute(input, context)).pipe(
+              Effect.flatMap((value) => {
+                // Consume before interruptible codecs; reusable producer objects cannot retain stale receipts.
+                const sources = ToolProvenance.take(value)
+                return restore(
+                  Schema.encodeEffect(config.output)(value).pipe(
+                    Effect.flatMap((output) => {
+                      if (!config.structured || !config.toStructuredOutput)
+                        return Effect.succeed({ output, structured: output })
+                      return Schema.encodeEffect(config.structured)(config.toStructuredOutput({ input, output })).pipe(
+                        Effect.map((structured) => ({ output, structured })),
+                      )
                     }),
-                ),
-              ),
+                    Effect.mapError(
+                      (error) =>
+                        new ToolFailure({
+                          message: `Tool returned an invalid value for its output schema: ${error.message}`,
+                        }),
+                    ),
+                    Effect.map(({ output, structured }) => {
+                      const result = {
+                        structured,
+                        content:
+                          config.toModelOutput?.({ input, output }).map((part) =>
+                            part.type === "text"
+                              ? { type: "text" as const, text: part.text }
+                              : {
+                                  type: "file" as const,
+                                  uri: `data:${part.mime};base64,${part.data}`,
+                                  mime: part.mime,
+                                  name: part.name,
+                                },
+                          ) ?? (typeof output === "string" ? [{ type: "text" as const, text: output }] : []),
+                      }
+                      return sources ? ToolProvenance.attach(result, sources.entries, sources.omitted) : result
+                    }),
+                  ),
+                )
+              }),
             ),
-            Effect.map(({ output, structured }) => ({
-              structured,
-              content:
-                config.toModelOutput?.({ input, output }).map((part) =>
-                  part.type === "text"
-                    ? { type: "text" as const, text: part.text }
-                    : {
-                        type: "file" as const,
-                        uri: `data:${part.mime};base64,${part.data}`,
-                        mime: part.mime,
-                        name: part.name,
-                      },
-                ) ?? (typeof output === "string" ? [{ type: "text" as const, text: output }] : []),
-            })),
           ),
         ),
       ),

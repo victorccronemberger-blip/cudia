@@ -13,6 +13,7 @@ import { Location } from "./location"
 import { SessionMessage } from "./session-message"
 import { Revert } from "./revert"
 import { ContextManifestSchema } from "./context-manifest"
+import { ToolContextSource } from "./tool-context-source"
 
 export { FileAttachment }
 
@@ -349,6 +350,7 @@ export namespace Tool {
       structured: Schema.Record(Schema.String, Schema.Unknown),
       content: Schema.Array(ToolContent),
       outputPaths: Schema.Array(Schema.String).pipe(optional),
+      contextSources: ToolContextSource.Bundle.pipe(optional),
       result: Schema.Unknown.pipe(optional),
       provider: Schema.Struct({
         executed: Schema.Boolean,

@@ -31,7 +31,14 @@ export type Input = {
     readonly bytes: number
     readonly sources: ReadonlyArray<{
       readonly source?: "conversation-checkpoint" | "loaded-tool-result"
-      readonly tool?: { readonly name: string; readonly callID: string; readonly observation: ToolSource.Observation }
+      readonly tool?: {
+        readonly name: string
+        readonly callID: string
+        readonly contentIndex?: number
+        readonly receiptProjection?: "original" | "replaced"
+        readonly omittedReceipts?: number
+        readonly observation: ToolSource.Observation
+      }
       readonly messageID: string
       readonly partID: string
       readonly messageIndex: number
@@ -89,6 +96,9 @@ export const Report = Schema.Struct({
             Schema.Struct({
               name: Schema.String,
               callID: Schema.String,
+              contentIndex: Schema.optional(Schema.Number),
+              receiptProjection: Schema.optional(Schema.Literals(["original", "replaced"])),
+              omittedReceipts: Schema.optional(Schema.Number),
               observation: Schema.Union([
                 Schema.Struct({ state: Schema.Literals(["missing", "invalid", "changed", "unavailable"]) }),
                 Schema.Struct({
@@ -262,6 +272,9 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
             tool: {
               name: item.tool.name,
               callID: item.tool.callID,
+              ...(item.tool.contentIndex === undefined ? {} : { contentIndex: item.tool.contentIndex }),
+              ...(item.tool.receiptProjection === undefined ? {} : { receiptProjection: item.tool.receiptProjection }),
+              ...(item.tool.omittedReceipts === undefined ? {} : { omittedReceipts: item.tool.omittedReceipts }),
               observation: ToolSource.copy(item.tool.observation),
             },
           }),

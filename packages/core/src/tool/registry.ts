@@ -12,6 +12,8 @@ import { ApplicationTools } from "./application-tools"
 import { definition, permission, settle, validateName, type AnyTool, type RegistrationError } from "./tool"
 import { Tools } from "./tools"
 import { makeLocationNode } from "../effect/app-node"
+import type { ToolContextSource } from "@opencode-ai/schema/tool-context-source"
+import { ToolProvenance } from "./provenance"
 
 export type ExecuteInput = {
   readonly sessionID: SessionSchema.ID
@@ -42,6 +44,7 @@ export interface Settlement {
   readonly result: ToolResultValue
   readonly output?: ToolOutput
   readonly outputPaths?: ReadonlyArray<string>
+  readonly contextSources?: ToolContextSource.Bundle
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ToolRegistry") {}
@@ -90,6 +93,7 @@ const registryLayer = Layer.effect(
       )
       if ("result" in pending) return pending
       const output = pending.output
+      const contextSources = ToolProvenance.take(output)
       const bounded = yield* resources.bound({
         sessionID: input.sessionID,
         assistantMessageID: input.assistantMessageID,
@@ -99,9 +103,19 @@ const registryLayer = Layer.effect(
       const result = ToolOutput.toResultValue(bounded.output)
       if (result.type === "error")
         return bounded.outputPaths.length > 0 ? { result, outputPaths: bounded.outputPaths } : { result }
-      return bounded.outputPaths.length > 0
-        ? { result, output: bounded.output, outputPaths: bounded.outputPaths }
-        : { result, output: bounded.output }
+      return {
+        result,
+        output: bounded.output,
+        ...(bounded.outputPaths.length > 0 ? { outputPaths: bounded.outputPaths } : {}),
+        ...(contextSources
+          ? {
+              contextSources: {
+                ...contextSources,
+                projection: bounded.output === output ? ("original" as const) : ("replaced" as const),
+              },
+            }
+          : {}),
+      }
     })
 
     return Service.of({

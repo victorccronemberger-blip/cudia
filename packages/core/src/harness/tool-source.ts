@@ -1,25 +1,15 @@
 export * as ToolSource from "./tool-source"
 
 import { createHash } from "node:crypto"
+import type { ToolContextSource } from "@opencode-ai/schema/tool-context-source"
 
 export const MAX_RECEIPT_BYTES = 4096
 export const MAX_ORIGIN_BYTES = 1024
 export const MAX_VERIFY_BYTES = 2 * 1024 * 1024
 
 type Digest = { readonly bytes: number; readonly sha256: string }
-export type Body = Digest &
-  (
-    | { readonly type: "utf16-span"; readonly start: number; readonly end: number }
-    | { readonly type: "json-member"; readonly member: "instructions" }
-  )
-export type Receipt = {
-  readonly version: 1
-  readonly hashEncoding: "json-utf8"
-  readonly kind: "skill" | "mcp-guidance"
-  readonly origin: string
-  readonly output: Digest & { readonly length: number }
-  readonly body: Body
-}
+export type Body = ToolContextSource.Body
+export type Receipt = ToolContextSource.Receipt
 export type Observation =
   | { readonly state: "missing" | "invalid" | "changed" | "unavailable" }
   | {
@@ -166,6 +156,15 @@ function parse(value: unknown): Receipt | undefined {
         : { ...locator, bytes: bodyBytes, sha256: bodyHash },
   }
   return Buffer.byteLength(JSON.stringify(receipt), "utf8") <= MAX_RECEIPT_BYTES ? receipt : undefined
+}
+
+/** Bounded allowlisted copy for local receipt transport; never serializes unknown properties. */
+export function read(value: unknown): Receipt | undefined {
+  try {
+    return parse(value)
+  } catch {
+    return undefined
+  }
 }
 
 /** Reads a constant allowlist of own data properties; arbitrary metadata is never serialized. */

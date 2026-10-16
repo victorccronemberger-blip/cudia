@@ -36,6 +36,13 @@ export function metadata(value: Report): Report {
                     tool: {
                       name: source.tool.name,
                       callID: source.tool.callID,
+                      ...(source.tool.contentIndex === undefined ? {} : { contentIndex: source.tool.contentIndex }),
+                      ...(source.tool.receiptProjection === undefined
+                        ? {}
+                        : { receiptProjection: source.tool.receiptProjection }),
+                      ...(source.tool.omittedReceipts === undefined
+                        ? {}
+                        : { omittedReceipts: source.tool.omittedReceipts }),
                       observation: ToolSource.copy(source.tool.observation),
                     },
                   }),

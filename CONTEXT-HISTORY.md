@@ -99,6 +99,31 @@ autenticar o arquivo, o servidor ou a autoria. Plugins podem substituir ambos.
 como verificados. Truncamento ou edição depois do loader produz divergência;
 omissão ou recorte na conversão posterior continua fora dessa prova.
 
+## Skills no V2
+
+O loader V2 de skills também produz recibos locais. O vínculo passa pela identidade
+do objeto retornado ao executor canônico e é consumido uma vez, antes da codificação
+do resultado. O schema e o texto da ferramenta enviados ao modelo não recebem esse
+vínculo. O evento existente de sucesso persiste `contextSources` junto do resultado;
+replay conserva ambos, e eventos antigos continuam aceitos sem esse campo opcional.
+
+Cada resultado conserva até oito recibos e 16 KiB de metadados, com contagem dos
+recibos omitidos. Os índices referem-se à projeção original da ferramenta. Se o
+limitador substituir essa projeção, `projection: replaced` explicita que os índices
+não estão mapeados para o resultado reduzido. A auditoria não atribui uma origem
+verificada nesse caso, nem quando o resultado estiver marcado como podado.
+
+O snapshot V2 observa apenas skills carregadas por nome e concluídas no histórico
+selecionado. Confere o texto realmente armazenado e registra o índice de conteúdo,
+além dos IDs de mensagem/chamada. Pesquisa de catálogo, falhas e outras ferramentas
+não são classificadas como corpos de skills. Texto removido conta como fonte
+omitida; resultados antigos sem recibo têm observação `missing`. A captura continua
+opt-in, com os mesmos limites compartilhados e `unmapped-after-conversion`.
+
+Este incremento ainda não cobre os recursos/guidance MCP V2 nem todos os demais
+loaders. Não autentica arquivos ou plugins, nem comprova que o adaptador enviou
+cada parte observada. Permanece em fonte, fora do instalador Preview 12.
+
 A inspeção aceita até 2 MiB de resultado, 1.024 bytes no identificador de origem
 e 4 KiB no recibo projetado. Limites ou ausência do recibo afetam somente a
 atribuição; não impedem carregar ou devolver o resultado. Propriedades desconhecidas

@@ -42,6 +42,7 @@ import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
 import { HarnessPolicy } from "../../harness/policy"
 import { ContextAudit } from "../../harness/audit"
+import { HistorySource } from "../../harness/history-source"
 import { ContextManifest } from "../../harness/context-manifest"
 
 /**
@@ -262,6 +263,7 @@ const layer = Layer.effect(
           })
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const agentSystem = agent.info?.system ?? (policy.contextMode === "lean" ? HarnessPolicy.BASE : undefined)
+      const historySnapshot = audit.enabled ? HistorySource.capture(context) : undefined
       const request = LLM.request({
         model,
         http: sessionHTTP(session),
@@ -287,8 +289,11 @@ const layer = Layer.effect(
         snapshot: startSnapshot,
       })
       const withPublication = Semaphore.makeUnsafe(1).withPermit
-      const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
-        withPublication(publisher.publish(event, outputPaths))
+      const publish = (
+        event: LLMEvent,
+        outputPaths: ReadonlyArray<string> = [],
+        contextSources?: ToolRegistry.Settlement["contextSources"],
+      ) => withPublication(publisher.publish(event, outputPaths, contextSources))
       let overflowFailure: ProviderErrorEvent | undefined
       if (audit.enabled) {
         const compactionIDs = new Set<string>(
@@ -297,6 +302,7 @@ const layer = Layer.effect(
         yield* audit.record({
           runtime: "v2",
           purpose: "main",
+          ...(historySnapshot ? { historySnapshot } : {}),
           sessionID: session.id,
           agent: agent.id,
           model: { provider: model.provider, id: model.id },
@@ -405,6 +411,7 @@ const layer = Layer.effect(
                       output: settlement.output,
                     }),
                     settlement.outputPaths ?? [],
+                    settlement.contextSources,
                   ),
                 ),
               ),

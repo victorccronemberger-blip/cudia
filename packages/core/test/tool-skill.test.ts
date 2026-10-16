@@ -12,6 +12,7 @@ import { SkillV2 } from "@opencode-ai/core/skill"
 import { SkillTool } from "@opencode-ai/core/tool/skill"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { tmpdir } from "./fixture/tmpdir"
 import { it } from "./lib/effect"
 import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/tool"
@@ -94,13 +95,12 @@ describe("SkillTool", () => {
               name: "skill",
               description: SkillTool.description,
             })
-            expect(
-              yield* executeTool(registry, {
-                sessionID,
-                ...toolIdentity,
-                call: { type: "tool-call", id: "call-skill-search", name: "skill", input: { query: "Effect" } },
-              }),
-            ).toEqual({
+            const searched = yield* settleTool(registry, {
+              sessionID,
+              ...toolIdentity,
+              call: { type: "tool-call", id: "call-skill-search", name: "skill", input: { query: "Effect" } },
+            })
+            expect(searched.result).toEqual({
               type: "text",
               value: JSON.stringify({
                 matches: [
@@ -110,6 +110,7 @@ describe("SkillTool", () => {
                 total: 2,
               }),
             })
+            expect(searched.contextSources).toBeUndefined()
             expect(assertions).toHaveLength(0)
             expect(
               yield* executeTool(registry, {
@@ -123,16 +124,30 @@ describe("SkillTool", () => {
                 },
               }),
             ).toEqual({ type: "error", value: "Use name to load, or query with pagination to search, not both." })
-            expect(
-              yield* executeTool(registry, {
-                sessionID,
-                ...toolIdentity,
-                call: { type: "tool-call", id: "call-skill", name: "skill", input: { name: "effect" } },
-              }),
-            ).toEqual({
-              type: "text",
-              value: SkillTool.toModelOutput(info, [reference]),
+            const loaded = yield* settleTool(registry, {
+              sessionID,
+              ...toolIdentity,
+              call: { type: "tool-call", id: "call-skill", name: "skill", input: { name: "effect" } },
             })
+            const rendered = SkillTool.toModelOutput(info, [reference])
+            expect(loaded.result).toEqual({
+              type: "text",
+              value: rendered,
+            })
+            expect(loaded.contextSources).toMatchObject({
+              version: 1,
+              projection: "original",
+              omitted: 0,
+              entries: [{ contentIndex: 0, receipt: { kind: "skill", origin: location } }],
+            })
+            const receipt = loaded.contextSources?.entries[0]?.receipt
+            expect(receipt).toBeDefined()
+            if (!receipt) throw new Error("Expected skill source receipt")
+            const observation = ToolSource.inspect(rendered, { contextSource: receipt })
+            expect(observation).toMatchObject({ state: "matched", kind: "skill", origin: location })
+            if (observation.state !== "matched" || observation.body.type !== "utf16-span")
+              throw new Error("Expected matching skill content span")
+            expect(rendered.slice(observation.body.start, observation.body.end)).toBe(info.content.trim())
             expect(SkillTool.toModelOutput(info, [reference])).toContain(`Base directory for this skill: ${directory}`)
             expect(
               yield* settleTool(registry, {
@@ -184,6 +199,36 @@ describe("SkillTool", () => {
                 call: { type: "tool-call", id: "call-flat-skill", name: "skill", input: { name: "public" } },
               }),
             ).toEqual({ type: "text", value: SkillTool.toModelOutput(flat, []) })
+
+            const longContent = Array.from({ length: 2_100 }, (_, index) => {
+              if (index === 0) return "LONG_SKILL_FIRST_LINE"
+              if (index === 1_050) return "LONG_SKILL_OMITTED_MIDDLE_LINE"
+              return `Long skill body line ${index}`
+            }).join("\n")
+            const large = SkillV2.Info.make({
+              ...flat,
+              name: "large",
+              location: AbsolutePath.make(path.join(tmp.path, "large", "SKILL.md")),
+              content: longContent,
+            })
+            yield* Effect.promise(() => fs.mkdir(path.dirname(large.location), { recursive: true }))
+            yield* Effect.promise(() => fs.writeFile(large.location, "large skill"))
+            current = [large]
+            const bounded = yield* settleTool(registry, {
+              sessionID,
+              ...toolIdentity,
+              call: { type: "tool-call", id: "call-large-skill", name: "skill", input: { name: "large" } },
+            })
+            expect(bounded.contextSources).toMatchObject({ version: 1, projection: "replaced" })
+            expect(bounded.outputPaths).toHaveLength(1)
+            expect(bounded.result.type).toBe("text")
+            if (bounded.result.type !== "text") throw new Error("Expected bounded skill text")
+            expect(bounded.result.value).toContain("LONG_SKILL_FIRST_LINE")
+            expect(bounded.result.value).not.toContain("LONG_SKILL_OMITTED_MIDDLE_LINE")
+            const boundedReceipt = bounded.contextSources?.entries[0]?.receipt
+            expect(boundedReceipt).toBeDefined()
+            if (!boundedReceipt) throw new Error("Expected bounded skill receipt")
+            expect(ToolSource.inspect(bounded.result.value, { contextSource: boundedReceipt }).state).toBe("changed")
           }).pipe(Effect.provide(skillToolLayer))
         }),
       ),

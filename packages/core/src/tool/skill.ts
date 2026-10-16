@@ -13,6 +13,8 @@ import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
+import { ToolProvenance } from "./provenance"
+import { ToolSource } from "../harness/tool-source"
 
 export const name = "skill"
 const FILE_LIMIT = 10
@@ -114,11 +116,26 @@ const layer = Layer.effectDiscard(
                         .toSorted()
                         .slice(0, FILE_LIMIT)
                     : []
-                return {
+                const output = toModelOutput(skill, files)
+                const content = skill.content.trim()
+                const prefix = [`<skill_content name="${skill.name}">`, `# Skill: ${skill.name}`, ""].join("\n") + "\n"
+                const result = {
                   name: skill.name,
                   directory,
-                  output: toModelOutput(skill, files),
+                  output,
                 }
+                return ToolProvenance.attach(result, [
+                  {
+                    contentIndex: 0,
+                    receipt: ToolSource.create({
+                      kind: "skill",
+                      origin: skill.location,
+                      output,
+                      start: prefix.length,
+                      end: prefix.length + content.length,
+                    }),
+                  },
+                ])
               }).pipe(Effect.mapError((error) => unableToLoad(selected, error)))
             }),
         }),

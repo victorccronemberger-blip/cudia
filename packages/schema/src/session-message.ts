@@ -9,6 +9,7 @@ import { DateTimeUtcFromMillis, RelativePath, statics } from "./schema"
 import { SessionID } from "./session-id"
 import { ascending } from "./identifier"
 import { ContextManifestSchema } from "./context-manifest"
+import { ToolContextSource } from "./tool-context-source"
 
 export const ID = Schema.String.check(Schema.isStartsWith("msg_")).pipe(
   Schema.brand("Session.Message.ID"),
@@ -101,6 +102,7 @@ export const ToolStateCompleted = Schema.Struct({
   attachments: FileAttachment.pipe(Schema.Array, optional),
   content: ToolContent.pipe(Schema.Array),
   outputPaths: Schema.Array(Schema.String).pipe(optional),
+  contextSources: ToolContextSource.Bundle.pipe(optional),
   structured: Schema.Record(Schema.String, Schema.Unknown),
   result: Schema.Unknown.pipe(optional),
 }).annotate({ identifier: "Session.Message.ToolState.Completed" })

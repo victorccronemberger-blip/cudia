@@ -8,6 +8,8 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { createLLMEventPublisher } from "@opencode-ai/core/session/runner/publish-llm-event"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
+import type { ToolContextSource } from "@opencode-ai/schema/tool-context-source"
 
 const sessionID = SessionV2.ID.make("ses_tool_event_test")
 const base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
@@ -124,6 +126,44 @@ test("old success event data containing result still decodes", () => {
     provider: { executed: false },
   })
   expect(decoded.result).toMatchObject({ type: "content" })
+  expect(decoded).not.toHaveProperty("contextSources")
+})
+
+test("local receipts share the success event and do not attach to provider results or failures", async () => {
+  const receipt = ToolSource.create({ kind: "skill", origin: "fixture/SKILL.md", output: "body", start: 0, end: 4 })!
+  const sources: ToolContextSource.Bundle = {
+    version: 1,
+    projection: "original",
+    entries: [{ contentIndex: 0, receipt }],
+    omitted: 3,
+  }
+  for (const kind of ["local", "provider", "failure"] as const) {
+    const { published, publisher } = capture()
+    await Effect.runPromise(publisher.publish(LLMEvent.toolCall({ ...call, providerExecuted: kind === "provider" })))
+    await Effect.runPromise(
+      publisher.publish(
+        kind === "failure"
+          ? LLMEvent.toolResult({ id: call.id, name: call.name, result: { type: "error", value: "failed" } })
+          : LLMEvent.toolResult({ ...result, providerExecuted: kind === "provider" }),
+        [],
+        sources,
+      ),
+    )
+    const success = published.find((event) => event.type === "session.next.tool.success.1")
+    if (kind === "failure") {
+      expect(success).toBeUndefined()
+      expect(published.find((event) => event.type === "session.next.tool.failed.1")?.data).not.toHaveProperty(
+        "contextSources",
+      )
+      continue
+    }
+    expect(published.filter((event) => event.type === "session.next.tool.success.1")).toHaveLength(1)
+    const typed = Schema.decodeUnknownSync(Schema.toType(SessionEvent.Tool.Success.data))(success?.data)
+    const decoded = Schema.decodeUnknownSync(SessionEvent.Tool.Success.data)(
+      Schema.encodeSync(SessionEvent.Tool.Success.data)(typed),
+    )
+    expect(decoded.contextSources).toEqual(kind === "local" ? sources : undefined)
+  }
 })
 
 test("step finish records settlement without publishing step ended", async () => {

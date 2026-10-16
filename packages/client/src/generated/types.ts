@@ -679,6 +679,35 @@ export type SessionsContextOutput = {
                       | { readonly type: "file"; readonly uri: string; readonly mime: string; readonly name?: string }
                     >
                     readonly outputPaths?: ReadonlyArray<string>
+                    readonly contextSources?: {
+                      readonly version: 1
+                      readonly projection: "original" | "replaced"
+                      readonly entries: ReadonlyArray<{
+                        readonly contentIndex: number
+                        readonly receipt: {
+                          readonly version: 1
+                          readonly hashEncoding: "json-utf8"
+                          readonly kind: "skill" | "mcp-guidance"
+                          readonly origin: string
+                          readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
+                          readonly body:
+                            | {
+                                readonly bytes: number
+                                readonly sha256: string
+                                readonly type: "utf16-span"
+                                readonly start: number
+                                readonly end: number
+                              }
+                            | {
+                                readonly bytes: number
+                                readonly sha256: string
+                                readonly type: "json-member"
+                                readonly member: "instructions"
+                              }
+                        }
+                      }>
+                      readonly omitted: number
+                    }
                     readonly structured: { readonly [x: string]: JsonValue }
                     readonly result?: JsonValue
                   }
@@ -1058,6 +1087,35 @@ export type SessionsHistoryOutput = {
             | { readonly type: "file"; readonly uri: string; readonly mime: string; readonly name?: string }
           >
           readonly outputPaths?: ReadonlyArray<string>
+          readonly contextSources?: {
+            readonly version: 1
+            readonly projection: "original" | "replaced"
+            readonly entries: ReadonlyArray<{
+              readonly contentIndex: number
+              readonly receipt: {
+                readonly version: 1
+                readonly hashEncoding: "json-utf8"
+                readonly kind: "skill" | "mcp-guidance"
+                readonly origin: string
+                readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
+                readonly body:
+                  | {
+                      readonly bytes: number
+                      readonly sha256: string
+                      readonly type: "utf16-span"
+                      readonly start: number
+                      readonly end: number
+                    }
+                  | {
+                      readonly bytes: number
+                      readonly sha256: string
+                      readonly type: "json-member"
+                      readonly member: "instructions"
+                    }
+              }
+            }>
+            readonly omitted: number
+          }
           readonly result?: JsonValue
           readonly provider: {
             readonly executed: boolean
@@ -1537,6 +1595,35 @@ export type SessionsEventsOutput =
           | { readonly type: "file"; readonly uri: string; readonly mime: string; readonly name?: string }
         >
         readonly outputPaths?: ReadonlyArray<string>
+        readonly contextSources?: {
+          readonly version: 1
+          readonly projection: "original" | "replaced"
+          readonly entries: ReadonlyArray<{
+            readonly contentIndex: number
+            readonly receipt: {
+              readonly version: 1
+              readonly hashEncoding: "json-utf8"
+              readonly kind: "skill" | "mcp-guidance"
+              readonly origin: string
+              readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
+              readonly body:
+                | {
+                    readonly bytes: number
+                    readonly sha256: string
+                    readonly type: "utf16-span"
+                    readonly start: number
+                    readonly end: number
+                  }
+                | {
+                    readonly bytes: number
+                    readonly sha256: string
+                    readonly type: "json-member"
+                    readonly member: "instructions"
+                  }
+            }
+          }>
+          readonly omitted: number
+        }
         readonly result?: unknown
         readonly provider: {
           readonly executed: boolean
@@ -1820,6 +1907,35 @@ export type SessionsMessageOutput = {
                       | { readonly type: "file"; readonly uri: string; readonly mime: string; readonly name?: string }
                     >
                     readonly outputPaths?: ReadonlyArray<string>
+                    readonly contextSources?: {
+                      readonly version: 1
+                      readonly projection: "original" | "replaced"
+                      readonly entries: ReadonlyArray<{
+                        readonly contentIndex: number
+                        readonly receipt: {
+                          readonly version: 1
+                          readonly hashEncoding: "json-utf8"
+                          readonly kind: "skill" | "mcp-guidance"
+                          readonly origin: string
+                          readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
+                          readonly body:
+                            | {
+                                readonly bytes: number
+                                readonly sha256: string
+                                readonly type: "utf16-span"
+                                readonly start: number
+                                readonly end: number
+                              }
+                            | {
+                                readonly bytes: number
+                                readonly sha256: string
+                                readonly type: "json-member"
+                                readonly member: "instructions"
+                              }
+                        }
+                      }>
+                      readonly omitted: number
+                    }
                     readonly structured: { readonly [x: string]: JsonValue }
                     readonly result?: JsonValue
                   }
@@ -2013,6 +2129,35 @@ export type MessagesListOutput = {
                       | { readonly type: "file"; readonly uri: string; readonly mime: string; readonly name?: string }
                     >
                     readonly outputPaths?: ReadonlyArray<string>
+                    readonly contextSources?: {
+                      readonly version: 1
+                      readonly projection: "original" | "replaced"
+                      readonly entries: ReadonlyArray<{
+                        readonly contentIndex: number
+                        readonly receipt: {
+                          readonly version: 1
+                          readonly hashEncoding: "json-utf8"
+                          readonly kind: "skill" | "mcp-guidance"
+                          readonly origin: string
+                          readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
+                          readonly body:
+                            | {
+                                readonly bytes: number
+                                readonly sha256: string
+                                readonly type: "utf16-span"
+                                readonly start: number
+                                readonly end: number
+                              }
+                            | {
+                                readonly bytes: number
+                                readonly sha256: string
+                                readonly type: "json-member"
+                                readonly member: "instructions"
+                              }
+                        }
+                      }>
+                      readonly omitted: number
+                    }
                     readonly structured: { readonly [x: string]: JsonValue }
                     readonly result?: JsonValue
                   }
