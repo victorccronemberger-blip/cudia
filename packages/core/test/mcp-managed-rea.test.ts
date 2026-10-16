@@ -1,7 +1,7 @@
 import path from "node:path"
 import { open, symlink } from "node:fs/promises"
 import { describe, expect, test } from "bun:test"
-import { Duration, Effect, Stream } from "effect"
+import { Duration, Effect } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Global } from "@opencode-ai/core/global"
@@ -311,6 +311,7 @@ describe("ManagedRea.prepareWithServices", () => {
     const core = makeCore(tmp.path)
     const entered = Promise.withResolvers<void>()
     let readers = 0
+    const handles: Effect.Success<ReturnType<FSUtil.Interface["open"]>>[] = []
     const prepared = await Effect.gen(function* () {
       const global = yield* Global.Service
       const filesystem = yield* FSUtil.Service
@@ -319,16 +320,22 @@ describe("ManagedRea.prepareWithServices", () => {
       const installed = yield* ManagedRea.prepareWithServices({ args: ["mcp"] }, services)
       const receiptPath = path.join(path.dirname(path.dirname(installed.command)), "receipt.json")
       const receipt = yield* filesystem.readFileString(receiptPath)
-      const stream: FSUtil.Interface["stream"] = (file, options) =>
-        file.includes("node_modules")
-          ? Stream.fromEffect(
-              Effect.sync(() => {
-                readers++
-                entered.resolve()
-              }).pipe(Effect.andThen(Effect.never), Effect.ensuring(Effect.sync(() => readers--))),
-            )
-          : filesystem.stream(file, options)
-      return { services: { ...services, fs: { ...filesystem, stream } }, receiptPath, receipt }
+      const open: FSUtil.Interface["open"] = (file, options) =>
+        filesystem.open(file, options).pipe(
+          Effect.map((handle) => {
+            if (!file.includes("node_modules")) return handle
+            handles.push(handle)
+            return {
+              ...handle,
+              readAlloc: () =>
+                Effect.sync(() => {
+                  readers++
+                  entered.resolve()
+                }).pipe(Effect.andThen(Effect.never), Effect.ensuring(Effect.sync(() => readers--))),
+            }
+          }),
+        )
+      return { services: { ...services, fs: { ...filesystem, open } }, receiptPath, receipt }
     }).pipe(Effect.provide(core), Effect.runPromise)
     const controller = new AbortController()
     const pending = Effect.runPromiseExit(ManagedRea.prepareWithServices({ args: ["mcp"] }, prepared.services), {
@@ -338,6 +345,38 @@ describe("ManagedRea.prepareWithServices", () => {
     controller.abort()
     expect((await pending)._tag).toBe("Failure")
     expect(readers).toBe(0)
+    expect(handles.length).toBeGreaterThan(0)
+    for (const handle of handles) expect((await Effect.runPromiseExit(handle.stat))._tag).toBe("Failure")
     expect(await Bun.file(prepared.receiptPath).text()).toBe(prepared.receipt)
   })
+
+  for (const contents of ["", "this file grew after it was measured and before it was read"]) {
+    test(`rejects a file changing size during verification (${contents ? "growth" : "premature EOF"})`, async () => {
+      await using tmp = await tmpdir()
+      const core = makeCore(tmp.path)
+      const result = await Effect.gen(function* () {
+        const global = yield* Global.Service
+        const filesystem = yield* FSUtil.Service
+        const flock = yield* EffectFlock.Service
+        const open: FSUtil.Interface["open"] = (file, options) =>
+          file.endsWith("runtime.mjs")
+            ? filesystem.writeFileString(file, contents).pipe(Effect.andThen(filesystem.open(file, options)))
+            : filesystem.open(file, options)
+        const services = servicesFor(global, filesystem, flock, successfulRun(filesystem, { runs: 0 }))
+        const exit = yield* ManagedRea.prepareWithServices(
+          { args: ["mcp"] },
+          { ...services, fs: { ...filesystem, open } },
+        ).pipe(Effect.exit)
+        const identities = yield* filesystem.readDirectoryEntries(path.join(global.cache, "managed-rea"))
+        const ready = yield* filesystem.exists(
+          path.join(global.cache, "managed-rea", identities[0]!.name, "receipt.json"),
+        )
+        const retry = yield* ManagedRea.prepareWithServices({ args: ["mcp"] }, services)
+        return { exit, ready, retry }
+      }).pipe(Effect.provide(core), Effect.runPromise)
+      expect(result.exit._tag).toBe("Failure")
+      expect(result.ready).toBe(false)
+      expect(result.retry.command).toContain("node.exe")
+    })
+  }
 })

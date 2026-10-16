@@ -392,35 +392,38 @@ function fingerprint(
   maxBytes = MAX_PACKAGE_BYTES,
   budget?: { reserved: number; read: number },
 ) {
-  return Effect.gen(function* () {
-    const info = yield* fs.stat(file)
-    if (info.type !== "File" || info.size > BigInt(maxBytes))
-      return yield* new ManagedReaError({ detail: "Managed REA file is invalid or exceeds its byte limit" })
-    if (budget) {
-      if (budget.reserved + Number(info.size) > MAX_PACKAGE_BYTES)
-        return yield* new ManagedReaError({ detail: "REA package inventory exceeded 512 MiB" })
-      budget.reserved += Number(info.size)
-    }
-    const hash = createHash("sha256")
-    let size = 0
-    yield* fs.stream(file).pipe(
-      Stream.runForEach((chunk) => {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const info = yield* fs.stat(file)
+      if (info.type !== "File" || info.size > BigInt(maxBytes))
+        return yield* new ManagedReaError({ detail: "Managed REA file is invalid or exceeds its byte limit" })
+      if (budget) {
+        if (budget.reserved + Number(info.size) > MAX_PACKAGE_BYTES)
+          return yield* new ManagedReaError({ detail: "REA package inventory exceeded 512 MiB" })
+        budget.reserved += Number(info.size)
+      }
+      const hash = createHash("sha256")
+      let size = 0
+      const handle = yield* fs.open(file, { flag: "r" })
+      while (true) {
+        const next = yield* handle.readAlloc(64 * 1024)
+        if (Option.isNone(next)) break
+        const chunk = next.value
         if (size + chunk.byteLength > maxBytes)
-          return Effect.fail(new ManagedReaError({ detail: "Managed REA file exceeded its byte limit" }))
+          return yield* new ManagedReaError({ detail: "Managed REA file exceeded its byte limit" })
         if (budget) {
           if (budget.read + chunk.byteLength > MAX_PACKAGE_BYTES)
-            return Effect.fail(new ManagedReaError({ detail: "REA package inventory exceeded 512 MiB" }))
+            return yield* new ManagedReaError({ detail: "REA package inventory exceeded 512 MiB" })
           budget.read += chunk.byteLength
         }
         size += chunk.byteLength
         hash.update(chunk)
-        return Effect.void
-      }),
-    )
-    if (BigInt(size) !== info.size)
-      return yield* new ManagedReaError({ detail: "Managed REA file changed size during verification" })
-    return { size, sha256: hash.digest("hex") }
-  })
+      }
+      if (BigInt(size) !== info.size)
+        return yield* new ManagedReaError({ detail: "Managed REA file changed size during verification" })
+      return { size, sha256: hash.digest("hex") }
+    }),
+  )
 }
 
 function downloadNode(http: HttpClient.HttpClient, url: string): Effect.Effect<Uint8Array, Error> {
