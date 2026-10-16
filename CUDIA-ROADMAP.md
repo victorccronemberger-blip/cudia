@@ -30,17 +30,18 @@ Fechar OAuth ChatGPT/Grok, instalador Windows com `cudia` no PATH e atualizaçõ
 As demais melhorias avançadas ficam para uma versão posterior; não ampliam o
 critério de conclusão desta entrega.
 
-**Entrega disponível em 16/10/2026:** Preview sequência 10, motor
-`1.18.35+cudia.3c53ad68ceff.151eeaf9b17d`, em https://cyara.com.br.
+**Entrega disponível em 16/10/2026:** Preview sequência 11, motor
+`1.18.35+cudia.2daad05e1bb3.7af12daab3dc`, em https://cyara.com.br.
 Os quatro downloads imutáveis foram verificados pelo publicador; o manifest
 assinado foi ativado por último. Instalação, CMD em outra pasta, catálogo frio,
 PATH e remoção passaram nas duas variantes em VMs Windows Server 2025 novas
-([CI, tentativa 2](https://github.com/victorccronemberger-blip/cudia/actions/runs/38909722028/attempts/2)).
-A instalação física desta máquina passou de 9 para 10, preservou a versão anterior,
-confirmou a consulta HTTPS e recebeu respostas ChatGPT e Grok. A Preview 10 conecta
-MCP somente por chamada explícita, mantém instruções remotas como resultado de
-ferramenta e corrige processos stdio deixados por uma conexão interrompida.
-[Evidências da entrega](provenance/preview-10/README.md). As candidatas 7 e 8 foram
+([CI, tentativa 1](https://github.com/victorccronemberger-blip/cudia/actions/runs/38917808771)).
+A instalação física desta máquina passou de 10 para 11, preservou a versão anterior,
+confirmou a consulta HTTPS e recebeu resposta Grok. ChatGPT foi validado na Preview 10
+e não foi repetido neste motor. A Preview 11 preserva o MCP sob demanda e limita
+os cabeçalhos agregados do catálogo, mantendo busca e execução de todas as ferramentas.
+Os 20 cenários compilados passaram por variante, com 1.597 verificações cada.
+[Evidências da entrega](provenance/preview-11/README.md). As candidatas 7 e 8 foram
 retiradas antes da ativação após os testes identificarem incompatibilidades de
 aliases Windows; a sequência 9 contém as correções. Os serviços padrão OpenCode
 foram retirados do fluxo padrão; APIs dos provedores selecionados permanecem.
@@ -75,7 +76,7 @@ foram retirados do fluxo padrão; APIs dos provedores selecionados permanecem.
 
 O candidato `31d2c80a4998` acima foi validado antes das alterações de OAuth.
 O incremento de OAuth promoveu `9c3e01c957f2`; os incrementos seguintes passaram
-por `1b9ea9a042e6` e chegaram ao motor `34d5ef8b73ad` da sequência 9, indicada acima.
+por `1b9ea9a042e6` e pelo motor `34d5ef8b73ad` da sequência 9, preservados no histórico.
 Os ensaios Node com raízes de TEMP
 excessivamente profundas encontraram `ENOENT` no lançamento de imagens de
 270/291 caracteres; a chamada nativa `CreateProcessW` com o comando registrado
@@ -88,15 +89,16 @@ conclusão da meta geral. O serviço usa a branch `codex/update-service`, Node 2
 raiz `deploy/updates`; a entrada foi corrigida para o carregador da Hostinger e
 12 testes do serviço passaram. `/health` e o manifest Preview retornam 200;
 `/ready` continua 503 porque ainda não há canal stable publicado. O manifest e os
-instaladores da sequência 9 são válidos até 15/11/2026 e precisam ser renovados
+instaladores da sequência 11 são válidos até 15/11/2026 e precisam ser renovados
 antes dessa data. A chave privada e uma cópia local conferida ficam fora do
 checkout/OneDrive; backup externo ainda não foi feito.
 
 Downloads: [site oficial](https://cyara.com.br). Atualização atual:
-[CUDIA Preview — sequência 9](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq9-34d5ef8b73ad),
-com instaladores e pacotes normal/baseline. As fontes completas estão no snapshot
-da branch `codex/preview-source`; a correspondência com os builds está descrita em
-[SOURCE-PREVIEW-9.md](SOURCE-PREVIEW-9.md). A branch `main` permanece na base anterior.
+[CUDIA Preview — sequência 11](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq11-7af12daab3dc),
+com instaladores e pacotes normal/baseline. As fontes atuais estão na branch
+`codex/mcp-on-demand`; o snapshot histórico da Preview 9 permanece na branch
+`codex/preview-source`, descrito em [SOURCE-PREVIEW-9.md](SOURCE-PREVIEW-9.md).
+A branch `main` permanece na base anterior.
 Nesta máquina, a instalação está em `%LOCALAPPDATA%\Cudia Preview`, com `bin` no
 PATH do usuário. Abra um CMD novo e execute `cudia`. Para conferir e aplicar
 updates, use `cudia update --check` e `cudia update`.
@@ -2870,8 +2872,8 @@ encerrado e nenhuma política do runtime foi alterada neste incremento.
 - [x] Validar 89 testes e os typechecks de opencode/tui; revisão independente concluída.
 - [x] Compilar e qualificar a Preview 10 normal/baseline, instalar por HTTPS e validar ChatGPT/Grok.
 
-Detalhes e limites: [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md). A Preview 10 está ativa;
-a revisão compilada e os recibos estão em [provenance/preview-10](provenance/preview-10/README.md).
+Detalhes e limites: [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md). A Preview 10 foi sucedida
+pela 11; seus recibos históricos estão em [provenance/preview-10](provenance/preview-10/README.md).
 
 ## Incremento dos fontes — custo agregado de namespaces
 
@@ -2885,7 +2887,13 @@ a revisão compilada e os recibos estão em [provenance/preview-10](provenance/p
       incluindo captura HTTP com 128 conexões MCP e execução da última ferramenta.
       Na normal, um timeout da fixture exigiu repetição focada; a baseline passou
       nos sete cenários na mesma rodada.
-- [ ] Empacotar e qualificar instaladores/atualização para uma distribuição posterior.
+- [x] Empacotar normal/baseline, qualificar 20 cenários por variante e os mesmos
+      instaladores em duas VMs Windows Server novas; publicar a Preview 11.
+- [x] Atualizar esta instalação por HTTPS de 10 para 11, conferir CMD, hash e
+      caminho físico, versão anterior preservada, consulta atual e resposta Grok.
 
-A Preview 10 permanece instalada e publicada. Detalhes e limites:
-[MCP-ON-DEMAND.md](MCP-ON-DEMAND.md#incremento-seguinte-nos-fontes--muitos-servidores).
+A Preview 11 está instalada e publicada. Detalhes e limites:
+[MCP-ON-DEMAND.md](MCP-ON-DEMAND.md#preview-11--muitos-servidores) e
+[evidências](provenance/preview-11/README.md). O executor principal preparou,
+validou e publicou a distribuição; gpt-6-astra/high revisou os critérios e os
+resultados pela skill codex-advisor. A meta geral permanece ativa.

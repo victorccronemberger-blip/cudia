@@ -32,12 +32,15 @@ próprio, que o CUDIA não remove nem controla.
 
 O [site oficial](https://cyara.com.br) mostra os downloads verificados de cada
 canal. A Preview usa `cudia` no PATH e atualizações assinadas descobertas pelo
-domínio do CUDIA. A sequência 10 está publicada com instaladores normal/baseline
+domínio do CUDIA. A sequência 11 está publicada com instaladores normal/baseline
 e pacotes de atualização. Instalação, PATH, abertura em outra pasta e remoção
 passaram em duas VMs Windows Server 2025 novas, sem Node, Bun ou Git no PATH.
-No Windows desta máquina, a atualização real 9 → 10 e respostas ChatGPT/Grok passaram.
-A Preview 10 conecta MCP por chamada explícita e mantém as instruções remotas
-fora do prompt de sistema. [Evidências da entrega](provenance/preview-10/README.md).
+No Windows desta máquina, a atualização real 10 → 11 e a resposta Grok passaram.
+A Preview 11 preserva MCP por chamada explícita e instruções remotas fora do sistema,
+e limita os cabeçalhos agregados do catálogo para evitar crescimento do contexto
+com muitos servidores. Os 20 testes compilados passaram por variante.
+[Evidências da entrega](provenance/preview-11/README.md). ChatGPT foi validado na
+Preview 10; não foi repetido para este motor.
 A tasklist está em
 [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md). Os comandos abaixo iniciam ou instalam um
 checkout de desenvolvimento.
@@ -60,8 +63,8 @@ permanecem pendentes.
 
 ### Checkout de desenvolvimento
 
-As fontes da Preview 10 estão na branch `codex/mcp-on-demand`; o motor foi
-compilado do commit `3c53ad68ceff6926e6b6844b474080cc00e98b5b`.
+As fontes da Preview 11 estão na branch `codex/mcp-on-demand`; o motor foi
+compilado do commit `2daad05e1bb326acf30b117f22a1c6e399e55794`.
 [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md) descreve o contrato e sua validação.
 As fontes históricas da Preview 9 estão na branch `codex/preview-source`.
 [SOURCE-PREVIEW-9.md](SOURCE-PREVIEW-9.md) descreve os recibos, a correspondência

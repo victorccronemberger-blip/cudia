@@ -1,7 +1,8 @@
 # Candidato do motor — orçamento de namespaces MCP
 
-Este é um candidato local do motor Windows x64, normal e baseline. Não é uma
-nova release ou um instalador; a Preview pública e instalada continua na sequência 10.
+O candidato local descrito neste registro histórico foi promovido à
+[Preview 11](../preview-11/README.md). O relatório abaixo preserva a qualificação
+inicial do motor, anterior aos testes completos dos pacotes e instaladores.
 
 - Fonte compilada: `2daad05e1bb326acf30b117f22a1c6e399e55794`.
 - Versão: `1.18.35+cudia.2daad05e1bb3.7af12daab3dc`.

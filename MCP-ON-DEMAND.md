@@ -1,11 +1,11 @@
-# MCP sob demanda — Preview 10
+# MCP sob demanda — Preview 11
 
 Esta alteração parte do commit público 0ef7fed4dcd039b95818502011331c663ab82642.
-O motor da Preview 10 foi compilado do commit
-`3c53ad68ceff6926e6b6844b474080cc00e98b5b` e está disponível em https://cyara.com.br.
+O motor da Preview 11 foi compilado do commit
+`2daad05e1bb326acf30b117f22a1c6e399e55794` e está disponível em https://cyara.com.br.
 Os instaladores normal/baseline passaram em VMs Windows novas; a instalação desta
-máquina atualizou por HTTPS de 9 para 10 e respondeu via ChatGPT e Grok.
-[Recibos e evidências](provenance/preview-10/README.md) distinguem a revisão
+máquina atualizou por HTTPS de 10 para 11 e respondeu via Grok na conta existente.
+[Recibos e evidências](provenance/preview-11/README.md) distinguem a revisão
 compilada das alterações posteriores na documentação e no publicador.
 
 ## Comportamento
@@ -29,7 +29,7 @@ compilada das alterações posteriores na documentação e no publicador.
 Nenhum filtro por assunto ou nova etapa de autorização foi introduzido. O comportamento
 interno do provedor permanece sob controle do provedor.
 
-## Validação
+## Validação original — Preview 10
 
 89 testes passaram em seis suites, com 342 verificações: ciclo de vida MCP, catálogo,
 CodeMode, prompt de sistema, composição de contexto e captura HTTP real dos pedidos
@@ -47,10 +47,10 @@ A regressão também revelou uma falha no fechamento de clientes durante cancela
 o tratamento anterior podia ser interrompido antes da limpeza. Um finalizador agora
 encerra o cliente mesmo quando a descoberta de ferramentas é cancelada.
 
-## Incremento seguinte nos fontes — muitos servidores
+## Preview 11 — muitos servidores
 
-A Preview 10 acima permanece a distribuição instalada. O incremento posterior
-limita em 3.200 bytes UTF-8 o conjunto de cabeçalhos de namespaces do CodeMode,
+A Preview 11, instalada e publicada, limita em 3.200 bytes UTF-8 o conjunto
+de cabeçalhos de namespaces do CodeMode,
 incluindo separadores de linha. Quando excedido, todos os cabeçalhos dão lugar a
 uma contagem e orientação de descoberta. Não se escolhe um subconjunto alfabético.
 Assinaturas selecionadas, índice de busca e ferramentas executáveis permanecem.
@@ -79,4 +79,10 @@ Sete cenários compilados foram cobertos por variante; a normal precisou de uma
 repetição focada após corrigir o timeout da consulta de prontidão da fixture.
 Recibos, hashes, resultados e limites estão em
 [provenance/mcp-budget-candidate](provenance/mcp-budget-candidate/README.md).
-O candidato ainda não foi empacotado ou publicado como instalador.
+Esse candidato foi promovido à Preview 11. Os 20 cenários completos passaram
+por variante, com 1.597 verificações cada, usando o ZIP correspondente e LSP real.
+Os dois instaladores passaram em VMs Windows Server 2025 novas. A atualização
+física por HTTPS de 10 para 11, CMD, hash/caminho físico, retenção da versão anterior,
+consulta de versão atual e resposta Grok foram conferidos.
+[Evidências da publicação](provenance/preview-11/README.md). A rodada inicial de
+sete cenários acima é histórica e não substitui a qualificação completa posterior.

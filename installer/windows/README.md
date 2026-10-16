@@ -3,11 +3,11 @@
 Este diretório prepara o pacote nativo, o cliente de atualizações e o wizard.
 A compilação e os fluxos silenciosos do instalador já foram executados com o
 motor real e Registro isolado. A QA interativa CUDIA TEST também foi concluída.
-A [Preview pública](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq10-151eeaf9b17d)
+A [Preview pública](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq11-7af12daab3dc)
 tem instaladores normal/baseline, `cudia` no PATH e atualização HTTPS assinada
-conferida também na transição 9 → 10. Os mesmos instaladores normal/baseline
+conferida também na transição 10 → 11. Os mesmos instaladores normal/baseline
 passaram em duas VMs Windows Server 2025 novas, com PATH mínimo, abertura pelo CMD,
-catálogo frio e remoção. [Evidências](../../provenance/preview-10/README.md).
+catálogo frio e remoção. [Evidências](../../provenance/preview-11/README.md).
 A qualificação stable e a verificação interativa por usuário comum em Windows 10/11
 continuam pendentes.
 
