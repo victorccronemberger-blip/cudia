@@ -1,5 +1,5 @@
-import type { JsonSchema, LLMRequest, ProviderMetadata } from "@opencode-ai/llm"
-import { LLM, Message, SystemPart, ToolCallPart, ToolDefinition, ToolResultPart } from "@opencode-ai/llm"
+import type { JsonSchema, LLMRequest, ProviderMetadata, ToolContent } from "@opencode-ai/llm"
+import { LLM, Media, Message, SystemPart, ToolCallPart, ToolDefinition, ToolResultPart } from "@opencode-ai/llm"
 import {
   AmazonBedrock,
   Anthropic,
@@ -66,13 +66,50 @@ const mediaPart = (part: Record<string, unknown>) => {
   }
 }
 
+const textContentKeys = new Set(["type", "text", "providerOptions"])
+const imageContentKeys = new Set(["type", "data", "mediaType", "providerOptions"])
+const fileContentKeys = new Set([...imageContentKeys, "filename"])
+const imageMimes = new Set<string>(Media.IMAGE_MIMES)
+
+/** Preserve unsupported arrays whole; partial lowering would discard tool output. */
+function toolContent(value: unknown): ToolContent[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  const result: ToolContent[] = []
+  for (const item of value) {
+    if (!isRecord(item) || item.providerOptions !== undefined) return undefined
+    const keys = item.type === "text" ? textContentKeys : item.type === "file-data" ? fileContentKeys : imageContentKeys
+    if (Object.keys(item).some((key) => !keys.has(key))) return undefined
+    if (item.type === "text") {
+      if (typeof item.text !== "string") return undefined
+      result.push({ type: "text", text: item.text })
+      continue
+    }
+    if (item.type !== "media" && item.type !== "image-data" && item.type !== "file-data") return undefined
+    if (
+      typeof item.data !== "string" ||
+      typeof item.mediaType !== "string" ||
+      (item.filename !== undefined && typeof item.filename !== "string")
+    )
+      return undefined
+    if (Media.inspect({ mediaType: item.mediaType, data: item.data }, imageMimes).status !== "valid") return undefined
+    result.push({
+      type: "file",
+      uri: item.data.startsWith("data:") ? item.data : `data:${item.mediaType};base64,${item.data}`,
+      mime: item.mediaType,
+      ...(typeof item.filename === "string" ? { name: item.filename } : {}),
+    })
+  }
+  return result
+}
+
 const toolResult = (part: Record<string, unknown>, projection?: HistoryProjection.Native) => {
   const output = isRecord(part.output) ? part.output : { type: "json", value: part.output }
-  const type = output.type === "text" ? "text" : output.type === "error-text" ? "error" : "json"
+  const projected = output.type === "content" ? toolContent(output.value) : undefined
+  const type = projected ? "content" : output.type === "text" ? "text" : output.type === "error-text" ? "error" : "json"
   const result = ToolResultPart.make({
     id: typeof part.toolCallId === "string" ? part.toolCallId : "",
     name: typeof part.toolName === "string" ? part.toolName : "",
-    result: "value" in output ? output.value : output,
+    result: projected ?? ("value" in output ? output.value : output),
     resultType: type,
     providerExecuted: typeof part.providerExecuted === "boolean" ? part.providerExecuted : undefined,
     providerMetadata: partProviderMetadata(part),

@@ -245,7 +245,7 @@ de API key no fluxo nativo gravado; o pacote também passou na checagem de tipos
 
 ## Cópias do adaptador nativo V1
 
-O adaptador nativo também acompanha texto simples de skill/guidance já observado
+O adaptador nativo também acompanha texto de skill/guidance já observado
 pelo renderer do SDK. A associação começa na identidade desse objeto e passa
 pelas cópias imediatamente observadas de `Message.make`, `LLM.request` e
 `LLMRequest.update`. Cada passagem confere quantidade, papel, tipo, nome e ID;
@@ -254,9 +254,11 @@ preparado é percorrido por identidade e conserva as ocorrências repetidas como
 ambíguas. A interface do adaptador contém somente essas observações e é local
 à chamada, sem dependência de serviços de sessão.
 
-Essa etapa cobre resultados textuais. A conversão nativa atual de conteúdo com
-anexos para JSON permanece igual e recebe `unsupported-result`, sem atribuir uma
-posição textual. Resumos continuam sem vínculo final: um ensaio real confirmou
+Além de texto simples, arrays reconhecidos com texto e imagens incorporadas
+preservam os índices durante a conversão nativa. O texto continua associado ao
+objeto original do SDK e ao mesmo índice no conteúdo convertido. A auditoria não
+procura outra parte por texto; confere a posição e o valor após as cópias.
+Resumos continuam sem vínculo final: um ensaio real confirmou
 que até o objeto retornado por `convertDataPart` é copiado na preparação do SDK.
 Esse caminho experimental não foi incorporado ao conversor. Os índices de
 origem permanecem explícitos no snapshot, sem reconstrução por texto.
@@ -264,6 +266,31 @@ Na regressão dessa etapa passaram 115 testes e 468 verificações em seis arqui
 com um skip preexistente de API key; a checagem de tipos também passou. O teste
 HTTP nativo confere a posição após `LLMRequest.update` e conserva igualdade byte
 a byte com a auditoria desligada.
+
+## Conteúdo de ferramentas no adaptador nativo
+
+O adaptador preserva arrays completos de texto e imagens base64 PNG/JPEG/GIF/WebP
+em `result.type: content`, incluindo as variantes SDK `media`, `image-data` e
+`file-data`. A variante `file-data` conserva seu filename no campo canônico `name`.
+Ordem, texto, MIME e dados permanecem observados; não há download ou execução
+adicional. Os protocolos geram blocos de imagem em vez de serializar o base64
+como parte de uma string JSON.
+
+A conversão exige que todos os itens sejam representáveis, sem opções por item
+ou campos desconhecidos que seriam descartados. URLs remotas, IDs de arquivos,
+PDFs/outros MIME, dados inválidos ou arrays mistos incompatíveis conservam o array
+inteiro como JSON, como antes; não há conversão parcial. Esse fallback recebe
+`unsupported-result` na auditoria de posições textuais.
+
+A inspeção de mídia foi compartilhada entre o adaptador e os protocolos, com os
+mesmos limites por arquivo de 28 MiB codificados e 20 MiB decodificados. Esses
+valores não constituem limite agregado para todos os anexos. O padrão antigo de
+base64 rejeitava dados válidos de 8 MiB no Bun/JSC; o padrão sem grupos repetidos,
+com conferências de comprimento e padding canônico, corrige esse caso. A regressão
+passou com 296 testes/825 verificações em 13 arquivos, com um skip preexistente de
+API key. Os corpos HTTP com texto/imagem ficaram idênticos com auditoria ligada
+e desligada; OpenAI/Anthropic geraram os blocos nativos esperados em testes locais.
+Não foi feita uma nova inferência de imagem em conta real.
 
 ## Validação
 

@@ -129,6 +129,31 @@ const openAIResponses = {
 
 const prepareNativeRequest = (input: NativeRequestInput) => LLMClient.prepare(LLMNative.request(input))
 
+const nativeToolResult = (output: unknown) => {
+  const request = LLMNative.request({
+    model: baseModel,
+    messages: [
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "call-image", toolName: "image_fixture", output }],
+      } as unknown as ModelMessage,
+    ],
+  })
+  const message = request.messages.find((item) => item.role === "tool")
+  if (!message) throw new Error("Expected native tool message")
+  const result = message.content.find((part) => part.type === "tool-result")
+  if (!result) throw new Error("Expected native tool result")
+  return result.result
+}
+
+const toolHistory = (output: unknown): ModelMessage[] =>
+  [
+    {
+      role: "tool",
+      content: [{ type: "tool-result", toolCallId: "call-image", toolName: "image_fixture", output }],
+    },
+  ] as unknown as ModelMessage[]
+
 const expectOpenAIResponsesRequest = (input: {
   readonly history: NativeRequestInput["messages"]
   readonly providerOptions?: NativeRequestInput["providerOptions"]
@@ -154,6 +179,152 @@ const expectOpenAIResponsesRequest = (input: {
   })
 
 describe("session.llm-native.request", () => {
+  test("normalizes legacy text and image tool output into typed file content", () => {
+    const result = nativeToolResult({
+      type: "content",
+      value: [
+        { type: "text", text: "first" },
+        { type: "media", mediaType: "image/png", data: "iVBORw0KGgo=" },
+      ],
+    })
+
+    expect(result).toEqual({
+      type: "content",
+      value: [
+        { type: "text", text: "first" },
+        { type: "file", uri: "data:image/png;base64,iVBORw0KGgo=", mime: "image/png" },
+      ],
+    })
+  })
+
+  test("normalizes modern image-data and file-data while preserving order and data URLs", () => {
+    const result = nativeToolResult({
+      type: "content",
+      value: [
+        { type: "text", text: "before" },
+        { type: "image-data", mediaType: "image/jpeg", data: "data:image/jpeg;base64,/9j/2Q==" },
+        { type: "file-data", mediaType: "image/webp", data: "Ag==", filename: "modern.webp" },
+        { type: "text", text: "after" },
+      ],
+    })
+
+    expect(result).toEqual({
+      type: "content",
+      value: [
+        { type: "text", text: "before" },
+        { type: "file", uri: "data:image/jpeg;base64,/9j/2Q==", mime: "image/jpeg" },
+        { type: "file", uri: "data:image/webp;base64,Ag==", mime: "image/webp", name: "modern.webp" },
+        { type: "text", text: "after" },
+      ],
+    })
+  })
+
+  test("normalizes GIF image data and legacy embedded data URLs", () => {
+    expect(
+      nativeToolResult({
+        type: "content",
+        value: [
+          { type: "media", mediaType: "image/gif", data: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" },
+          { type: "media", mediaType: "image/png", data: "data:image/png;base64,AA==" },
+        ],
+      }),
+    ).toEqual({
+      type: "content",
+      value: [
+        {
+          type: "file",
+          uri: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+          mime: "image/gif",
+        },
+        { type: "file", uri: "data:image/png;base64,AA==", mime: "image/png" },
+      ],
+    })
+  })
+
+  test("falls back to the entire original JSON content for unsupported or invalid items", () => {
+    const validSibling = { type: "media", mediaType: "image/png", data: "AA==" }
+    const unsupported: unknown[][] = [
+      [validSibling, { type: "unknown-data", data: "AA==", mediaType: "image/png" }],
+      [validSibling, { type: "image-data", data: "AA==", mediaType: "image/png", providerOptions: {} }],
+      [validSibling, { type: "file-data", data: "AA==", mediaType: "image/png", internal: "extra" }],
+      [validSibling, { type: "media", data: "AA==", mediaType: "image/png", filename: "legacy.png" }],
+      [validSibling, { type: "file-data", data: "AA==", mediaType: "application/pdf", filename: "doc.pdf" }],
+      [validSibling, { type: "file-data", url: "https://example.test/image.png", mediaType: "image/png" }],
+      [validSibling, { type: "file-data", fileId: "file_123", mediaType: "image/png" }],
+      [validSibling, { type: "image-data", data: "data:image/jpeg;base64,AA==", mediaType: "image/png" }],
+      [validSibling, { type: "image-data", data: "!!!!", mediaType: "image/png" }],
+      [validSibling, { type: "image-data", data: "AB==", mediaType: "image/png" }],
+    ]
+
+    for (const value of unsupported) {
+      const original = { type: "content", value }
+      expect(nativeToolResult(original)).toEqual({ type: "json", value })
+    }
+
+    expect(nativeToolResult({ type: "content", value: [] })).toEqual({ type: "json", value: [] })
+  })
+
+  it.effect("sends recognized tool images as native OpenAI and Anthropic image blocks", () =>
+    Effect.gen(function* () {
+      const history = toolHistory({
+        type: "content",
+        value: [
+          { type: "text", text: "inspect this" },
+          { type: "image-data", data: "AA==", mediaType: "image/png" },
+        ],
+      })
+      const openAI = yield* prepareNativeRequest({ model: baseModel, apiKey: "test-openai-key", messages: history })
+      expect(openAI).toMatchObject({
+        protocol: "openai-responses",
+        body: {
+          input: [
+            {
+              type: "function_call_output",
+              call_id: "call-image",
+              output: [
+                { type: "input_text", text: "inspect this" },
+                { type: "input_image", image_url: "data:image/png;base64,AA==" },
+              ],
+            },
+          ],
+        },
+      })
+
+      const anthropicModel: Provider.Model = {
+        ...baseModel,
+        id: ModelV2.ID.make("claude-fixture"),
+        providerID: ProviderV2.ID.make("anthropic"),
+        api: { ...baseModel.api, id: "claude-fixture", url: "https://api.anthropic.com/v1", npm: "@ai-sdk/anthropic" },
+      }
+      const anthropic = yield* LLMClient.prepare(
+        LLMNative.request({ model: anthropicModel, apiKey: "test-anthropic-key", messages: history }),
+      )
+      expect(anthropic).toMatchObject({
+        protocol: "anthropic-messages",
+        body: {
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "call-image",
+                  content: [
+                    { type: "text", text: "inspect this" },
+                    {
+                      type: "image",
+                      source: { type: "base64", media_type: "image/png", data: "AA==" },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      })
+    }),
+  )
+
   test("maps normalized stream inputs to a native LLM request", () => {
     const messages: ModelMessage[] = [
       {

@@ -138,6 +138,17 @@ não foi incorporada, e os resumos seguem explicitamente sem mapeamento final.
 Passaram 115 testes/468 verificações em seis arquivos, com um skip preexistente de
 API key, além dos tipos do pacote. O instalador permanece na Preview 12.
 
+**Conteúdo com imagens nativo V1, em fonte:** arrays completos e compatíveis de
+texto e PNG/JPEG/GIF/WebP incorporados passam ao formato nativo, preservando ordem
+e dados; `file-data` conserva filename. Formatos/campos/opções incompatíveis e
+dados inválidos mantêm o array inteiro em JSON. O texto aninhado acompanha a
+mesma posição na auditoria. A inspeção compartilhada preserva os limites por
+arquivo e corrige a rejeição de base64 válido de 8 MiB pelo padrão antigo do
+Bun/JSC. Passaram 296 testes/825 verificações em 13 arquivos, com um skip existente
+de API key. Testes locais conferiram blocos OpenAI/Anthropic e igualdade dos bytes
+HTTP com auditoria ligada/desligada. Não houve inferência real com imagem nem
+nova distribuição; o instalador continua Preview 12.
+
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no
       ensaio isolado de 16/10, com o candidato `31d2c80a4998`.

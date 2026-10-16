@@ -475,7 +475,7 @@ describe("V1 history projection", () => {
     }
   })
 
-  test("does not claim nested content that the native adapter renders as JSON", async () => {
+  test("maps nested text through native structured image content and observed copies", async () => {
     const output = "native nested text"
     const stored = loader({
       messageID: "msg_native_nested",
@@ -491,11 +491,53 @@ describe("V1 history projection", () => {
     const request = LLMNative.request({ model, messages: prepared, historyProjection: collector })
     const baseline = LLMNative.request({ model, messages: prepared })
     expect(request.messages).toEqual(baseline.messages)
+    const expected = {
+      state: "mapped" as const,
+      messageIndex: 1,
+      partIndex: 0,
+      role: "tool" as const,
+      resultType: "content" as const,
+      resultContentIndex: 0,
+    }
+    expect(collector.capture(request.messages).sources[0]?.prepared).toEqual(expected)
+    const updated = LLMRequest.update(request, { tools: [...request.tools] })
+    collector.nativeCopied(request.messages, updated.messages)
+    expect(collector.capture(updated.messages).sources[0]?.prepared).toEqual(expected)
+    const part = updated.messages[1]?.content[0]
+    if (part?.type !== "tool-result" || part.result.type !== "content")
+      throw new Error("Expected native structured result")
+    expect(part.result.value[1]).toMatchObject({
+      type: "file",
+      uri: "data:image/png;base64,aGVsbG8=",
+      mime: "image/png",
+    })
+    Object.defineProperty(part.result.value[0]!, "text", { value: "changed nested text" })
+    expect(collector.capture(updated.messages).sources[0]?.prepared).toEqual({
+      state: "unmapped",
+      reason: "prepared-value-changed",
+    })
+    expect(JSON.stringify(request)).toContain(output)
+    expect(JSON.stringify(request)).not.toContain("native-nested/SKILL.md")
+  })
+
+  test("keeps unsupported native mixed arrays in JSON without claiming a text position", async () => {
+    const stored = loader({
+      messageID: "msg_native_pdf",
+      partID: "prt_native_pdf",
+      callID: "call_native_pdf",
+      input: { name: "native-pdf" },
+      output: "PDF-associated text",
+      attachments: [{ mime: "application/pdf", filename: "fixture.pdf", url: "data:application/pdf;base64,AA==" }],
+    })
+    const collector = HistoryProjection.create(HistorySource.capture([stored]))
+    const prepared = await MessageV2.toModelMessages([stored], model, { historyProjection: collector })
+    const request = LLMNative.request({ model, messages: prepared, historyProjection: collector })
+    expect(request.messages).toEqual(LLMNative.request({ model, messages: prepared }).messages)
     expect(collector.capture(request.messages).sources[0]?.prepared).toEqual({
       state: "unmapped",
       reason: "unsupported-result",
     })
-    expect(JSON.stringify(request)).toContain(output)
-    expect(JSON.stringify(request)).not.toContain("native-nested/SKILL.md")
+    expect(JSON.stringify(request)).toContain("application/pdf")
+    expect(JSON.stringify(request)).toContain("PDF-associated text")
   })
 })

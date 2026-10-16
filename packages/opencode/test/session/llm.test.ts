@@ -1635,181 +1635,208 @@ describe("session.llm.stream", () => {
   )
 
   for (const native of [false, true]) {
-    it.instance(
-      `observes loaded V1 results at the ${native ? "native" : "AI SDK"} boundary without changing encoded provider bodies`,
-      () =>
-        Effect.gen(function* () {
-          const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make("gpt-5.2"))
-          const sessionID = SessionID.make("session-loader-projection")
-          const agent = { name: "build", mode: "primary", options: {}, permission: [] } satisfies Agent.Info
-          const text = "Synthetic loaded skill body ação 🌍"
-          const captures: ContextAudit.Input[] = []
-          const bodies: unknown[] = []
-          const encodedBodies: string[] = []
-          for (const enabled of [false, true]) {
-            const user = {
-              id: MessageID.make("msg_loader_parent"),
-              sessionID,
-              role: "user" as const,
-              time: { created: 0 },
-              agent: agent.name,
-              model: { providerID: ProviderV2.ID.openai, modelID: resolved.id },
-            } satisfies SessionV1.User
-            const messageID = MessageID.make("msg_loader_result")
-            const history: SessionV1.WithParts[] = [
-              {
-                info: user,
-                parts: [
-                  {
-                    id: PartID.make("prt_loader_question"),
-                    sessionID,
-                    messageID: user.id,
-                    type: "text",
-                    text: "Read this stored skill result",
-                  },
-                ],
-              },
-              {
-                info: {
-                  id: messageID,
-                  parentID: user.id,
-                  sessionID,
-                  role: "assistant",
-                  time: { created: 0, completed: 1 },
-                  agent: agent.name,
-                  mode: "build",
-                  modelID: resolved.id,
-                  providerID: resolved.providerID,
-                  path: { cwd: "/", root: "/" },
-                  cost: 0,
-                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-                  finish: "tool-calls",
-                },
-                parts: [
-                  {
-                    id: PartID.make("prt_loader_result"),
-                    sessionID,
-                    messageID,
-                    type: "tool",
-                    callID: "call_loader_projection",
-                    tool: "skill",
-                    state: {
-                      status: "completed",
-                      input: { name: "fixture" },
-                      title: "skill",
-                      output: text,
-                      time: { start: 0, end: 1 },
-                      metadata: {
-                        contextSource: ToolSource.create({
-                          kind: "skill",
-                          origin: "fixture/SKILL.md",
-                          output: text,
-                          start: 0,
-                          end: text.length,
-                        }),
-                      },
-                    },
-                  },
-                ],
-              },
-            ]
-            const snapshot = enabled ? HistorySource.capture(history) : undefined
-            const projection = snapshot ? HistoryProjection.create(snapshot) : undefined
-            const messages = yield* MessageV2.toModelMessagesEffect(history, resolved, {
-              historyProjection: projection,
-            })
-            const request = waitRequest(
-              "/responses",
-              createEventResponse(
-                [
-                  { type: "response.created", response: { id: "resp-loader-projection" } },
-                  {
-                    type: "response.completed",
-                    response: {
-                      incomplete_details: null,
-                      usage: {
-                        input_tokens: 1,
-                        input_tokens_details: null,
-                        output_tokens: 1,
-                        output_tokens_details: null,
-                      },
-                    },
-                  },
-                ],
-                true,
-              ),
-            )
-            yield* drainWith(
-              llmLayerWithExecutor({
-                flags: { experimentalNativeLlm: native },
-                contextMode: "lean",
-                audit: Layer.succeed(
-                  ContextAudit.Service,
-                  ContextAudit.Service.of({
-                    enabled,
-                    latest: () => Effect.succeed(undefined),
-                    record: (capture) =>
-                      Effect.sync(() => {
-                        if (!enabled) throw new Error("Audit-off must not record")
-                        captures.push(capture)
-                      }),
-                  }),
-                ),
-              }),
-              {
-                user,
+    for (const image of [false, true]) {
+      it.instance(
+        `observes loaded V1 ${image ? "image" : "text"} results at the ${native ? "native" : "AI SDK"} boundary without changing encoded provider bodies`,
+        () =>
+          Effect.gen(function* () {
+            const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make("gpt-5.2"))
+            const sessionID = SessionID.make("session-loader-projection")
+            const agent = { name: "build", mode: "primary", options: {}, permission: [] } satisfies Agent.Info
+            const text = "Synthetic loaded skill body ação 🌍"
+            const captures: ContextAudit.Input[] = []
+            const bodies: unknown[] = []
+            const encodedBodies: string[] = []
+            for (const enabled of [false, true]) {
+              const user = {
+                id: MessageID.make("msg_loader_parent"),
                 sessionID,
-                model: resolved,
-                agent,
-                system: ["Synthetic instruction"],
-                messages,
-                tools: {},
-                purpose: "main",
-                ...(snapshot ? { historySnapshot: snapshot, historyProjection: projection } : {}),
-              },
-            )
-            const received = yield* Effect.promise(() => request)
-            bodies.push(received.body)
-            encodedBodies.push(received.rawBody)
-          }
-          expect(bodies[1]).toEqual(bodies[0])
-          expect(encodedBodies[1]).toBe(encodedBodies[0])
-          expect(JSON.stringify(bodies)).toContain(text)
-          for (const privateField of [
-            "fixture/SKILL.md",
-            "prt_loader_result",
-            "observed-at-prepared-request",
-            "contextSource",
-          ]) {
-            expect(JSON.stringify(bodies)).not.toContain(privateField)
-          }
-          expect(captures).toHaveLength(1)
-          const capture = captures[0]!
-          const source = capture.historySnapshot?.sources[0]
-          expect(source?.tool?.observation).toMatchObject({ state: "matched", origin: "fixture/SKILL.md" })
-          expect(source?.prepared).toMatchObject({ state: "mapped", role: "tool", resultType: "text" })
-          if (source?.prepared?.state !== "mapped") throw new Error("Expected mapped result")
-          const message = capture.messages[source.prepared.messageIndex]
-          if (!message || !("content" in message) || !Array.isArray(message.content))
-            throw new Error("Expected message content")
-          expect(message.content[source.prepared.partIndex]).toMatchObject(
-            native
-              ? {
-                  type: "tool-result",
-                  id: "call_loader_projection",
-                  name: "skill",
-                  result: { type: "text", value: text },
-                }
-              : {
-                  type: "tool-result",
-                  toolCallId: "call_loader_projection",
-                  toolName: "skill",
-                  output: { type: "text", value: text },
+                role: "user" as const,
+                time: { created: 0 },
+                agent: agent.name,
+                model: { providerID: ProviderV2.ID.openai, modelID: resolved.id },
+              } satisfies SessionV1.User
+              const messageID = MessageID.make("msg_loader_result")
+              const history: SessionV1.WithParts[] = [
+                {
+                  info: user,
+                  parts: [
+                    {
+                      id: PartID.make("prt_loader_question"),
+                      sessionID,
+                      messageID: user.id,
+                      type: "text",
+                      text: "Read this stored skill result",
+                    },
+                  ],
                 },
-          )
-        }),
-      { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
-    )
+                {
+                  info: {
+                    id: messageID,
+                    parentID: user.id,
+                    sessionID,
+                    role: "assistant",
+                    time: { created: 0, completed: 1 },
+                    agent: agent.name,
+                    mode: "build",
+                    modelID: resolved.id,
+                    providerID: resolved.providerID,
+                    path: { cwd: "/", root: "/" },
+                    cost: 0,
+                    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                    finish: "tool-calls",
+                  },
+                  parts: [
+                    {
+                      id: PartID.make("prt_loader_result"),
+                      sessionID,
+                      messageID,
+                      type: "tool",
+                      callID: "call_loader_projection",
+                      tool: "skill",
+                      state: {
+                        status: "completed",
+                        input: { name: "fixture" },
+                        title: "skill",
+                        output: text,
+                        time: { start: 0, end: 1 },
+                        attachments: image
+                          ? [
+                              {
+                                id: PartID.make("prt_loader_image"),
+                                sessionID,
+                                messageID,
+                                type: "file",
+                                mime: "image/png",
+                                filename: "fixture.png",
+                                url: "data:image/png;base64,AA==",
+                              },
+                            ]
+                          : undefined,
+                        metadata: {
+                          contextSource: ToolSource.create({
+                            kind: "skill",
+                            origin: "fixture/SKILL.md",
+                            output: text,
+                            start: 0,
+                            end: text.length,
+                          }),
+                        },
+                      },
+                    },
+                  ],
+                },
+              ]
+              const snapshot = enabled ? HistorySource.capture(history) : undefined
+              const projection = snapshot ? HistoryProjection.create(snapshot) : undefined
+              const messages = yield* MessageV2.toModelMessagesEffect(history, resolved, {
+                historyProjection: projection,
+              })
+              const request = waitRequest(
+                "/responses",
+                createEventResponse(
+                  [
+                    { type: "response.created", response: { id: "resp-loader-projection" } },
+                    {
+                      type: "response.completed",
+                      response: {
+                        incomplete_details: null,
+                        usage: {
+                          input_tokens: 1,
+                          input_tokens_details: null,
+                          output_tokens: 1,
+                          output_tokens_details: null,
+                        },
+                      },
+                    },
+                  ],
+                  true,
+                ),
+              )
+              yield* drainWith(
+                llmLayerWithExecutor({
+                  flags: { experimentalNativeLlm: native },
+                  contextMode: "lean",
+                  audit: Layer.succeed(
+                    ContextAudit.Service,
+                    ContextAudit.Service.of({
+                      enabled,
+                      latest: () => Effect.succeed(undefined),
+                      record: (capture) =>
+                        Effect.sync(() => {
+                          if (!enabled) throw new Error("Audit-off must not record")
+                          captures.push(capture)
+                        }),
+                    }),
+                  ),
+                }),
+                {
+                  user,
+                  sessionID,
+                  model: resolved,
+                  agent,
+                  system: ["Synthetic instruction"],
+                  messages,
+                  tools: {},
+                  purpose: "main",
+                  ...(snapshot ? { historySnapshot: snapshot, historyProjection: projection } : {}),
+                },
+              )
+              const received = yield* Effect.promise(() => request)
+              bodies.push(received.body)
+              encodedBodies.push(received.rawBody)
+            }
+            expect(bodies[1]).toEqual(bodies[0])
+            expect(encodedBodies[1]).toBe(encodedBodies[0])
+            expect(JSON.stringify(bodies)).toContain(text)
+            if (image) {
+              expect(JSON.stringify(bodies)).toContain('"type":"input_image"')
+              expect(JSON.stringify(bodies)).toContain("data:image/png;base64,AA==")
+            }
+            for (const privateField of [
+              "fixture/SKILL.md",
+              "prt_loader_result",
+              "observed-at-prepared-request",
+              "contextSource",
+            ]) {
+              expect(JSON.stringify(bodies)).not.toContain(privateField)
+            }
+            expect(captures).toHaveLength(1)
+            const capture = captures[0]!
+            const source = capture.historySnapshot?.sources[0]
+            expect(source?.tool?.observation).toMatchObject({ state: "matched", origin: "fixture/SKILL.md" })
+            expect(source?.prepared).toMatchObject({
+              state: "mapped",
+              role: "tool",
+              resultType: image ? "content" : "text",
+              ...(image ? { resultContentIndex: 0 } : {}),
+            })
+            if (source?.prepared?.state !== "mapped") throw new Error("Expected mapped result")
+            const message = capture.messages[source.prepared.messageIndex]
+            if (!message || !("content" in message) || !Array.isArray(message.content))
+              throw new Error("Expected message content")
+            const result = image
+              ? { type: "content", value: expect.arrayContaining([{ type: "text", text }]) }
+              : { type: "text", value: text }
+            expect(message.content[source.prepared.partIndex]).toMatchObject(
+              native
+                ? {
+                    type: "tool-result",
+                    id: "call_loader_projection",
+                    name: "skill",
+                    result,
+                  }
+                : {
+                    type: "tool-result",
+                    toolCallId: "call_loader_projection",
+                    toolName: "skill",
+                    output: result,
+                  },
+            )
+          }),
+        { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+      )
+    }
 
     it.instance(
       `attributes V1 compaction at the final ${native ? "native" : "AI SDK"} boundary without changing provider bodies`,

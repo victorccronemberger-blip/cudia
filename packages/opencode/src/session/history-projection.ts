@@ -52,6 +52,10 @@ export function create(snapshot: Snapshot): Collector {
   const inputs = new WeakMap<object, number[]>()
   const leaves = new WeakMap<object, number[]>()
   const nativeParts = new WeakMap<object, number[]>()
+  const nativeProjections = new Map<
+    number,
+    { readonly resultType: "text" | "content"; readonly resultContentIndex?: number }
+  >()
   const outcomes = new Map<number, Candidate | PreparedSource.Mapping>()
   for (const [index, source] of sources.entries()) {
     const key = `${source.messageIndex}:${source.partIndex}`
@@ -158,12 +162,24 @@ export function create(snapshot: Snapshot): Collector {
           : data(output, "type") === "content" && Array.isArray(value)
             ? value
             : []
-      for (const part of parts) {
+      for (const [resultContentIndex, part] of parts.entries()) {
         if (!object(part)) continue
         for (const index of leaves.get(part) ?? []) {
           const candidate = outcomes.get(index)
           if (!candidate || "state" in candidate) continue
-          if (data(output, "type") !== "text" || result.result.type !== "text") {
+          if (nativeProjections.has(index)) {
+            outcomes.set(index, { state: "unmapped", reason: "ambiguous-occurrence" })
+            continue
+          }
+          const nested = result.result.type === "content" ? result.result.value[resultContentIndex] : undefined
+          // The native content converter preserves every index or falls back as a whole.
+          const projected =
+            data(output, "type") === "text" && result.result.type === "text"
+              ? { resultType: "text" as const, text: result.result.value }
+              : data(output, "type") === "content" && result.result.type === "content" && nested?.type === "text"
+                ? { resultType: "content" as const, text: nested.text, resultContentIndex }
+                : undefined
+          if (!projected) {
             outcomes.set(index, { state: "unmapped", reason: "unsupported-result" })
             continue
           }
@@ -171,11 +187,15 @@ export function create(snapshot: Snapshot): Collector {
           if (
             result.id !== source.tool?.callID ||
             result.name !== source.tool?.name ||
-            result.result.value !== source.text
+            projected.text !== source.text
           ) {
             outcomes.set(index, { state: "unmapped", reason: "prepared-value-changed" })
             continue
           }
+          nativeProjections.set(index, {
+            resultType: projected.resultType,
+            ...("resultContentIndex" in projected ? { resultContentIndex: projected.resultContentIndex } : {}),
+          })
           nativeParts.set(result, [...(nativeParts.get(result) ?? []), index])
         }
       }
@@ -228,9 +248,22 @@ export function create(snapshot: Snapshot): Collector {
             const source = sources[index]!
             const role = data(message, "role")
             const result = data(part, "result")
+            const projected = nativeProjections.get(index)
+            const value = data(result, "value")
+            const nested =
+              projected?.resultType === "content" && Array.isArray(value)
+                ? value[projected.resultContentIndex ?? -1]
+                : undefined
+            const text =
+              projected?.resultType === "text"
+                ? value
+                : data(nested, "type") === "text"
+                  ? data(nested, "text")
+                  : undefined
             if (
-              data(result, "type") !== "text" ||
-              data(result, "value") !== source.text ||
+              !projected ||
+              data(result, "type") !== projected.resultType ||
+              text !== source.text ||
               data(part, "id") !== source.tool?.callID ||
               data(part, "name") !== source.tool?.name ||
               (role !== "assistant" && role !== "tool")
@@ -238,7 +271,7 @@ export function create(snapshot: Snapshot): Collector {
               locations.set(index, { state: "unmapped", reason: "prepared-value-changed" })
               continue
             }
-            locations.set(index, { state: "mapped", messageIndex, partIndex, role, resultType: "text" })
+            locations.set(index, { state: "mapped", messageIndex, partIndex, role, ...projected })
           }
           const output = data(part, "output")
           const resultType = data(output, "type")
