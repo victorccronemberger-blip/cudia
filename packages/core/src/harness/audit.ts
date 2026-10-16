@@ -104,7 +104,7 @@ export const Report = Schema.Struct({
                 Schema.Struct({
                   state: Schema.Literal("matched"),
                   hashEncoding: Schema.Literal("json-utf8"),
-                  kind: Schema.Literals(["skill", "mcp-guidance"]),
+                  kind: Schema.Literals(["skill", "mcp-guidance", "mcp-resource"]),
                   origin: Schema.String,
                   body: Schema.Union([
                     Schema.Struct({

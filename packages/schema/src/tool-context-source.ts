@@ -16,7 +16,7 @@ export interface Receipt extends Schema.Schema.Type<typeof Receipt> {}
 export const Receipt = Schema.Struct({
   version: Schema.Literal(1),
   hashEncoding: Schema.Literal("json-utf8"),
-  kind: Schema.Literals(["skill", "mcp-guidance"]),
+  kind: Schema.Literals(["skill", "mcp-guidance", "mcp-resource"]),
   origin: Schema.String.check(Schema.isMinLength(1)).check(Schema.isMaxLength(1024)),
   output: Schema.Struct({ ...Digest, length: NonNegativeInt }),
   body: Body,

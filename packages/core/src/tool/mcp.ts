@@ -6,6 +6,8 @@ import { NonNegativeInt, PositiveInt } from "../schema"
 import { MCPV2 } from "../mcp"
 import { MCPError } from "../mcp/error"
 import { MCPResourceCatalog } from "../mcp/resource-catalog"
+import { ToolProvenance } from "./provenance"
+import { ToolSource } from "../harness/tool-source"
 import { PermissionV2 } from "../permission"
 import { SkillCatalog } from "../skill/catalog"
 import { makeLocationNode } from "../effect/app-node"
@@ -44,6 +46,37 @@ export const Input = Schema.Union([
 export const description =
   "Manage configured MCP servers. Search tool metadata, then expose exact names for this session's next turn; hide removes exposure. Resources/templates search metadata with snapshots for continuation; read fetches one exact resource URI. Connect does not read resources. Disconnect closes the shared connection for every session."
 
+function renderResourceContent(content: MCPV2.ResourceResult["contents"][number]) {
+  if (!("text" in content)) return { text: JSON.stringify(content) }
+  const { text, ...metadata } = content
+  const prefix = `${JSON.stringify(metadata)}\n`
+  return { text: `${prefix}${text}`, body: { start: prefix.length, end: prefix.length + text.length } }
+}
+
+function resourceOutput(server: string, requestedURI: string, result: MCPV2.ResourceResult) {
+  const textContents = result.contents.flatMap((content, contentIndex) =>
+    "text" in content ? [{ content, contentIndex }] : [],
+  )
+  const selected = textContents.slice(0, ToolProvenance.MAX_ENTRIES).map(({ content, contentIndex }) => {
+    const rendered = renderResourceContent(content)
+    const origin = JSON.stringify({ server, requestedURI, uri: content.uri })
+    return {
+      contentIndex,
+      receipt: rendered.body
+        ? ToolSource.create({
+            kind: "mcp-resource",
+            origin,
+            output: rendered.text,
+            start: rendered.body.start,
+            end: rendered.body.end,
+          })
+        : undefined,
+    }
+  })
+  const output = { ...result, contents: [...result.contents] }
+  return ToolProvenance.attach(output, selected, textContents.length - selected.length)
+}
+
 const failure = (error: MCPError.Failure | PermissionV2.Error | Error) => {
   if (error instanceof MCPError.Failure) return new ToolFailure({ message: error.message })
   if (error instanceof PermissionV2.CorrectedError) return new ToolFailure({ message: error.feedback })
@@ -65,11 +98,10 @@ const layer = Layer.effectDiscard(
             toModelOutput: ({ input, output }) => {
               if (input.operation === "read") {
                 const result = output as MCPV2.ResourceResult
-                return result.contents.map((content) => {
-                  if (!("text" in content)) return { type: "text" as const, text: JSON.stringify(content) }
-                  const { text, ...metadata } = content
-                  return { type: "text" as const, text: `${JSON.stringify(metadata)}\n${text}` }
-                })
+                return result.contents.map((content) => ({
+                  type: "text" as const,
+                  text: renderResourceContent(content).text,
+                }))
               }
               return [{ type: "text", text: JSON.stringify(output) ?? "MCP operation completed" }]
             },
@@ -105,7 +137,7 @@ const layer = Layer.effectDiscard(
                       context,
                     )
                   case "read":
-                    return yield* mcp.read(input.server, input.uri, context)
+                    return resourceOutput(input.server, input.uri, yield* mcp.read(input.server, input.uri, context))
                 }
               }).pipe(Effect.mapError(failure)),
           }),

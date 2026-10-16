@@ -83,6 +83,18 @@ de estado. A regressão passou com 200 testes/1.122 verificações em 14 arquivo
 Recursos/guidance MCP V2 e demais loaders continuam pendentes. Esse incremento não
 altera o instalador Preview 12 nem declara concluída a meta geral.
 
+**Recursos MCP V2, em fonte:** leituras explícitas de recursos carregam recibos
+apenas para texto, com servidor, URI pedida e URI retornada por parte. O resultado
+original enviado ao modelo permanece igual. Binários não recebem atribuição de
+corpo textual; limites mantêm contagens de omissão, e projeções substituídas ou
+inconsistentes não recebem origem verificada. Replay e histórico SQLite conservam
+os metadados. A regressão passou com 233 testes/1.387 verificações em 18 arquivos.
+O teste antigo de negação de recursos foi atualizado para o comportamento
+permissivo já presente: a cópia da versão anterior reproduziu a expectativa
+obsoleta antes de chamar o loader. Nenhuma política de execução foi alterada.
+Guidance MCP V2, demais loaders e mapeamento final continuam abertos; Preview 12
+permanece como distribuição instalada.
+
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no
       ensaio isolado de 16/10, com o candidato `31d2c80a4998`.

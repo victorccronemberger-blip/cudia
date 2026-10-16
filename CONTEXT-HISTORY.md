@@ -120,9 +120,40 @@ não são classificadas como corpos de skills. Texto removido conta como fonte
 omitida; resultados antigos sem recibo têm observação `missing`. A captura continua
 opt-in, com os mesmos limites compartilhados e `unmapped-after-conversion`.
 
-Este incremento ainda não cobre os recursos/guidance MCP V2 nem todos os demais
-loaders. Não autentica arquivos ou plugins, nem comprova que o adaptador enviou
+Este incremento não cobre todos os demais loaders. Não autentica arquivos ou
+plugins, nem comprova que o adaptador enviou
 cada parte observada. Permanece em fonte, fora do instalador Preview 12.
+
+## Recursos MCP no V2
+
+A operação explícita `mcp` com `operation: read` também produz recibos locais para
+as partes de texto. A conexão e as pesquisas de catálogo não leem recursos nem
+criam recibos de corpo. O recibo usa `kind: mcp-resource` e um intervalo UTF-16 do
+texto dentro do resultado renderizado. Seu `origin` é o JSON determinístico de
+`{server, requestedURI, uri}`: servidor observado, URI pedida e URI devolvida em
+cada parte. URIs diferentes e corpos iguais continuam distinguíveis. Esses IDs
+observados não autenticam a propriedade ou autoria do recurso.
+
+O texto e os schemas enviados ao modelo conservam o formato anterior. Os recibos
+seguem o mesmo vínculo local por identidade e o evento de sucesso usado pelas
+skills. As primeiras oito partes textuais podem receber recibos; as restantes
+contam em `omitted`. Origens acima de 1 KiB ou textos acima do limite de verificação
+também podem ficar sem recibo, sem impedir a leitura. Mesmo quando todos forem
+omitidos, o resultado conserva essa contagem. Partes binárias não têm recibos de
+texto e não contam como omissões de recibos textuais.
+
+Para uma projeção original, a auditoria identifica texto/binário pelo resultado
+estruturado validado e preserva os índices reais. Campos ausentes, estrutura
+inconsistente, projeção substituída ou poda deixam a atribuição indisponível;
+não há reconhecimento do tipo ou da origem por igualdade de texto. Recibos
+correspondentes também são conferidos contra o servidor e as URIs armazenados.
+O histórico SQLite guarda apenas os metadados, inclusive contagens de omissão.
+
+Os testes incluem leitura HTTP local, partes mistas, limites, reconstrução da
+sessão, histórico SQLite e equivalência do corpo codificado do adaptador Responses
+com/sem recibos. Isso não é uma captura de rede de todos os provedores. Guidance
+MCP V2 e o vínculo com cada parte final após conversão permanecem pendentes.
+Este incremento continua fora do instalador Preview 12.
 
 A inspeção aceita até 2 MiB de resultado, 1.024 bytes no identificador de origem
 e 4 KiB no recibo projetado. Limites ou ausência do recibo afetam somente a

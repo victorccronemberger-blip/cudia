@@ -9,6 +9,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
 import { MCPV2 } from "@opencode-ai/core/mcp"
+import { ToolSource } from "@opencode-ai/core/harness/tool-source"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -68,7 +69,7 @@ describe("MCPV2 resources", () => {
     }
   })
 
-  it("checks separate list and read permissions before sending RPCs, and passes accepted URIs unchanged", async () => {
+  it("preserves URI validation and reads through legacy deny records", async () => {
     const server = fixture()
     try {
       await run(
@@ -80,18 +81,18 @@ describe("MCPV2 resources", () => {
           ])
           const manager = yield* MCPV2.Service
           yield* manager.admin.connect("fixture")
-          const deniedList = yield* Effect.result(manager.resources("fixture", { query: "report" }, context()))
-          expect(deniedList._tag).toBe("Failure")
-          expect(server.posts.filter((method) => method === "resources/list")).toHaveLength(0)
+          const listed = yield* Effect.result(manager.resources("fixture", { query: "report" }, context()))
+          expect(listed._tag).toBe("Success")
+          expect(server.posts.filter((method) => method === "resources/list")).toHaveLength(1)
           yield* setup(rules)
           yield* manager.resources("fixture", { query: "report" }, context())
           yield* setup([
             ...rules,
             { action: "mcp.resource.read", resource: MCPV2.resource("fixture", uri), effect: "deny" },
           ])
-          const deniedRead = yield* Effect.result(manager.read("fixture", uri, context()))
-          expect(deniedRead._tag).toBe("Failure")
-          expect(server.posts.filter((method) => method === "resources/read")).toHaveLength(0)
+          const readWithLegacyDeny = yield* Effect.result(manager.read("fixture", uri, context()))
+          expect(readWithLegacyDeny._tag).toBe("Success")
+          expect(server.posts.filter((method) => method === "resources/read")).toHaveLength(1)
           yield* setup(rules)
           const result = yield* manager.read("fixture", uri, context())
           expect(result.contents).toEqual([
@@ -99,17 +100,174 @@ describe("MCPV2 resources", () => {
             { uri, mimeType: "application/octet-stream", blob: "aGVsbG8=" },
             { uri, mimeType: "text/plain", text: "world" },
           ])
-          expect(server.readURIs).toEqual([uri])
+          expect(server.readURIs).toEqual([uri, uri])
           expect(MCPV2.resource("fixture", uri)).toBe("~66697874757265/~637573746f6d3a666f6c6465722f61253246623f783d2a")
           const invalidURIs = ["", "\ud800", "é".repeat(4_097)]
           for (const invalid of invalidURIs) {
             expect((yield* Effect.result(manager.read("fixture", invalid, context())))._tag).toBe("Failure")
           }
-          expect(server.readURIs).toEqual([uri])
+          expect(server.readURIs).toEqual([uri, uri])
         }),
       )
     } finally {
       await server.stop()
+    }
+  })
+
+  it("attaches receipts only to text resources with the requested and returned URI", async () => {
+    const contents: MCPV2.ResourceResult["contents"] = [
+      { uri: "https://fixture.test/returned/first", mimeType: "text/plain", text: "hello" },
+      { uri: "https://fixture.test/returned/binary", mimeType: "application/octet-stream", blob: "aGVsbG8=" },
+      { uri: "https://fixture.test/returned/second", mimeType: "text/plain", text: "world" },
+    ]
+    const server = fixture({ readContents: contents })
+    try {
+      const settled = await readThroughTool(server.url)
+      expect(settled.result).toEqual({
+        type: "content",
+        value: [
+          { type: "text", text: '{"uri":"https://fixture.test/returned/first","mimeType":"text/plain"}\nhello' },
+          { type: "text", text: JSON.stringify(contents[1]) },
+          { type: "text", text: '{"uri":"https://fixture.test/returned/second","mimeType":"text/plain"}\nworld' },
+        ],
+      })
+      expect(settled.contextSources).toMatchObject({
+        version: 1,
+        projection: "original",
+        omitted: 0,
+        entries: [
+          { contentIndex: 0, receipt: { kind: "mcp-resource" } },
+          { contentIndex: 2, receipt: { kind: "mcp-resource" } },
+        ],
+      })
+      const entries = settled.contextSources?.entries ?? []
+      expect(entries.map((entry) => entry.contentIndex)).toEqual([0, 2])
+      expect(entries.map((entry) => entry.receipt.origin)).toEqual([
+        JSON.stringify({ server: "fixture", requestedURI: uri, uri: contents[0]?.uri }),
+        JSON.stringify({ server: "fixture", requestedURI: uri, uri: contents[2]?.uri }),
+      ])
+      for (const entry of entries) {
+        const rendered = (settled.output?.content[entry.contentIndex] as { type: "text"; text: string }).text
+        const observation = ToolSource.inspect(rendered, { contextSource: entry.receipt })
+        expect(observation).toMatchObject({ state: "matched", kind: "mcp-resource", origin: entry.receipt.origin })
+        if (observation.state !== "matched" || observation.body.type !== "utf16-span")
+          throw new Error("Expected a matched resource text span")
+        expect(rendered.slice(observation.body.start, observation.body.end)).toBe(
+          entry.contentIndex === 0 ? "hello" : "world",
+        )
+      }
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it("keeps identical resource text distinguishable by returned URI", async () => {
+    const server = fixture({
+      readContents: ["first", "second"].map((name) => ({
+        uri: `https://fixture.test/${name}`,
+        mimeType: "text/plain",
+        text: "repeated text",
+      })),
+    })
+    try {
+      const settled = await readThroughTool(server.url)
+      const entries = settled.contextSources?.entries ?? []
+      expect(entries).toHaveLength(2)
+      expect(entries[0]?.receipt.body.sha256).toBe(entries[1]?.receipt.body.sha256)
+      expect(entries[0]?.receipt.origin).not.toBe(entries[1]?.receipt.origin)
+      expect(entries.map((entry) => JSON.parse(entry.receipt.origin))).toEqual([
+        { server: "fixture", requestedURI: uri, uri: "https://fixture.test/first" },
+        { server: "fixture", requestedURI: uri, uri: "https://fixture.test/second" },
+      ])
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it("does not attach resource receipts to server or catalog operations", async () => {
+    const server = fixture()
+    try {
+      await run(
+        server.url,
+        Effect.gen(function* () {
+          yield* setup(rules)
+          const registry = yield* ToolRegistry.Service
+          const materialized = yield* registry.materialize([], sessionID)
+          const connect = yield* materialized.settle(
+            toolCall("mcp", { operation: "connect", server: "fixture" }, "call-connect-no-source"),
+          )
+          expect(connect.contextSources).toBeUndefined()
+
+          const operations = [
+            { operation: "servers", query: "" },
+            { operation: "search", server: "fixture", query: "echo" },
+            { operation: "resources", server: "fixture", query: "report" },
+            { operation: "templates", server: "fixture", query: "report" },
+          ]
+          for (const [index, input] of operations.entries()) {
+            const settled = yield* materialized.settle(toolCall("mcp", input, `call-catalog-${index}`))
+            expect(settled.result.type).not.toBe("error")
+            expect(settled.contextSources).toBeUndefined()
+          }
+        }),
+      )
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it("bounds resource receipts and counts omitted text entries without counting binary content", async () => {
+    const many = fixture({
+      readContents: Array.from({ length: 10 }, (_, index) => ({
+        uri: `https://fixture.test/returned/${index}`,
+        mimeType: "text/plain",
+        text: `resource-${index}`,
+      })),
+    })
+    try {
+      const settled = await readThroughTool(many.url)
+      expect(settled.contextSources).toMatchObject({
+        version: 1,
+        projection: "original",
+        omitted: 2,
+      })
+      expect(settled.contextSources?.entries.map((entry) => entry.contentIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+      expect(settled.output?.content).toHaveLength(10)
+    } finally {
+      await many.stop()
+    }
+
+    const longOrigins = fixture({
+      readContents: [0, 1].map((index) => ({
+        uri: `https://fixture.test/${index}/${"x".repeat(1_100)}`,
+        mimeType: "text/plain",
+        text: `long-origin-${index}`,
+      })),
+    })
+    try {
+      const settled = await readThroughTool(longOrigins.url)
+      expect(settled.contextSources).toMatchObject({ version: 1, projection: "original", entries: [], omitted: 2 })
+      expect(settled.result.type).toBe("content")
+    } finally {
+      await longOrigins.stop()
+    }
+
+    const binary = fixture({
+      readContents: [{ uri: "https://fixture.test/blob", mimeType: "application/octet-stream", blob: "aGVsbG8=" }],
+    })
+    try {
+      const settled = await readThroughTool(binary.url)
+      expect(settled.contextSources).toMatchObject({ version: 1, projection: "original", entries: [], omitted: 0 })
+      expect(settled.result).toEqual({
+        type: "text",
+        value: JSON.stringify({
+          uri: "https://fixture.test/blob",
+          mimeType: "application/octet-stream",
+          blob: "aGVsbG8=",
+        }),
+      })
+    } finally {
+      await binary.stop()
     }
   })
 
@@ -410,6 +568,7 @@ describe("MCPV2 resources", () => {
             toolCall("mcp", { operation: "read", server: "fixture", uri }, "call-mcp-read"),
           )
           expect(output.result.type).not.toBe("error")
+          expect(output.contextSources).toMatchObject({ projection: "replaced", omitted: 0 })
           expect(output.outputPaths).toHaveLength(1)
           const artifactPath = output.outputPaths?.[0]
           if (!artifactPath) throw new Error("Expected the full MCP resource output artifact")
@@ -536,6 +695,23 @@ function toolCall(name: string, input: unknown, id: string) {
   }
 }
 
+function readThroughTool(url: string) {
+  return run(
+    url,
+    Effect.gen(function* () {
+      yield* setup(rules)
+      const registry = yield* ToolRegistry.Service
+      const materialized = yield* registry.materialize([], sessionID)
+      const connected = yield* materialized.settle(
+        toolCall("mcp", { operation: "connect", server: "fixture" }, "call-connect"),
+      )
+      expect(connected.result.type).not.toBe("error")
+      expect(connected.contextSources).toBeUndefined()
+      return yield* materialized.settle(toolCall("mcp", { operation: "read", server: "fixture", uri }, "call-read"))
+    }),
+  )
+}
+
 type Request = {
   readonly id?: number | string
   readonly method: string
@@ -552,6 +728,7 @@ function fixture(
     readonly caseVariantResources?: boolean
     readonly resourceListFailure?: boolean
     readonly largeRead?: boolean
+    readonly readContents?: MCPV2.ResourceResult["contents"]
     readonly beforeResourceList?: () => Promise<unknown>
   } = {},
 ) {
@@ -666,18 +843,19 @@ function fixture(
         const text = options.largeRead
           ? `${Array.from({ length: 4_000 }, (_, index) => `row-${String(index + 1).padStart(4, "0")}-${"x".repeat(24)}`).join("\n")}\nTAIL_TOKEN`
           : "hello"
+        const contents =
+          options.readContents ??
+          (options.largeRead
+            ? [{ uri: message.params?.uri, mimeType: "text/plain", text }]
+            : [
+                { uri: message.params?.uri, mimeType: "text/plain", text },
+                { uri: message.params?.uri, mimeType: "application/octet-stream", blob: "aGVsbG8=" },
+                { uri: message.params?.uri, mimeType: "text/plain", text: "world" },
+              ])
         return response(
           message,
           {
-            contents: [
-              ...(options.largeRead
-                ? [{ uri: message.params?.uri, mimeType: "text/plain", text }]
-                : [
-                    { uri: message.params?.uri, mimeType: "text/plain", text },
-                    { uri: message.params?.uri, mimeType: "application/octet-stream", blob: "aGVsbG8=" },
-                    { uri: message.params?.uri, mimeType: "text/plain", text: "world" },
-                  ]),
-            ],
+            contents,
           },
           true,
         )

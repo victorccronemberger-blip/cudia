@@ -810,6 +810,108 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("persists MCP resource receipt identities through runner replay without provider metadata", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const applications = yield* ApplicationTools.Service
+      const server = "resource-fixture"
+      const requestedURI = "custom:requested"
+      const contents = [
+        { uri: "custom:returned/one", text: "RESOURCE_PRIVATE_TEXT" },
+        { uri: "custom:returned/two", text: "RESOURCE_PRIVATE_TEXT" },
+      ]
+      const rendered = contents.map((item) => JSON.stringify({ uri: item.uri }) + "\n" + item.text)
+      yield* applications.register({
+        mcp: Tool.make({
+          description: "Synthetic resource reader",
+          input: Schema.Struct({ operation: Schema.Literal("read"), server: Schema.String, uri: Schema.String }),
+          output: Schema.Struct({ contents: Schema.Array(Schema.Struct({ uri: Schema.String, text: Schema.String })) }),
+          execute: () =>
+            Effect.sync(() =>
+              ToolProvenance.attach(
+                { contents },
+                contents.map((item, contentIndex) => ({
+                  contentIndex,
+                  receipt: ToolSource.create({
+                    kind: "mcp-resource",
+                    origin: JSON.stringify({ server, requestedURI, uri: item.uri }),
+                    output: rendered[contentIndex]!,
+                    start: rendered[contentIndex]!.length - item.text.length,
+                    end: rendered[contentIndex]!.length,
+                  }),
+                })),
+              ),
+            ),
+          toModelOutput: () => rendered.map((text) => ({ type: "text", text })),
+        }),
+      })
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Read the selected resource" }), resume: false })
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({
+            id: "call-resource-provenance",
+            name: "mcp",
+            input: { operation: "read", server, uri: requestedURI },
+          }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        fragmentFixture("text", "resource-final", ["Read complete"]).completeEvents,
+      ]
+      yield* session.resume(sessionID)
+      const observed = audits[1]?.historySnapshot?.sources
+      expect(observed).toHaveLength(2)
+      expect(observed?.map((source) => source.tool?.observation)).toMatchObject(
+        contents.map((item) => ({
+          state: "matched",
+          kind: "mcp-resource",
+          origin: JSON.stringify({ server, requestedURI, uri: item.uri }),
+        })),
+      )
+      expect(observed?.map((source) => source.tool?.contentIndex)).toEqual([0, 1])
+      expect(JSON.stringify(requests)).not.toContain("contextSources")
+      expect(JSON.stringify(requests)).not.toContain("hashEncoding")
+      yield* replaySessionProjection(sessionID)
+      const projected = yield* session.context(sessionID)
+      const replayed = projected
+        .flatMap((message) => (message.type === "assistant" ? message.content : []))
+        .find((part) => part.type === "tool" && part.id === "call-resource-provenance")
+      expect(replayed).toMatchObject({
+        type: "tool",
+        state: {
+          status: "completed",
+          contextSources: {
+            entries: [
+              {
+                contentIndex: 0,
+                receipt: {
+                  kind: "mcp-resource",
+                  origin: JSON.stringify({ server, requestedURI, uri: contents[0]!.uri }),
+                },
+              },
+              {
+                contentIndex: 1,
+                receipt: {
+                  kind: "mcp-resource",
+                  origin: JSON.stringify({ server, requestedURI, uri: contents[1]!.uri }),
+                },
+              },
+            ],
+            omitted: 0,
+          },
+        },
+      })
+      audits.length = 0
+      auditEnabled = false
+      responses = [fragmentFixture("text", "resource-noaudit", ["Continue"]).completeEvents]
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Continue" }), resume: false })
+      yield* session.resume(sessionID)
+      expect(audits).toHaveLength(0)
+    }),
+  )
+
   it.effect("starts a real runner turn after default prompt recording", () =>
     Effect.gen(function* () {
       yield* setup

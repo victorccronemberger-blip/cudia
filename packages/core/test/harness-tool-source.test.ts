@@ -138,5 +138,25 @@ test("verification limits affect attribution only, and invocation data distingui
   expect(ToolSource.isLoader("skill", { query: "guide" })).toBe(false)
   expect(ToolSource.isLoader("mcp", { operation: "instructions" })).toBe(true)
   expect(ToolSource.isLoader("mcp", { operation: "servers" })).toBe(false)
+  expect(ToolSource.isLoader("mcp", { operation: "read" })).toBe(false)
   expect(ToolSource.isLoader("unrelated", { name: "guide", operation: "instructions" })).toBe(false)
+})
+
+test("resource receipts use text spans without relaxing guidance member validation", () => {
+  const source = ToolSource.create({
+    kind: "mcp-resource",
+    origin: JSON.stringify({ server: "fixture", requestedURI: "custom:one", uri: "custom:two" }),
+    output,
+    start: prefix.length,
+    end: prefix.length + body.length,
+  })!
+  expect(ToolSource.inspect(output, { contextSource: source })).toMatchObject({
+    state: "matched",
+    kind: "mcp-resource",
+  })
+  expect(ToolSource.inspect(output + "changed", { contextSource: source })).toEqual({ state: "changed" })
+  expect(ToolSource.create({ kind: "mcp-resource", origin: "fixture", output: "🌍", start: 0, end: 1 })).toBeUndefined()
+  expect(ToolSource.inspect(output, { contextSource: { ...source, kind: "mcp-guidance" } })).toEqual({
+    state: "invalid",
+  })
 })

@@ -114,6 +114,56 @@ test("correlates source snapshots without claiming final part identities or reta
   expect(ContextAudit.report({ ...sample, historySnapshot: undefined }, policy, "now")).not.toHaveProperty("captureID")
 })
 
+test("SQLite retains resource source identities and omission metadata without the MCP body", async () => {
+  await using directory = await tmpdir()
+  const filename = path.join(directory.path, ContextHistory.FILE)
+  const loaded = "PRIVATE_SYNTHETIC_MCP_RESOURCE"
+  const origin = JSON.stringify({ server: "fixture", requestedURI: "custom:request", uri: "custom:return" })
+  const receipt = ToolSource.create({ kind: "mcp-resource", origin, output: loaded, start: 0, end: loaded.length })!
+  const captured = ContextAudit.report(
+    {
+      ...sample,
+      runtime: "v2",
+      historySnapshot: {
+        id: "resource-snapshot",
+        count: 1,
+        bytes: Buffer.byteLength(loaded),
+        sources: [
+          {
+            source: "loaded-tool-result",
+            messageID: "msg_resource",
+            partID: "call_resource",
+            messageIndex: 0,
+            partIndex: 0,
+            text: loaded,
+            tool: {
+              name: "mcp",
+              callID: "call_resource",
+              contentIndex: 2,
+              receiptProjection: "original",
+              omittedReceipts: 3,
+              observation: ToolSource.inspect(loaded, { contextSource: receipt }),
+            },
+          },
+        ],
+      },
+    },
+    { ...policy, auditMode: "content" },
+    "now",
+  )
+  await Effect.runPromise(ContextHistory.append(filename, captured))
+  const page = await Effect.runPromise(ContextHistory.read(filename))
+  expect(page?.entries[0]?.capture.historySnapshot?.sources[0]?.tool).toMatchObject({
+    name: "mcp",
+    contentIndex: 2,
+    receiptProjection: "original",
+    omittedReceipts: 3,
+    observation: { state: "matched", kind: "mcp-resource", origin },
+  })
+  expect(JSON.stringify(page)).not.toContain(loaded)
+  expect(await Bun.file(filename).text()).not.toContain(loaded)
+})
+
 test("bounds checkpoint source records and shares content and metadata allowances", () => {
   const many = Array.from({ length: 130 }, (_, index) => ({ ...snapshot.sources[0]!, partID: "prt_" + index }))
   const bounded = ContextAudit.report(

@@ -50,7 +50,7 @@ function bodyText(
 ) {
   if (body.type === "utf16-span") {
     if (
-      kind !== "skill" ||
+      (kind !== "skill" && kind !== "mcp-resource") ||
       !integer(body.start) ||
       !integer(body.end) ||
       body.start > body.end ||
@@ -71,7 +71,7 @@ function bodyText(
 export function create(
   input:
     | {
-        readonly kind: "skill"
+        readonly kind: "skill" | "mcp-resource"
         readonly origin: string
         readonly output: string
         readonly start: number
@@ -87,7 +87,7 @@ export function create(
     if (!input.origin || !small(input.origin, MAX_ORIGIN_BYTES) || !small(input.output, MAX_VERIFY_BYTES))
       return undefined
     const locator =
-      input.kind === "skill"
+      input.kind !== "mcp-guidance"
         ? { type: "utf16-span" as const, start: input.start, end: input.end }
         : { type: "json-member" as const, member: "instructions" as const }
     const text = bodyText(input.output, input.kind, input.origin, locator)
@@ -111,7 +111,7 @@ function parse(value: unknown): Receipt | undefined {
   const kind = own(value, "kind")
   const origin = own(value, "origin")
   if (
-    (kind !== "skill" && kind !== "mcp-guidance") ||
+    (kind !== "skill" && kind !== "mcp-guidance" && kind !== "mcp-resource") ||
     typeof origin !== "string" ||
     !origin ||
     !small(origin, MAX_ORIGIN_BYTES)
@@ -127,7 +127,7 @@ function parse(value: unknown): Receipt | undefined {
   const bodyHash = own(body, "sha256")
   if (!integer(length) || !integer(bytes) || !hash(sha256) || !integer(bodyBytes) || !hash(bodyHash)) return undefined
   const locator =
-    kind === "skill" && type === "utf16-span"
+    (kind === "skill" || kind === "mcp-resource") && type === "utf16-span"
       ? { type: "utf16-span" as const, start: own(body, "start"), end: own(body, "end") }
       : kind === "mcp-guidance" && type === "json-member" && own(body, "member") === "instructions"
         ? { type: "json-member" as const, member: "instructions" as const }

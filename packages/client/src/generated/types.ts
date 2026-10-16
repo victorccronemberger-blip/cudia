@@ -687,7 +687,7 @@ export type SessionsContextOutput = {
                         readonly receipt: {
                           readonly version: 1
                           readonly hashEncoding: "json-utf8"
-                          readonly kind: "skill" | "mcp-guidance"
+                          readonly kind: "skill" | "mcp-guidance" | "mcp-resource"
                           readonly origin: string
                           readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
                           readonly body:
@@ -1095,7 +1095,7 @@ export type SessionsHistoryOutput = {
               readonly receipt: {
                 readonly version: 1
                 readonly hashEncoding: "json-utf8"
-                readonly kind: "skill" | "mcp-guidance"
+                readonly kind: "skill" | "mcp-guidance" | "mcp-resource"
                 readonly origin: string
                 readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
                 readonly body:
@@ -1603,7 +1603,7 @@ export type SessionsEventsOutput =
             readonly receipt: {
               readonly version: 1
               readonly hashEncoding: "json-utf8"
-              readonly kind: "skill" | "mcp-guidance"
+              readonly kind: "skill" | "mcp-guidance" | "mcp-resource"
               readonly origin: string
               readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
               readonly body:
@@ -1915,7 +1915,7 @@ export type SessionsMessageOutput = {
                         readonly receipt: {
                           readonly version: 1
                           readonly hashEncoding: "json-utf8"
-                          readonly kind: "skill" | "mcp-guidance"
+                          readonly kind: "skill" | "mcp-guidance" | "mcp-resource"
                           readonly origin: string
                           readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
                           readonly body:
@@ -2137,7 +2137,7 @@ export type MessagesListOutput = {
                         readonly receipt: {
                           readonly version: 1
                           readonly hashEncoding: "json-utf8"
-                          readonly kind: "skill" | "mcp-guidance"
+                          readonly kind: "skill" | "mcp-guidance" | "mcp-resource"
                           readonly origin: string
                           readonly output: { readonly bytes: number; readonly sha256: string; readonly length: number }
                           readonly body:
