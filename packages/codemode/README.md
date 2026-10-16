@@ -179,9 +179,11 @@ Supported bearer, basic, header, and query authentication follows OpenAPI `secur
 
 ## Discovery
 
-The agent-tool instructions use a budgeted catalog. Every tool namespace is always listed with its tool count regardless of budget, and as many complete, JSDoc-annotated tool signatures (each with a one-line description) as fit an estimated-token budget are inlined. Schema field descriptions and tags are part of each signature's measured cost. Selection is round-robin across namespaces for fairness: in each round (namespaces alphabetical), every namespace still holding un-inlined tools attempts to place its next-cheapest signature against the shared budget, and a namespace whose next signature does not fit drops out while the others keep going - so every namespace gets some representation before any namespace gets everything. The instructions state exactly how comprehensive the list is, both overall (`COMPLETE list` vs `PARTIAL - N of M shown`) and per namespace (`(3 tools)`, `(3 tools, 1 shown)`, `(3 tools, none shown)`).
+The agent-tool instructions use a budgeted catalog. Namespace summaries (names and tool counts, including line separators) share a 3,200-byte UTF-8 ceiling. If all summaries do not fit, they are replaced together by a namespace count and discovery guidance; no alphabetical subset is preferred. Selected signatures still appear with fully qualified paths, and every tool remains in the callable tree and search index. This ceiling bounds header overhead, not total instructions, and is an implementation choice rather than a measured optimal token limit.
 
-The catalog-entry budget defaults to 2,000 estimated tokens (characters / 4, the same heuristic OpenCode uses). It applies only to full tool entries shown in the catalog; fixed instructions and namespace summaries are not counted. Override it when constructing a runtime:
+As many complete, JSDoc-annotated tool signatures (each with a one-line description) as fit an estimated-token budget are inlined. Schema field descriptions and tags are part of each signature's measured cost. Selection is round-robin across namespaces for fairness: in each round (namespaces alphabetical), every namespace still holding un-inlined tools attempts to place its next-cheapest signature against the shared budget, and a namespace whose next signature does not fit drops out while the others keep going - so every namespace gets some representation before any namespace gets everything. The instructions state exactly how comprehensive the list is, both overall (`COMPLETE list` vs `PARTIAL - N of M shown`) and, when summaries fit, per namespace (`(3 tools)`, `(3 tools, 1 shown)`, `(3 tools, none shown)`).
+
+The catalog-entry budget defaults to 2,000 estimated tokens (characters / 4, the same heuristic OpenCode uses). It applies only to full tool entries shown in the catalog; fixed instructions and the separately bounded namespace summaries are not counted. Override it when constructing a runtime:
 
 ```ts
 const runtime = CodeMode.make({
@@ -192,7 +194,7 @@ const runtime = CodeMode.make({
 
 The budget must be a non-negative safe integer.
 
-The runtime search tool is always registered - including when the catalog is fully inlined - so a speculative `tools.$codemode.search` call never fails as an unknown tool. It is only advertised in the instructions when the inlined list is partial:
+The runtime search tool is always registered - including when the catalog is fully inlined - so a speculative `tools.$codemode.search` call never fails as an unknown tool. Its full signature is advertised when the inlined list is partial; compact namespace summaries also point to search for discovery:
 
 ```ts
 const matches = await tools.$codemode.search({

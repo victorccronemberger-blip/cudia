@@ -2872,3 +2872,16 @@ encerrado e nenhuma política do runtime foi alterada neste incremento.
 
 Detalhes e limites: [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md). A Preview 10 está ativa;
 a revisão compilada e os recibos estão em [provenance/preview-10](provenance/preview-10/README.md).
+
+## Incremento dos fontes — custo agregado de namespaces
+
+- [x] Medir o crescimento da descrição com muitos grupos no CodeMode, mesmo com
+      orçamento zero de assinaturas: 117.428 bytes com 1.000 namespaces na fixture.
+- [x] Limitar os cabeçalhos agregados a 3.200 bytes UTF-8; substituir todos por um
+      resumo quando excedidos, preservando busca, paginação e execução.
+- [x] Verificar nomes multibyte, limiar exato, nomes enormes, assinaturas parciais
+      e completas e uso da última ferramenta em 1.000 namespaces/servidores MCP.
+- [ ] Compilar e qualificar este incremento para uma distribuição posterior.
+
+A Preview 10 permanece instalada e publicada. Detalhes e limites:
+[MCP-ON-DEMAND.md](MCP-ON-DEMAND.md#incremento-seguinte-nos-fontes--muitos-servidores).

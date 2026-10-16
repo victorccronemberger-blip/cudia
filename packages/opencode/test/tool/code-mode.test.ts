@@ -303,6 +303,30 @@ describe("code mode execute", () => {
     expect(many).not.toContain("tools.alpha.op_")
   })
 
+  test("many MCP server names stay out of context while the last server remains usable", async () => {
+    const names = Array.from({ length: 1_000 }, (_, index) => `server_${index}_${"x".repeat(80)}`)
+    const tools = Object.fromEntries(
+      names.map((name) => [`${name}_read`, mcpTool("read", () => ({ content: [{ type: "text", text: "called" }] }))]),
+    )
+    const small = describeFor(Object.fromEntries(Object.entries(tools).slice(0, 100)), names.slice(0, 100))
+    const large = describeFor(tools, names)
+    expect(large).toContain("Namespace summaries omitted (1000 namespaces)")
+    expect(Buffer.byteLength(large)).toBeLessThan(3_500)
+    expect(Math.abs(Buffer.byteLength(large) - Buffer.byteLength(small))).toBeLessThan(16)
+    expect(large).not.toContain(names[0]!)
+    expect(large).not.toContain(names.at(-1)!)
+
+    const tool = await build(tools, names)
+    const path = `tools.${names.at(-1)!}.read`
+    const found = await Effect.runPromise(
+      tool.execute({ code: `return await tools.$codemode.search({ query: ${JSON.stringify(path)} })` }, ctx),
+    )
+    expect(JSON.parse(found.output)).toMatchObject({ items: [{ path }], remaining: 0, next: null })
+    const called = await Effect.runPromise(tool.execute({ code: `return await ${path}({})` }, ctx))
+    expect(called.output).toBe("called")
+    expect(called.metadata.toolCalls).toMatchObject([{ tool: `${names.at(-1)}.read`, status: "completed" }])
+  })
+
   test("large catalogs discover only the explicitly searched schemas", async () => {
     const tools: Record<string, MCP.McpTool> = {}
     const filler = "a searchable description of this operation that consumes catalog budget ".repeat(3)

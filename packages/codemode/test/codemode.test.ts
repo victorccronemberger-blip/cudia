@@ -977,6 +977,98 @@ describe("CodeMode public contract", () => {
     if (exhausted.ok) expect(exhausted.value).toStrictEqual({ items: [], remaining: 0, next: null })
   })
 
+  test("bounds namespace headers in UTF-8 at the threshold and one byte over", () => {
+    const read = Tool.make({ description: "Read", input: Schema.Struct({}), run: () => Effect.succeed("ok") })
+    const overhead = Buffer.byteLength("-  (1 tool, none shown)\n")
+    for (const prefix of ["", "界".repeat(1_000)]) {
+      const name = prefix + "x".repeat(3_200 - overhead - Buffer.byteLength(prefix))
+      const exact = CodeMode.make({ tools: { [name]: { read } }, discovery: { catalogBudget: 0 } }).instructions()
+      const over = CodeMode.make({ tools: { [name + "x"]: { read } }, discovery: { catalogBudget: 0 } }).instructions()
+      expect(exact).toContain(`- ${name} (1 tool, none shown)\n`)
+      expect(exact).not.toContain("Namespace summaries omitted")
+      expect(over).toContain("Namespace summaries omitted (1 namespace)")
+      expect(over).not.toContain(name)
+      expect(Buffer.byteLength(over)).toBeLessThan(3_000)
+    }
+    const empty = CodeMode.make({ tools: {} }).instructions()
+    expect(empty).toContain("No tools are currently available.")
+    expect(empty).not.toContain("Namespace summaries omitted")
+    const oversized = CodeMode.make({
+      tools: { ["x".repeat(20_000)]: { read } },
+      discovery: { catalogBudget: 0 },
+    })
+    expect(oversized.instructions()).toContain("Namespace summaries omitted (1 namespace)")
+    expect(Buffer.byteLength(oversized.instructions())).toBeLessThan(3_000)
+    expect(oversized.catalog()).toHaveLength(1)
+  })
+
+  test("compacts large namespace sets without losing paginated discovery or calls", async () => {
+    const read = Tool.make({ description: "Read", input: Schema.Struct({}), run: () => Effect.succeed("called") })
+    const names = Array.from({ length: 1_000 }, (_, index) => `server_${index}_${"界".repeat(40)}`)
+    const tools = Object.fromEntries(names.map((name) => [name, { read }]))
+    const runtime = CodeMode.make({ tools, discovery: { catalogBudget: 0 } })
+    const smaller = CodeMode.make({
+      tools: Object.fromEntries(names.slice(0, 100).map((name) => [name, { read }])),
+      discovery: { catalogBudget: 0 },
+    })
+    expect(runtime.catalog()).toHaveLength(1_000)
+    expect(runtime.instructions()).toContain("Namespace summaries omitted (1000 namespaces)")
+    expect(Buffer.byteLength(runtime.instructions())).toBeLessThan(3_000)
+    expect(
+      Math.abs(Buffer.byteLength(runtime.instructions()) - Buffer.byteLength(smaller.instructions())),
+    ).toBeLessThan(16)
+    expect(runtime.instructions()).not.toContain(names[0]!)
+    expect(runtime.instructions()).not.toContain(names.at(-1)!)
+
+    const browse = await Effect.runPromise(
+      runtime.execute(`
+      const paths = []
+      let offset = 0
+      while (true) {
+        const page = await tools.$codemode.search({ query: "", offset, limit: 31 })
+        for (const item of page.items) paths.push(item.path)
+        if (page.next === null) break
+        offset = page.next.offset
+      }
+      return paths
+    `),
+    )
+    expect(browse.ok).toBe(true)
+    if (!browse.ok) return
+    expect(browse.value).toHaveLength(1_000)
+    expect(new Set(browse.value as string[]).size).toBe(1_000)
+
+    const path = `tools[${JSON.stringify(names.at(-1)!)}].read`
+    expect(browse.value).toContain(path)
+    const found = await Effect.runPromise(
+      runtime.execute(`return await tools.$codemode.search({ query: ${JSON.stringify(path)} })`),
+    )
+    expect(found.ok).toBe(true)
+    if (found.ok) expect(found.value).toMatchObject({ items: [{ path }], remaining: 0, next: null })
+    const called = await Effect.runPromise(runtime.execute(`return await ${path}({})`))
+    expect(called.ok).toBe(true)
+    if (called.ok) expect(called.value).toBe("called")
+  })
+
+  test("retains selected signatures when namespace summaries are compacted", () => {
+    const read = Tool.make({ description: "Read", input: Schema.Struct({}), run: () => Effect.succeed("ok") })
+    const tools = {
+      a: { read },
+      ...Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`long_${index}_${"x".repeat(80)}`, { read }])),
+    }
+    const runtime = CodeMode.make({ tools, discovery: { catalogBudget: 20 } })
+    expect(runtime.instructions()).toContain("Namespace summaries omitted (101 namespaces)")
+    expect(runtime.instructions()).toContain("PARTIAL - 1 of 101 shown")
+    expect(runtime.instructions()).toContain(
+      `  - ${runtime.catalog().find((tool) => tool.path === "a.read")!.signature}`,
+    )
+    expect(runtime.catalog()).toHaveLength(101)
+    const complete = CodeMode.make({ tools, discovery: { catalogBudget: 100_000 } })
+    expect(complete.instructions()).toContain("COMPLETE list")
+    expect(complete.instructions()).toContain("Namespace summaries omitted (101 namespaces)")
+    for (const tool of complete.catalog()) expect(complete.instructions()).toContain(`  - ${tool.signature}`)
+  })
+
   test("inlines round-robin across namespaces so one expensive namespace cannot starve the rest", () => {
     const cheap = Tool.make({
       description: "Cheap",

@@ -46,3 +46,28 @@ A revisão independente foi concluída antes da ativação do canal.
 A regressão também revelou uma falha no fechamento de clientes durante cancelamento:
 o tratamento anterior podia ser interrompido antes da limpeza. Um finalizador agora
 encerra o cliente mesmo quando a descoberta de ferramentas é cancelada.
+
+## Incremento seguinte nos fontes — muitos servidores
+
+A Preview 10 acima permanece a distribuição instalada. O incremento posterior
+limita em 3.200 bytes UTF-8 o conjunto de cabeçalhos de namespaces do CodeMode,
+incluindo separadores de linha. Quando excedido, todos os cabeçalhos dão lugar a
+uma contagem e orientação de descoberta. Não se escolhe um subconjunto alfabético.
+Assinaturas selecionadas, índice de busca e ferramentas executáveis permanecem.
+O orçamento de assinaturas continua separado; isso limita o custo dos cabeçalhos,
+sem declarar um teto absoluto de tokens ou de toda a descrição.
+
+Uma fixture com 1.000 namespaces e nomes ASCII de 80 caracteres adicionais,
+com orçamento de assinaturas zero, passou de 117.428 para 2.680 bytes de descrição.
+Com 100 namespaces, ficou em 2.678 bytes. São bytes observados, não tokens medidos.
+Os testes cobrem o limiar exato, um byte excedente, nomes multibyte e enormes,
+catálogo vazio, assinaturas parciais/completas, descoberta paginada dos 1.000 itens,
+busca exata e execução do último namespace. A integração V1 também executa a
+ferramenta do último de 1.000 servidores MCP com nomes sanitizados.
+
+Validação: 266 testes do pacote CodeMode e 42 da integração V1 passaram, com
+1.069 verificações no total; os typechecks de CodeMode e Opencode passaram.
+O executor principal implementou a correção; gpt-6-astra/high revisou a decisão
+e os resultados pela skill codex-advisor, sem apontar pendência material.
+
+Este incremento ainda não foi compilado ou publicado como instalador.

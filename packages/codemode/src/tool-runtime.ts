@@ -84,6 +84,8 @@ export type SafeObject = Record<string, unknown>
 
 const reservedNamespace = "$codemode"
 const defaultCatalogBudget = 2_000
+const maxNamespaceBytes = 3_200
+const encoder = new TextEncoder()
 const defaultSearchLimit = 10
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
@@ -457,6 +459,12 @@ const catalogLine = (tool: ToolDescription) => {
   return description === "" ? `  - ${tool.signature}` : `  - ${tool.signature} // ${description}`
 }
 
+const namespaceLine = (name: string, total: number, shown: number) => {
+  const count = `${total} tool${total === 1 ? "" : "s"}`
+  const label = shown === total ? count : shown === 0 ? `${count}, none shown` : `${count}, ${shown} shown`
+  return `- ${name} (${label})`
+}
+
 const toSearchEntry = <R>(path: string, definition: Definition<R>, description: ToolDescription): SearchEntry => ({
   description,
   namespace: path.split(".", 1)[0]!,
@@ -482,15 +490,16 @@ export const assertValidTools = <R>(tools: HostTools<R>): void => {
 }
 
 /**
- * Budgeted catalog: every namespace is always listed with its tool count; full call
+ * Budgeted catalog: namespace summaries share a 3,200-byte UTF-8 ceiling; full call
  * signatures are inlined against the `catalogBudget` (estimated tokens,
  * chars/4) round-robin across namespaces - in each round (namespaces alphabetical), every
  * namespace still holding un-inlined tools attempts to place its next-cheapest line, and
  * a namespace whose next line does not fit is done while the others keep going - so every
  * namespace gets some representation before any namespace gets everything. The section
  * states exactly how comprehensive it is - overall (COMPLETE vs PARTIAL) and per
- * namespace. Namespace stub lines are never budgeted: every namespace appears with its
- * tool count even at budget 0.
+ * namespace. Namespace summaries are separate from the signature budget. When they
+ * exceed their ceiling, all summaries are replaced by counts and discovery guidance;
+ * selected signatures, the search index, and callable tools remain unchanged.
  */
 export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBudget): DiscoveryPlan => {
   if (!Number.isSafeInteger(catalogBudget) || catalogBudget < 0) {
@@ -542,6 +551,19 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
   )
   const totalShown = selections.reduce((total, { picked }) => total + picked.size, 0)
   const complete = totalShown === described.length
+
+  const headers = new Map<string, string>()
+  let headerBytes = 0
+  for (const [namespace, group] of ordered) {
+    // Avoid constructing even one enormous header. UTF-8 is at least as long as
+    // the UTF-16 code-unit count, including replacement of unpaired surrogates.
+    if (namespace.length > maxNamespaceBytes) break
+    const line = namespaceLine(namespace, group.length, shown.get(namespace)!.size)
+    headerBytes += encoder.encode(line + "\n").byteLength
+    if (headerBytes > maxNamespaceBytes) break
+    headers.set(namespace, line)
+  }
+  const compactNamespaces = headers.size !== ordered.length
 
   const empty = described.length === 0
 
@@ -620,18 +642,13 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
         : `## Available tools (PARTIAL - ${totalShown} of ${described.length} shown; find the rest with tools.$codemode.search)`,
       "",
     )
+    if (compactNamespaces)
+      toolSection.push(
+        `Namespace summaries omitted (${ordered.length} namespace${ordered.length === 1 ? "" : "s"}) to save context. Browse tools.$codemode.search({ query: "" }); follow next.offset when present.`,
+      )
     for (const [namespace, group] of ordered) {
       const picked = shown.get(namespace)!
-      const count = `${group.length} tool${group.length === 1 ? "" : "s"}`
-      // Annotate only when a namespace is not fully shown, so a comprehensive
-      // namespace reads cleanly and a truncated one is unambiguous.
-      const label =
-        picked.size === group.length
-          ? count
-          : picked.size === 0
-            ? `${count}, none shown`
-            : `${count}, ${picked.size} shown`
-      toolSection.push(`- ${namespace} (${label})`)
+      if (!compactNamespaces) toolSection.push(headers.get(namespace)!)
       for (const tool of group) if (picked.has(tool)) toolSection.push(catalogLine(tool))
     }
     if (!complete) {
