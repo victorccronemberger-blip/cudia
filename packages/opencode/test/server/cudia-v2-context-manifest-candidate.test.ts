@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
+import { createHash } from "node:crypto"
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
@@ -185,6 +186,21 @@ test.skipIf(candidate === undefined)(
         expect(response.status).toBe(200)
         return ((await response.json()) as { data: Update[] }).data.filter((message) => message.type === "system")
       }
+      const checkpoint = () => {
+        const db = new Database(database, { readonly: true })
+        try {
+          const row = db
+            .query<
+              { id: string; data: string },
+              [string]
+            >("SELECT id, data FROM session_message WHERE session_id = ? AND type = 'compaction' ORDER BY seq DESC LIMIT 1")
+            .get(sessionID)
+          if (!row) throw new Error("Missing persisted compaction checkpoint")
+          return { id: row.id, ...(JSON.parse(row.data) as { summary: string; recent: string }) }
+        } finally {
+          db.close()
+        }
+      }
       const origin = (text: string, manifest: unknown, expected: string) => {
         expect(ContextManifest.verify(text, manifest)).toBe("valid")
         const value = manifest as ContextManifestSchema.Manifest
@@ -270,9 +286,30 @@ test.skipIf(candidate === undefined)(
       )
 
       compacting = true
+      const compactTurn = captured.length
       const compacted = await fetch(`${base}/api/session/${sessionID}/compact`, { method: "POST" })
       expect(compacted.status).toBe(204)
       compacting = false
+      expect(captured).toHaveLength(compactTurn + 1)
+      const compactRequest = captured[compactTurn]!
+      const compactWireMessages = messageTexts(compactRequest, "user")
+      expect(compactWireMessages).toHaveLength(1)
+      const compactPrompt = compactWireMessages[0]!
+      expect(compactPrompt.length).toBeGreaterThan(0)
+      const compactCheckpoint = checkpoint()
+      const compactAudit = await audit()
+      expect(compactAudit).toMatchObject({ purpose: "compaction", instructions: [], contentIncluded: false })
+      expect(compactAudit.compactionMessageID).toBe(compactCheckpoint.id)
+      const compactSource = compactAudit.messageSources?.find((item) => item.source === "compaction-prompt")
+      expect(compactSource).toMatchObject({ source: "compaction-prompt", role: "user", messageIndex: 0, partIndex: 0 })
+      expect(compactSource?.bytes).toBe(Buffer.byteLength(compactPrompt, "utf8"))
+      expect(compactSource?.sha256).toBe(createHash("sha256").update(compactPrompt, "utf8").digest("hex"))
+      expect(compactSource).not.toHaveProperty("content")
+      const compactAuditText = JSON.stringify(compactAudit)
+      expect(compactAuditText).not.toContain("Reply normally for this local protocol fixture.")
+      expect(compactAuditText).not.toContain("Retained fixture context.")
+      expect(compactAuditText).not.toContain("CONTEXT_ORIGIN_CHECKPOINT_OK")
+
       await writeFile(filename, revisions[3]!, "utf8")
       await prompt()
       const replaced = epoch()
@@ -280,6 +317,23 @@ test.skipIf(candidate === undefined)(
       expect(replaced.baseline_manifest).not.toBe(initial.baseline_manifest)
       origin(replaced.baseline, JSON.parse(replaced.baseline_manifest!), revisions[3]!)
       const finalAudit = await audit()
+      expect(finalAudit).toMatchObject({ purpose: "main", contentIncluded: false })
+      expect(finalAudit.compactionMessageID).toBeUndefined()
+      const checkpointSource = finalAudit.messageSources?.find(
+        (item) => item.source === "conversation-checkpoint" && item.messageID === compactCheckpoint.id,
+      )
+      expect(checkpointSource).toMatchObject({ source: "conversation-checkpoint", role: "user", partIndex: 0 })
+      const wireCheckpoint = messageTexts(captured.at(-1)!, "user").find((text) =>
+        text.includes("CONTEXT_ORIGIN_CHECKPOINT_OK"),
+      )
+      expect(wireCheckpoint).toBeDefined()
+      expect(checkpointSource?.bytes).toBe(Buffer.byteLength(wireCheckpoint!, "utf8"))
+      expect(checkpointSource?.sha256).toBe(createHash("sha256").update(wireCheckpoint!, "utf8").digest("hex"))
+      expect(checkpointSource).not.toHaveProperty("content")
+      const mainAuditText = JSON.stringify(finalAudit)
+      expect(mainAuditText).not.toContain("CONTEXT_ORIGIN_CHECKPOINT_OK")
+      expect(mainAuditText).not.toContain("Reply normally for this local protocol fixture.")
+      expect(mainAuditText).not.toContain("Retained fixture context.")
       expect(finalAudit.instructions.some((item) => item.source === "context-update")).toBe(false)
       expect(systemText(captured.at(-1)!)).toContain(replaced.baseline)
       expect(systemText(captured.at(-1)!)).not.toContain(beta.text)
@@ -376,25 +430,30 @@ function userText(request: CapturedRequest) {
 }
 
 function messageText(request: CapturedRequest, role: string) {
+  return messageTexts(request, role).join("\n\n")
+}
+
+function messageTexts(request: CapturedRequest, role: string) {
   return request.messages
     .filter((message) => message.role === role)
-    .flatMap((message) =>
+    .map((message) =>
       typeof message.content === "string"
-        ? [message.content]
+        ? message.content
         : Array.isArray(message.content)
-          ? message.content.flatMap((part: unknown) =>
-              part !== null &&
-              typeof part === "object" &&
-              "type" in part &&
-              part.type === "text" &&
-              "text" in part &&
-              typeof part.text === "string"
-                ? [part.text]
-                : [],
-            )
-          : [],
+          ? message.content
+              .flatMap((part: unknown) =>
+                part !== null &&
+                typeof part === "object" &&
+                "type" in part &&
+                part.type === "text" &&
+                "text" in part &&
+                typeof part.text === "string"
+                  ? [part.text]
+                  : [],
+              )
+              .join("\n\n")
+          : "",
     )
-    .join("\n\n")
 }
 
 function completion(content: string) {
