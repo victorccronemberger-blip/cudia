@@ -1,7 +1,7 @@
 # cudia
 
 Harness de IA para programação e trabalho de segurança. Usa o **OpenCode 1.18.35**
-com agentes, playbooks, continuidade de contexto, login Kimi Code e o comando
+com agentes, skills sob demanda, continuidade de contexto, OAuth ChatGPT/Grok e o comando
 `/goal`. A origem exata do motor está em [cudia-engine.json](cudia-engine.json).
 
 Os agentes seguem o pedido do operador: explicar, revisar, planejar ou executar.
@@ -32,10 +32,12 @@ próprio, que o CUDIA não remove nem controla.
 
 O [site oficial](https://cyara.com.br) mostra os downloads verificados de cada
 canal. A Preview usa `cudia` no PATH e atualizações assinadas descobertas pelo
-domínio do CUDIA. A sequência 9 está publicada com instaladores normal/baseline
+domínio do CUDIA. A sequência 10 está publicada com instaladores normal/baseline
 e pacotes de atualização. Instalação, PATH, abertura em outra pasta e remoção
 passaram em duas VMs Windows Server 2025 novas, sem Node, Bun ou Git no PATH.
-No Windows desta máquina, a atualização real 6 → 9 e uma resposta Grok passaram.
+No Windows desta máquina, a atualização real 9 → 10 e respostas ChatGPT/Grok passaram.
+A Preview 10 conecta MCP por chamada explícita e mantém as instruções remotas
+fora do prompt de sistema. [Evidências da entrega](provenance/preview-10/README.md).
 A tasklist está em
 [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md). Os comandos abaixo iniciam ou instalam um
 checkout de desenvolvimento.
@@ -58,7 +60,10 @@ permanecem pendentes.
 
 ### Checkout de desenvolvimento
 
-As fontes publicadas da Preview 9 estão na branch `codex/preview-source`.
+As fontes da Preview 10 estão na branch `codex/mcp-on-demand`; o motor foi
+compilado do commit `3c53ad68ceff6926e6b6844b474080cc00e98b5b`.
+[MCP-ON-DEMAND.md](MCP-ON-DEMAND.md) descreve o contrato e sua validação.
+As fontes históricas da Preview 9 estão na branch `codex/preview-source`.
 [SOURCE-PREVIEW-9.md](SOURCE-PREVIEW-9.md) descreve os recibos, a correspondência
 com o motor distribuído e como compilar com o catálogo congelado dessa versão.
 
@@ -69,7 +74,7 @@ Dependências nativas podem exigir compilador C/C++; no Windows, o build nativo
 do tree-sitter requer as ferramentas C++ do Visual Studio.
 
 ```sh
-git clone https://github.com/victorccronemberger-blip/cudia.git
+git clone --branch codex/mcp-on-demand https://github.com/victorccronemberger-blip/cudia.git
 cd cudia
 sh install.sh
 cudia

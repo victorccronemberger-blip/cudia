@@ -30,14 +30,17 @@ Fechar OAuth ChatGPT/Grok, instalador Windows com `cudia` no PATH e atualizaçõ
 As demais melhorias avançadas ficam para uma versão posterior; não ampliam o
 critério de conclusão desta entrega.
 
-**Entrega disponível em 16/10/2026:** Preview sequência 9, motor
-`1.18.35+cudia.a1c9471a1874.34d5ef8b73ad`, em https://cyara.com.br.
+**Entrega disponível em 16/10/2026:** Preview sequência 10, motor
+`1.18.35+cudia.3c53ad68ceff.151eeaf9b17d`, em https://cyara.com.br.
 Os quatro downloads imutáveis foram verificados pelo publicador; o manifest
 assinado foi ativado por último. Instalação, CMD em outra pasta, catálogo frio,
 PATH e remoção passaram nas duas variantes em VMs Windows Server 2025 novas
-([execução de CI](https://github.com/victorccronemberger-blip/cudia/actions/runs/38901518617)).
-A instalação física desta máquina passou de 6 para 9, preservou a versão anterior,
-confirmou a consulta HTTPS e recebeu uma resposta Grok. As candidatas 7 e 8 foram
+([CI, tentativa 2](https://github.com/victorccronemberger-blip/cudia/actions/runs/38909722028/attempts/2)).
+A instalação física desta máquina passou de 9 para 10, preservou a versão anterior,
+confirmou a consulta HTTPS e recebeu respostas ChatGPT e Grok. A Preview 10 conecta
+MCP somente por chamada explícita, mantém instruções remotas como resultado de
+ferramenta e corrige processos stdio deixados por uma conexão interrompida.
+[Evidências da entrega](provenance/preview-10/README.md). As candidatas 7 e 8 foram
 retiradas antes da ativação após os testes identificarem incompatibilidades de
 aliases Windows; a sequência 9 contém as correções. Os serviços padrão OpenCode
 foram retirados do fluxo padrão; APIs dos provedores selecionados permanecem.
@@ -2865,7 +2868,7 @@ encerrado e nenhuma política do runtime foi alterada neste incremento.
 - [x] Retirar promoção automática de instruções MCP para o prompt de sistema.
 - [x] Corrigir limpeza stdio durante cancelamento e descarte da instância.
 - [x] Validar 89 testes e os typechecks de opencode/tui; revisão independente concluída.
-- [ ] Compilar e qualificar distribuição posterior à Preview 9 com este incremento.
+- [x] Compilar e qualificar a Preview 10 normal/baseline, instalar por HTTPS e validar ChatGPT/Grok.
 
-Detalhes e limites: [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md). A Preview 9 continua publicada
-e utilizável; este registro descreve uma mudança posterior somente nos fontes.
+Detalhes e limites: [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md). A Preview 10 está ativa;
+a revisão compilada e os recibos estão em [provenance/preview-10](provenance/preview-10/README.md).

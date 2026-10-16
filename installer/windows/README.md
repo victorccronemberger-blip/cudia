@@ -3,20 +3,23 @@
 Este diretório prepara o pacote nativo, o cliente de atualizações e o wizard.
 A compilação e os fluxos silenciosos do instalador já foram executados com o
 motor real e Registro isolado. A QA interativa CUDIA TEST também foi concluída.
-A [Preview pública](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-1b9ea9a042e6)
+A [Preview pública](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq10-151eeaf9b17d)
 tem instaladores normal/baseline, `cudia` no PATH e atualização HTTPS assinada
-conferida nas transições 1 → 2, 2 → 3 e 3 → 5. A sequência 4 foi retirada antes
-da publicação. Windows limpo e qualificação stable continuam
-pendentes; o teste de perfil/PATH isolados não certifica um sistema novo.
+conferida também na transição 9 → 10. Os mesmos instaladores normal/baseline
+passaram em duas VMs Windows Server 2025 novas, com PATH mínimo, abertura pelo CMD,
+catálogo frio e remoção. [Evidências](../../provenance/preview-10/README.md).
+A qualificação stable e a verificação interativa por usuário comum em Windows 10/11
+continuam pendentes.
 
 A qualificação também precisa ocorrer fora do processo empacotado que a prepara.
 Em 16/10, o MSIX do Codex redirecionou uma instalação para a área privada do app:
 o PATH ficou correto, mas o CMD externo não via os arquivos. A instalação desta
 máquina foi reparada e verificada por um processo sem identidade de pacote,
 com resolução de `cudia`, versão, SHA256 do motor e caminho físico por handle.
-A preparação automática do instalador quando aberto por um app MSIX está sendo
-integrada em fonte e ainda não faz parte da Preview pública sequência 5. Uma consulta interna bem-sucedida não prova visibilidade
-do executável no ambiente normal do Windows.
+O wizard atual verifica o destino físico e informa quando deve ser aberto pelo
+desktop normal. A transferência automática a partir de um app MSIX não está
+implementada. Uma consulta interna bem-sucedida não prova visibilidade do
+executável no ambiente normal do Windows.
 
 O protótipo com iniciador Go compilou, mas seu executável foi bloqueado pelo
 Windows Defender antes de iniciar o wizard no ensaio completo. Ele não está

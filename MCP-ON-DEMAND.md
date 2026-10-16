@@ -1,8 +1,12 @@
-# MCP sob demanda — incremento dos fontes
+# MCP sob demanda — Preview 10
 
 Esta alteração parte do commit público 0ef7fed4dcd039b95818502011331c663ab82642.
-A Preview 9 publicada e instalada permanece inalterada. Este documento não anuncia
-um instalador novo: compilar e qualificar a distribuição são etapas posteriores.
+O motor da Preview 10 foi compilado do commit
+`3c53ad68ceff6926e6b6844b474080cc00e98b5b` e está disponível em https://cyara.com.br.
+Os instaladores normal/baseline passaram em VMs Windows novas; a instalação desta
+máquina atualizou por HTTPS de 9 para 10 e respondeu via ChatGPT e Grok.
+[Recibos e evidências](provenance/preview-10/README.md) distinguem a revisão
+compilada das alterações posteriores na documentação e no publicador.
 
 ## Comportamento
 
@@ -31,8 +35,13 @@ interno do provedor permanece sob controle do provedor.
 CodeMode, prompt de sistema, composição de contexto e captura HTTP real dos pedidos
 V1, com e sem CodeMode. A captura confirmou zero inicializações antes da conexão
 explícita, uso de ferramenta, consulta de instruções e remoção após desconectar.
-Typechecks de opencode e tui passaram. A revisão independente não apontou bloqueador
-para registrar os fontes; não substitui a qualificação de uma distribuição compilada.
+Typechecks de opencode e tui passaram, além das 30 tarefas do repositório.
+Os 19 cenários compilados foram cobertos em cada variante. No primeiro ensaio normal,
+um cenário excedeu o prazo padrão de cinco segundos e dois aguardavam ZIP/LSP;
+a repetição focada passou com esses inputs e prazo de 120 segundos. O ensaio baseline
+passou nos 19 cenários, sem skips. Os dois instaladores passaram nas VMs novas,
+com PATH mínimo, CMD em outra pasta, catálogo frio e remoção.
+A revisão independente foi concluída antes da ativação do canal.
 
 A regressão também revelou uma falha no fechamento de clientes durante cancelamento:
 o tratamento anterior podia ser interrompido antes da limpeza. Um finalizador agora

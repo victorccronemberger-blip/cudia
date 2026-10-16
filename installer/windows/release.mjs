@@ -524,7 +524,8 @@ async function serviceAdapter(plan) {
         await run("git", ["update-index", "--add", "--cacheinfo", `100644,${blob},deploy/updates/releases/${channel}.json`], { cwd: repositoryRoot, env: baseEnv })
         const tree = await run("git", ["write-tree"], { cwd: repositoryRoot, env: baseEnv })
         const commit = await run("git", ["-c", "user.name=Cudia Release Publisher", "-c", "user.email=release@cudia.invalid", "commit-tree", tree, "-p", expectedParent, "-m", `release(${channel}): activate sequence ${plan.sequence}`], { cwd: repositoryRoot, input: "" })
-        await run("git", ["push", "origin", `${commit}:refs/heads/${branch}`], { cwd: repositoryRoot })
+        // The push may run the repository's validation hook before contacting the remote.
+        await run("git", ["push", "origin", `${commit}:refs/heads/${branch}`], { cwd: repositoryRoot, timeoutMs: 10 * 60 * 1000 })
         if ((await run("git", ["ls-remote", "origin", `refs/heads/${branch}`], { cwd: repositoryRoot })).split(/\s+/)[0] !== commit) throw new Error("service_push_unconfirmed")
       } finally { await unlink(index).catch(() => {}) }
     },

@@ -7,14 +7,17 @@ arquivos deve ser promovido a produção apenas por existir.
 
 ## Preview ativa
 
-O manifest Preview ativo é a sequência 9, com motor
-`1.18.35+cudia.a1c9471a1874.34d5ef8b73ad`. A release pública contém dois
+O manifest Preview ativo é a sequência 10, com motor
+`1.18.35+cudia.3c53ad68ceff.151eeaf9b17d`. A release pública contém dois
 instaladores Inno Setup e dois arquivos de atualização. O publicador verificou
 os quatro downloads antes de ativar o manifest em `cyara.com.br`. Os mesmos
 instaladores passaram por instalação, PATH, abertura fria e remoção em duas VMs
-Windows Server 2025 novas. A máquina de trabalho atualizou de 6 para 9 por HTTPS,
+Windows Server 2025 novas. A máquina de trabalho atualizou de 9 para 10 por HTTPS,
 verificou caminho físico e hash do motor, CMD em outra pasta, versão anterior
-preservada, resposta Grok e consulta sem update pendente.
+preservada, respostas ChatGPT/Grok e consulta sem update pendente.
+O motor foi compilado do commit `3c53ad68ceff6926e6b6844b474080cc00e98b5b`;
+o cliente 9 foi preservado byte a byte. A alteração conecta MCP sob demanda e
+corrige limpeza de stdio interrompido. [Evidências](../../provenance/preview-10/README.md).
 
 O manifest e o manifest incorporado nos instaladores expiram em **15/11/2026**.
 As candidatas 7 e 8 foram retiradas antes da ativação; seus assets são preservados
@@ -144,6 +147,18 @@ executa os gates. A Draft não é uma release pública; não a compartilhe como
 qualificada. Um arquivo já publicado nunca recebe uploads: se faltar um asset,
 o comando para sem substituí-lo.
 
+O token `contents: read` da CI não deve ser tratado como acesso a uma Draft.
+Na sequência 10, os dois jobs receberam HTTP 403 antes da instalação. Os mesmos
+assets foram então publicados como pré-release explicitamente identificada como
+**candidata em validação**, sem marcar como latest e sem alterar o canal assinado.
+O download anônimo respondeu 200 e a repetição dos jobs passou. Esse é um estado
+público não qualificado: usuários podem baixar a candidata, e o título/notas devem
+informar isso. Depois da aprovação, as notas locais e da release precisam coincidir
+com o plano antes de `publish`. Uma candidata reprovada deve ser registrada como
+retirada, preservando os assets e sua sequência. A [documentação do GitHub](https://docs.github.com/en/rest/releases/releases#list-releases)
+distingue a visibilidade pública das releases e o acesso de escrita às Drafts.
+Esse fluxo não exige ampliar a credencial da CI nem enviar a chave de assinatura.
+
 Depois que o arquivo de qualificação listar os mesmos artefatos e todos os gates
 aprovados, a fase explícita `publish` usa a credencial GitHub disponível
 no helper de credenciais Git, envia os ativos sem substituir nomes existentes,
@@ -154,6 +169,12 @@ são conferidas antes de criar a release. A branch de serviço é atualizada
 com um commit criado por plumbing Git; o checkout e o índice do operador não são
 usados. O publicador confere a chave pública presente nesse commit antes de criar
 a release e verifica o manifest exato no endpoint HTTPS depois da ativação.
+O push da branch de serviço dispõe de até dez minutos porque pode executar o
+hook de validação do repositório. Os demais comandos conservam seus prazos próprios.
+Um timeout não prova que o push falhou: confira a referência remota e o manifest
+exato antes de repetir. O encerramento do processo Git não garante o encerramento
+de todos os descendentes de um hook; identifique somente os processos daquela
+operação antes de qualquer limpeza.
 
 ```powershell
 node installer/windows/release.mjs publish --plan C:\release\sequence-7\plan.json
