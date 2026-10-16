@@ -3,7 +3,118 @@ import path from "node:path"
 import fs from "node:fs/promises"
 import { Effect } from "effect"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
+import { ContextHistory } from "@opencode-ai/core/harness/audit-history"
 import { cliIt } from "../lib/cli-process"
+
+cliIt.live(
+  "optional history leaves real provider messages and tool definitions unchanged even when persistence fails",
+  ({ home, llm, opencode }) =>
+    Effect.gen(function* () {
+      const env = { CUDIA_CONTEXT_MODE: "lean", CUDIA_CONTEXT_AUDIT: "summary", CUDIA_CONTEXT_AUDIT_HISTORY: "0" }
+      yield* llm.text("HISTORY_WIRE_OK")
+      const baseline = yield* opencode.run("HISTORY_WIRE_INPUT", { agent: "build", env })
+      opencode.expectExit(baseline, 0, "baseline provider request")
+      const before = (yield* llm.inputs).at(-1)!
+      expect(before).toBeDefined()
+      yield* llm.text("HISTORY_WIRE_OK")
+      const enabled = yield* opencode.run("HISTORY_WIRE_INPUT", {
+        agent: "build",
+        env: { ...env, CUDIA_CONTEXT_AUDIT_HISTORY: "1" },
+      })
+      opencode.expectExit(enabled, 0, "history-enabled provider request")
+      const after = (yield* llm.inputs).at(-1)!
+      expect(after.messages).toEqual(before.messages)
+      expect(after.tools).toEqual(before.tools)
+      expect(enabled.stdout).toBe(baseline.stdout)
+      const history = yield* ContextHistory.read(path.join(home, ".local/state/opencode", ContextHistory.FILE))
+      expect(history?.retained.count).toBeGreaterThan(0)
+      const unavailableState = path.join(home, "unavailable-history-state")
+      yield* Effect.promise(() =>
+        fs.mkdir(path.join(unavailableState, "opencode", ContextHistory.FILE), { recursive: true }),
+      )
+      yield* llm.text("HISTORY_WIRE_OK")
+      const unavailable = yield* opencode.run("HISTORY_WIRE_INPUT", {
+        agent: "build",
+        env: { ...env, XDG_STATE_HOME: unavailableState, CUDIA_CONTEXT_AUDIT_HISTORY: "1" },
+      })
+      opencode.expectExit(unavailable, 0, "history-unavailable provider request")
+      const recovered = (yield* llm.inputs).at(-1)!
+      expect(recovered.messages).toEqual(before.messages)
+      expect(recovered.tools).toEqual(before.tools)
+      expect(unavailable.stdout).toBe(baseline.stdout)
+    }),
+  60_000,
+)
+
+cliIt.live(
+  "debug context reads bounded historical metadata by session and cursor without exposing captured text",
+  ({ home, opencode }) =>
+    Effect.gen(function* () {
+      const file = path.join(home, ".local/state/opencode", ContextHistory.FILE)
+      const input: ContextAudit.Input = {
+        runtime: "v2",
+        purpose: "compaction",
+        compactionMessageID: "msg_history_checkpoint",
+        sessionID: "ses_history_first",
+        agent: "compaction",
+        model: { provider: "fixture", id: "fixture" },
+        instructions: [{ source: "agent", text: "SYNTHETIC_PRIVATE_HISTORY_INSTRUCTION" }],
+        messages: [{ role: "user" }],
+        tools: [],
+      }
+      const first = yield* ContextHistory.append(
+        file,
+        ContextAudit.report(input, { contextMode: "lean", auditMode: "content" }, "now"),
+      )
+      const second = yield* ContextHistory.append(
+        file,
+        ContextAudit.report(
+          {
+            ...input,
+            sessionID: "ses_history_second",
+            purpose: "main",
+            compactionMessageID: undefined,
+            messageSources: [
+              {
+                source: "conversation-checkpoint",
+                role: "user",
+                messageIndex: 0,
+                partIndex: 0,
+                messageID: "msg_history_checkpoint",
+                text: "SYNTHETIC_PRIVATE_HISTORY_CHECKPOINT",
+              },
+            ],
+          },
+          { contextMode: "lean", auditMode: "content" },
+          "later",
+        ),
+      )
+      const latest = yield* opencode.spawn(["debug", "context", "--history", "--limit", "1"])
+      opencode.expectExit(latest, 0, "history page")
+      const page = JSON.parse(latest.stdout)
+      expect(page.entries.map((entry: { id: string }) => entry.id)).toEqual([second.id])
+      expect(page.nextBefore).toBe(second.sequence)
+      expect(latest.stdout).not.toContain("SYNTHETIC_PRIVATE_HISTORY")
+      const next = yield* opencode.spawn([
+        "debug",
+        "context",
+        "--history",
+        "--before",
+        String(page.nextBefore),
+        "--session-id",
+        "ses_history_first",
+      ])
+      opencode.expectExit(next, 0, "filtered history page")
+      expect(JSON.parse(next.stdout).entries.map((entry: { id: string }) => entry.id)).toEqual([first.id])
+      const invalid = yield* opencode.spawn(["debug", "context", "--history", "--content"])
+      expect(invalid.exitCode).not.toBe(0)
+      expect(invalid.stdout + invalid.stderr).not.toContain("SYNTHETIC_PRIVATE_HISTORY")
+      const tooMany = yield* opencode.spawn(["debug", "context", "--history", "--limit", "100000"])
+      expect(tooMany.exitCode).not.toBe(0)
+      expect((yield* ContextHistory.read(file))?.retained.count).toBe(2)
+    }),
+  60_000,
+)
 
 cliIt.live(
   "debug context exposes captured message text only with --content",

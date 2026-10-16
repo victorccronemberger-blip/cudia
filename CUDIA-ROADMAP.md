@@ -30,21 +30,28 @@ Fechar OAuth ChatGPT/Grok, instalador Windows com `cudia` no PATH e atualizaçõ
 As demais melhorias avançadas ficam para uma versão posterior; não ampliam o
 critério de conclusão desta entrega.
 
-**Entrega disponível em 16/10/2026:** Preview sequência 11, motor
-`1.18.35+cudia.2daad05e1bb3.7af12daab3dc`, em https://cyara.com.br.
+**Entrega disponível em 16/10/2026:** Preview sequência 12, motor
+`1.18.35+cudia.881809bd1c2a.e4bf58b2f4e8`, em https://cyara.com.br.
 Os quatro downloads imutáveis foram verificados pelo publicador; o manifest
 assinado foi ativado por último. Instalação, CMD em outra pasta, catálogo frio,
 PATH e remoção passaram nas duas variantes em VMs Windows Server 2025 novas
-([CI, tentativa 1](https://github.com/victorccronemberger-blip/cudia/actions/runs/38917808771)).
-A instalação física desta máquina passou de 10 para 11, preservou a versão anterior,
+([CI, tentativa 1](https://github.com/victorccronemberger-blip/cudia/actions/runs/38934887928)).
+A instalação física desta máquina passou de 11 para 12, preservou a versão anterior,
 confirmou a consulta HTTPS e recebeu resposta Grok. ChatGPT foi validado na Preview 10
-e não foi repetido neste motor. A Preview 11 preserva o MCP sob demanda e limita
-os cabeçalhos agregados do catálogo, mantendo busca e execução de todas as ferramentas.
-Os 20 cenários compilados passaram por variante, com 1.597 verificações cada.
-[Evidências da entrega](provenance/preview-11/README.md). As candidatas 7 e 8 foram
+e não foi repetido neste motor. A Preview 12 inclui recuperação de Goal sem
+substituir estado ilegível, auditoria opt-in de compactação/checkpoints e resumos
+auxiliares sem snapshots de arquivos. Preserva MCP sob demanda e limites nos
+cabeçalhos agregados do catálogo.
+Os 21 cenários compilados passaram por variante, com 1.717 verificações cada.
+[Evidências da entrega](provenance/preview-12/README.md). As candidatas 7 e 8 foram
 retiradas antes da ativação após os testes identificarem incompatibilidades de
 aliases Windows; a sequência 9 contém as correções. Os serviços padrão OpenCode
 foram retirados do fluxo padrão; APIs dos provedores selecionados permanecem.
+
+**Incremento posterior em fonte, fora do instalador Preview 12:** histórico
+opcional de metadados de contexto, com retenção transacional e leitura paginada.
+Veja [CONTEXT-HISTORY.md](CONTEXT-HISTORY.md). Permanece desligado por padrão;
+não altera prompts ou definições de ferramentas enviados ao provedor.
 
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no

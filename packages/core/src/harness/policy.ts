@@ -13,6 +13,7 @@ export const BASE = [
 export interface Interface {
   readonly contextMode: "standard" | "lean"
   readonly auditMode: "off" | "summary" | "content"
+  readonly auditHistory?: boolean
 }
 
 export class Service extends Context.Service<Service, Interface>()("@cudia/HarnessPolicy") {}
@@ -22,6 +23,7 @@ const layer = Layer.effect(
   Effect.all({
     contextMode: Config.literals(["standard", "lean"], "CUDIA_CONTEXT_MODE").pipe(Config.withDefault("standard")),
     auditMode: Config.literals(["off", "summary", "content"], "CUDIA_CONTEXT_AUDIT").pipe(Config.withDefault("off")),
+    auditHistory: Config.boolean("CUDIA_CONTEXT_AUDIT_HISTORY").pipe(Config.withDefault(false)),
   }).pipe(Effect.map(Service.of), Effect.orDie),
 )
 

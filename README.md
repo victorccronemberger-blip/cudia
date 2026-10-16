@@ -230,6 +230,11 @@ Esses comandos não chamam um modelo. Só o último relatório é mantido, com l
 de 512 KiB; o horário, a sessão e o runtime identificam a captura. Se uma gravação
 falhar, a execução continua e o comando pode mostrar a captura anterior.
 
+Os fontes posteriores à Preview 12 também oferecem um
+[histórico opcional de metadados](CONTEXT-HISTORY.md), desligado por padrão e
+carregado somente quando habilitado. Esse incremento ainda não integra o
+instalador Preview 12.
+
 Desde a Preview 12, `purpose` distingue chamadas `main` e
 `compaction` do V2. Ausência desse campo em capturas antigas ou no V1 significa
 finalidade não classificada. `messageSources` identifica o prompt de compactação

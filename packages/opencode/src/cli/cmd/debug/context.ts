@@ -1,5 +1,5 @@
 import path from "node:path"
-import { Effect, Schema } from "effect"
+import { Cause, Effect, Schema } from "effect"
 import { Global } from "@opencode-ai/core/global"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
 import { AmbientInstructions } from "@opencode-ai/core/harness/ambient-instructions"
@@ -20,8 +20,59 @@ export const ContextCommand = effectCmd({
         type: "boolean",
         default: false,
         describe: "show captured instruction and message-source text only when content capture was explicitly enabled",
+      })
+      .option("history", {
+        type: "boolean",
+        default: false,
+        describe: "read bounded historical metadata; requires separate capture opt-in",
+      })
+      .option("session-id", { type: "string", describe: "filter history by its exact session ID" })
+      .option("before", { type: "number", describe: "continue history before this SQLite insertion sequence" })
+      .option("limit", { type: "number", describe: "maximum history records per page (1–20)" })
+      .check((args) => {
+        if (
+          !args.history &&
+          (args["session-id"] !== undefined || args.before !== undefined || args.limit !== undefined)
+        )
+          throw new Error("--session-id, --before and --limit require --history")
+        if (args.history && (args.content || args.status))
+          throw new Error("--history stores metadata only and cannot be combined with --content or --status")
+        return true
       }),
   handler: Effect.fn("Cli.debug.context")(function* (args) {
+    if (args.history) {
+      const history = yield* Effect.tryPromise({
+        try: () => import("@opencode-ai/core/harness/audit-history"),
+        catch: () => new CliError({ message: "Cannot load context history reader." }),
+      })
+      const page = yield* history
+        .read(path.join(Global.Path.state, history.FILE), {
+          sessionID: args["session-id"],
+          before: args.before,
+          limit: args.limit,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : fail("Cannot read context history: unavailable, unsupported, invalid query or invalid capture."),
+          ),
+        )
+      if (page === undefined)
+        return yield* fail(
+          "No context history. Enable CUDIA_CONTEXT_AUDIT=summary (or content) and CUDIA_CONTEXT_AUDIT_HISTORY=1 when running a task.",
+        )
+      process.stdout.write(
+        JSON.stringify({
+          storage: "bounded historical metadata; no captured instruction or message text",
+          order: "SQLite insertion sequence; not provider execution order",
+          lineage:
+            "Use explicit message IDs only. Missing captures may reflect retention, disabled auditing or failed persistence.",
+          ...page,
+        }) + "\n",
+      )
+      return
+    }
     if (args.status) {
       process.stdout.write(
         JSON.stringify({ ambientInstructions: AmbientInstructions.current(), scope: "current process" }, null, 2) +

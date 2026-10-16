@@ -10,6 +10,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Global } from "@opencode-ai/core/global"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
+import { ContextHistory } from "@opencode-ai/core/harness/audit-history"
 import { ContextManifest } from "@opencode-ai/core/harness/context-manifest"
 import { HarnessPolicy } from "@opencode-ai/core/harness/policy"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -50,6 +51,110 @@ const sample = {
     },
   ],
 }
+
+describe("ContextAudit optional history integration", () => {
+  test("requires both history opt-in and enabled audit before opening history storage", async () => {
+    await using off = await tmpdir()
+    const disabled = await Effect.runPromise(
+      ContextAudit.Service.pipe(Effect.provide(auditLayer(off.path, { CUDIA_CONTEXT_AUDIT_HISTORY: "1" }))),
+    )
+    await Effect.runPromise(
+      disabled.record({
+        ...sample,
+        get instructions(): ContextAudit.Input["instructions"] {
+          throw new Error("Disabled audit inspected its input")
+        },
+      }),
+    )
+    expect(await fs.readdir(off.path)).toEqual([])
+    await using latestOnly = await tmpdir()
+    const enabled = await Effect.runPromise(
+      ContextAudit.Service.pipe(Effect.provide(auditLayer(latestOnly.path, { CUDIA_CONTEXT_AUDIT: "content" }))),
+    )
+    await Effect.runPromise(enabled.record(sample))
+    expect(await fs.readdir(latestOnly.path)).toEqual([ContextAudit.FILE])
+  })
+
+  test("retains multiple metadata captures while latest content keeps its separate contract", async () => {
+    await using tmp = await tmpdir()
+    const audit = await Effect.runPromise(
+      ContextAudit.Service.pipe(
+        Effect.provide(auditLayer(tmp.path, { CUDIA_CONTEXT_AUDIT: "content", CUDIA_CONTEXT_AUDIT_HISTORY: "1" })),
+      ),
+    )
+    await Effect.runPromise(
+      audit.record({ ...sample, purpose: "compaction", compactionMessageID: "msg_fixture_summary" }),
+    )
+    await Effect.runPromise(
+      audit.record({
+        ...sample,
+        purpose: "main",
+        messageSources: [
+          {
+            source: "conversation-checkpoint",
+            role: "user",
+            messageIndex: 0,
+            partIndex: 0,
+            messageID: "msg_fixture_summary",
+            text: "SYNTHETIC_PRIVATE_CHECKPOINT",
+          },
+        ],
+      }),
+    )
+    const page = await Effect.runPromise(ContextHistory.read(path.join(tmp.path, ContextHistory.FILE)))
+    expect(page?.entries).toHaveLength(2)
+    expect(page?.entries.map((entry) => entry.capture.purpose)).toEqual(["main", "compaction"])
+    expect(page?.entries[0]?.capture.messageSources?.[0]?.messageID).toBe(page?.entries[1]?.capture.compactionMessageID)
+    expect(JSON.stringify(page)).not.toContain(instructionText)
+    expect(JSON.stringify(page)).not.toContain("SYNTHETIC_PRIVATE_CHECKPOINT")
+    expect(JSON.parse(await fs.readFile(path.join(tmp.path, ContextAudit.FILE), "utf8"))).toMatchObject({
+      contentIncluded: true,
+      instructions: [{ content: instructionText }],
+    })
+  })
+
+  test("history failure does not suppress latest capture or fail the requesting task", async () => {
+    await using tmp = await tmpdir()
+    await fs.mkdir(path.join(tmp.path, ContextHistory.FILE))
+    const audit = await Effect.runPromise(
+      ContextAudit.Service.pipe(
+        Effect.provide(auditLayer(tmp.path, { CUDIA_CONTEXT_AUDIT: "summary", CUDIA_CONTEXT_AUDIT_HISTORY: "1" })),
+      ),
+    )
+    await Effect.runPromise(audit.record(sample))
+    expect(await Effect.runPromise(audit.latest())).toMatchObject({ sessionID: sample.sessionID })
+    expect(JSON.parse(await fs.readFile(path.join(tmp.path, ContextAudit.FILE), "utf8"))).toMatchObject({
+      sessionID: sample.sessionID,
+    })
+  })
+
+  test("latest persistence failure does not suppress history or expose unpersisted in-memory latest", async () => {
+    await using tmp = await tmpdir()
+    const filesystem = await Effect.runPromise(
+      FSUtil.Service.pipe(
+        Effect.provide(LayerNode.compile(LayerNode.group([FSUtil.node, LayerNodePlatform.filesystem]))),
+      ),
+    )
+    const audit = await Effect.runPromise(
+      ContextAudit.Service.pipe(
+        Effect.provide(
+          auditLayer(
+            tmp.path,
+            { CUDIA_CONTEXT_AUDIT: "summary", CUDIA_CONTEXT_AUDIT_HISTORY: "1" },
+            Layer.merge(failingRenameFS(filesystem), LayerNode.compile(LayerNodePlatform.filesystem)),
+          ),
+        ),
+      ),
+    )
+    await Effect.runPromise(audit.record(sample))
+    expect(await Effect.runPromise(audit.latest())).toBeUndefined()
+    expect(await fs.stat(path.join(tmp.path, ContextAudit.FILE)).catch(() => undefined)).toBeUndefined()
+    expect(
+      (await Effect.runPromise(ContextHistory.read(path.join(tmp.path, ContextHistory.FILE))))?.entries,
+    ).toHaveLength(1)
+    expect((await fs.readdir(tmp.path)).some((name) => name.endsWith(".tmp"))).toBe(false)
+  })
+})
 
 const auditLayer = (
   tmp: string,
@@ -95,6 +200,7 @@ describe("HarnessPolicy", () => {
       expect(yield* readPolicy.pipe(Effect.provide(policyLayer({})))).toEqual({
         contextMode: "standard",
         auditMode: "off",
+        auditHistory: false,
       })
     }),
   )
@@ -105,7 +211,7 @@ describe("HarnessPolicy", () => {
         yield* readPolicy.pipe(
           Effect.provide(policyLayer({ CUDIA_CONTEXT_MODE: "lean", CUDIA_CONTEXT_AUDIT: "summary" })),
         ),
-      ).toEqual({ contextMode: "lean", auditMode: "summary" })
+      ).toEqual({ contextMode: "lean", auditMode: "summary", auditHistory: false })
 
       const invalid = yield* Effect.exit(
         readPolicy.pipe(Effect.provide(policyLayer({ CUDIA_CONTEXT_MODE: "compact" }))),
@@ -115,6 +221,10 @@ describe("HarnessPolicy", () => {
         readPolicy.pipe(Effect.provide(policyLayer({ CUDIA_CONTEXT_AUDIT: "full" }))),
       )
       expect(invalidAudit._tag).toBe("Failure")
+      expect(yield* readPolicy.pipe(Effect.provide(policyLayer({ CUDIA_CONTEXT_AUDIT_HISTORY: "1" })))).toMatchObject({
+        auditMode: "off",
+        auditHistory: true,
+      })
     }),
   )
 })

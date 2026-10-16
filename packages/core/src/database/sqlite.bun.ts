@@ -34,6 +34,7 @@ interface Config {
   readonly create?: boolean
   readonly readwrite?: boolean
   readonly disableWAL?: boolean
+  readonly transactionMode?: "deferred" | "immediate"
   readonly spanAttributes?: Record<string, unknown>
   readonly transformResultNames?: (str: string) => string
   readonly transformQueryNames?: (str: string) => string
@@ -134,6 +135,7 @@ const make = (options: Config) =>
         acquirer,
         compiler,
         transactionAcquirer,
+        beginTransaction: options.transactionMode === "immediate" ? "BEGIN IMMEDIATE" : undefined,
         spanAttributes: [
           ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
           [ATTR_DB_SYSTEM_NAME, "sqlite"],

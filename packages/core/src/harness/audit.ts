@@ -2,7 +2,7 @@ export * as ContextAudit from "./audit"
 
 import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
-import { Context, DateTime, Effect, Layer, Ref, Schema, Semaphore } from "effect"
+import { Cause, Context, DateTime, Effect, Layer, Ref, Schema, Semaphore } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
 import { FSUtil } from "../fs-util"
 import { Global } from "../global"
@@ -268,29 +268,48 @@ const layer = Layer.effect(
       latest: () => Ref.get(latest),
       record: (input) => {
         if (policy.auditMode === "off") return Effect.void
-        return serial
-          .withPermit(
-            Effect.gen(function* () {
-              const now = yield* DateTime.nowAsDate
-              const value = report(input, policy, now.toISOString())
-              const serialized = JSON.stringify(value, null, 2)
-              if (Buffer.byteLength(serialized, "utf8") > MAX_REPORT_BYTES) {
-                yield* Effect.logWarning("CUDIA context audit exceeds its byte limit; capture skipped")
-                return
-              }
-              yield* Ref.set(latest, value)
-              // Persistence is explicitly opted into; retain only the latest request.
-              const temporary = file + `.${randomUUID()}.tmp`
-              yield* fs.ensureDir(global.state)
-              yield* fs
-                .writeFileString(temporary, serialized, { mode: 0o600, flag: "wx" })
-                .pipe(
-                  Effect.andThen(fs.rename(temporary, file)),
-                  Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)),
-                )
-            }),
+        return Effect.gen(function* () {
+          const now = yield* DateTime.nowAsDate
+          const value = report(input, policy, now.toISOString())
+          const serialized = JSON.stringify(value, null, 2)
+          if (Buffer.byteLength(serialized, "utf8") > MAX_REPORT_BYTES) {
+            yield* Effect.logWarning("CUDIA context audit exceeds its byte limit; capture skipped")
+            return
+          }
+          // The latest file keeps its existing content/metadata contract.
+          const temporary = file + `.${randomUUID()}.tmp`
+          yield* serial
+            .withPermit(
+              Effect.gen(function* () {
+                yield* fs.ensureDir(global.state)
+                yield* fs
+                  .writeFileString(temporary, serialized, { mode: 0o600, flag: "wx" })
+                  .pipe(
+                    Effect.andThen(fs.rename(temporary, file)),
+                    Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)),
+                  )
+                yield* Ref.set(latest, value)
+              }),
+            )
+            .pipe(Effect.catch((error) => Effect.logWarning("Could not save CUDIA context audit", { error })))
+          if (!policy.auditHistory) return
+          // History has a separate opt-in, metadata allowlist, transaction and failure boundary.
+          // Do not hold the latest-file permit while waiting for a history database lock.
+          yield* Effect.gen(function* () {
+            const history = yield* Effect.tryPromise(() => import("./audit-history"))
+            const saved = yield* history.append(path.join(global.state, history.FILE), value)
+            if (!saved.maintenance) yield* Effect.logWarning("CUDIA context history reclamation deferred")
+          }).pipe(
+            Effect.catchTag("ContextHistoryError", (error) =>
+              Effect.logWarning("Could not save CUDIA context history", { reason: error.reason }),
+            ),
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("Could not save CUDIA context history", { reason: "unavailable" }),
+            ),
           )
-          .pipe(Effect.catch((error) => Effect.logWarning("Could not save CUDIA context audit", { error })))
+        })
       },
     })
   }),
