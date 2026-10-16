@@ -27,7 +27,7 @@ $taskProfile = Join-Path $taskDirectory 'perfil vazio'
 [IO.Directory]::CreateDirectory($taskProfile) | Out-Null
 $taskSetup = Join-Path $taskDirectory 'CUDIA-Setup.exe'
 $taskRegistration = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\CudiaPreview'
-$taskResult = [ordered]@{ completed = $false; variant = $Variant; version = $taskCandidate.version; stage = 'preflight'; windows = [Environment]::OSVersion.VersionString; temporaryDirectory = [IO.Path]::GetTempPath(); cacheDirectory = [Environment]::GetFolderPath('LocalApplicationData'); lockProbe = $null; installerSha256 = $null; engineSha256 = $null; physicalBootstrap = $null; persistentPathCount = $null; commandVersion = $null; contextMode = $null; coldCatalogPassed = $false; removalVerified = $false; error = $null }
+$taskResult = [ordered]@{ completed = $false; variant = $Variant; version = $taskCandidate.version; stage = 'preflight'; windows = [Environment]::OSVersion.VersionString; temporaryDirectory = [IO.Path]::GetTempPath(); cacheDirectory = [Environment]::GetFolderPath('LocalApplicationData'); lockProbe = $null; installerSha256 = $null; engineSha256 = $null; physicalBootstrap = $null; persistentPathCount = $null; commandVersion = $null; contextMode = $null; coldCatalogPassed = $false; removalVerified = $false; pathProbe = $null; error = $null }
 function Save-TaskReport { $taskResult | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $taskReports 'result.json') -Encoding utf8 }
 function Get-RegistrySnapshot([string]$Subkey) {
     $taskKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($Subkey, $false)
@@ -127,6 +127,10 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 public static class CudiaFreshPhysical {
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern uint GetTempPath2W(uint length, StringBuilder value);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern uint GetLongPathNameW(string path, StringBuilder value, uint length);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, StringBuilder value, uint length, uint flags);
 }
 '@
@@ -176,7 +180,22 @@ public static class CudiaFreshPhysical {
     $taskResult.stage = 'uninstalling'
     Save-TaskReport
     & (Join-Path $taskRoot 'maintenance\launcher.exe') installer uninstall --root $taskRoot --quiet
-    if ($LASTEXITCODE -ne 0) { throw 'Uninstaller failed.' }
+    if ($LASTEXITCODE -ne 0) {
+        $taskTempBuffer = New-Object Text.StringBuilder 32768
+        $taskTempLength = [CudiaFreshPhysical]::GetTempPath2W($taskTempBuffer.Capacity, $taskTempBuffer)
+        $taskGoTemp = $taskTempBuffer.ToString().TrimEnd('\')
+        $taskProbePaths = @([IO.Path]::GetTempPath().TrimEnd('\'), $taskGoTemp, [Environment]::GetFolderPath('LocalApplicationData'), $taskRoot, (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
+        $taskRecovery = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'CudiaMaintenanceRecovery'
+        if (Test-Path -LiteralPath $taskRecovery) { $taskProbePaths += @(Get-ChildItem -LiteralPath $taskRecovery -Recurse -Force | Select-Object -First 24 -ExpandProperty FullName) }
+        $taskResult.pathProbe = @($taskProbePaths | ForEach-Object {
+            $taskExisting = $_
+            while (-not (Test-Path -LiteralPath $taskExisting)) { $taskExisting = Split-Path -Parent $taskExisting }
+            $taskLongBuffer = New-Object Text.StringBuilder 32768
+            $taskLongLength = [CudiaFreshPhysical]::GetLongPathNameW($taskExisting, $taskLongBuffer, $taskLongBuffer.Capacity)
+            [pscustomobject]@{ path = $_; existing = $taskExisting; long = $taskLongBuffer.ToString(); length = $taskLongLength; matches = $taskExisting -ieq $taskLongBuffer.ToString() }
+        })
+        throw 'Uninstaller failed.'
+    }
     $taskDeadline = [DateTime]::UtcNow.AddSeconds(90)
     do {
         $taskAfter = Get-RegistrySnapshot $taskRegistration
