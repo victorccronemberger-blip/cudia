@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "kind": "installed-preview-recheck",
+  "checkedAt": "2026-10-16T19:03:09Z",
+  "channel": "preview",
+  "sequence": 12,
+  "version": "1.18.35+cudia.881809bd1c2a.e4bf58b2f4e8",
+  "checks": {
+    "cmdWhereCudia": "C:\\Users\\victo\\AppData\\Local\\Cudia Preview\\bin\\cudia.exe",
+    "cmdVersionExitCode": 0,
+    "cmdUpdateCheck": "Cudia is current.",
+    "publicHomepageStatus": 200,
+    "publicHomepageSequence": 12,
+    "publicManifestStatus": 200,
+    "manifestUrl": "https://cyara.com.br/updates/v1/preview.json",
+    "automaticCheck": true,
+    "checkIntervalHours": 24,
+    "chatgptSmoke": {
+      "model": "openai/gpt-6-luna",
+      "command": "cudia run --model openai/gpt-6-luna",
+      "cwd": "C:\\Users\\victo\\OneDrive\\Documents\\ChatGPT\\LLM",
+      "expectedStdout": "CUDIA_OK",
+      "observedStdout": "CUDIA_OK",
+      "exitCode": 0
+    }
+  },
+  "scope": "Existing authenticated account on this PC; short ChatGPT inference through installed launcher. No new login or forced refresh was tested in this recheck.",
+  "notCovered": ["Authenticode publisher certificate", "interactive standard-user Windows 10/11 qualification", "source changes after the Preview 12 engine build"]
+}

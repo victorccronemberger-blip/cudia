@@ -37,8 +37,9 @@ assinado foi ativado por último. Instalação, CMD em outra pasta, catálogo fr
 PATH e remoção passaram nas duas variantes em VMs Windows Server 2025 novas
 ([CI, tentativa 1](https://github.com/victorccronemberger-blip/cudia/actions/runs/38934887928)).
 A instalação física desta máquina passou de 11 para 12, preservou a versão anterior,
-confirmou a consulta HTTPS e recebeu resposta Grok. ChatGPT foi validado na Preview 10
-e não foi repetido neste motor. A Preview 12 inclui recuperação de Goal sem
+confirmou a consulta HTTPS e recebeu resposta Grok. Uma conferência posterior do
+executável instalado também confirmou resposta ChatGPT com `openai/gpt-6-luna`.
+A Preview 12 inclui recuperação de Goal sem
 substituir estado ilegível, auditoria opt-in de compactação/checkpoints e resumos
 auxiliares sem snapshots de arquivos. Preserva MCP sob demanda e limites nos
 cabeçalhos agregados do catálogo.
@@ -105,6 +106,16 @@ Passaram 272 testes/1.668 verificações em 21 arquivos. Sem migração de SQL o
 semântica nos clientes gerados; o contrato de entrada da ferramenta ganhou a
 operação. Continua fora da Preview 12 e não encerra o roteiro geral.
 
+**Partes preparadas V2, em fonte:** a auditoria acompanha os resultados dos
+loaders selecionados através das cópias observadas na conversão canônica e em
+`LLM.request`. Registra a posição final ou uma ausência explícita, sem localizar
+conteúdo por igualdade de texto. Duplicações, cópias externas e substituições
+nativas não recebem atribuição. A posição final e a verificação do recibo são
+metadados distintos; nenhum deles acrescenta campos ao pedido do provedor.
+Relatórios anteriores continuam legíveis. Passaram 320 testes/1.892 verificações
+em 28 arquivos, além dos tipos de Core/OpenCode. V1, compactação e o tráfego após
+os adaptadores continuam fora desse mapeamento. O instalador permanece Preview 12.
+
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no
       ensaio isolado de 16/10, com o candidato `31d2c80a4998`.
@@ -148,12 +159,12 @@ conclusão da meta geral. O serviço usa a branch `codex/update-service`, Node 2
 raiz `deploy/updates`; a entrada foi corrigida para o carregador da Hostinger e
 12 testes do serviço passaram. `/health` e o manifest Preview retornam 200;
 `/ready` continua 503 porque ainda não há canal stable publicado. O manifest e os
-instaladores da sequência 11 são válidos até 15/11/2026 e precisam ser renovados
+instaladores da sequência 12 são válidos até 15/11/2026 e precisam ser renovados
 antes dessa data. A chave privada e uma cópia local conferida ficam fora do
 checkout/OneDrive; backup externo ainda não foi feito.
 
 Downloads: [site oficial](https://cyara.com.br). Atualização atual:
-[CUDIA Preview — sequência 11](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq11-7af12daab3dc),
+[CUDIA Preview — sequência 12](https://github.com/victorccronemberger-blip/cudia/releases/tag/cudia-preview-20261016-seq12-e4bf58b2f4e8),
 com instaladores e pacotes normal/baseline. As fontes atuais estão na branch
 `codex/mcp-on-demand`; o snapshot histórico da Preview 9 permanece na branch
 `codex/preview-source`, descrito em [SOURCE-PREVIEW-9.md](SOURCE-PREVIEW-9.md).

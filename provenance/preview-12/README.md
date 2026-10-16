@@ -13,4 +13,9 @@ O motor foi compilado de 881809bd1c2a4c92823bdf4ae0668a04ed004e50. A correção 
 
 O cliente Windows da Preview 11 foi reutilizado byte a byte. O canal foi alterado após a qualificação dos mesmos quatro arquivos publicados. A CI corresponde à [tentativa 1](https://github.com/victorccronemberger-blip/cudia/actions/runs/38934887928).
 
-ChatGPT, autorização inicial e renovação forçada não foram repetidos neste motor. Authenticode, validação interativa por usuário comum no Windows 10/11 e os demais itens do roteiro continuam pendentes. Esta entrega não encerra a meta geral e não altera o comportamento interno dos provedores.
+Na [conferência posterior do executável instalado](desktop-final-check.json), CMD,
+versão, atualização HTTPS e resposta ChatGPT com `openai/gpt-6-luna` passaram.
+Autorização inicial e renovação forçada não foram repetidas neste motor.
+Authenticode, validação interativa por usuário comum no Windows 10/11 e os demais
+itens do roteiro continuam pendentes. Esta entrega não encerra a meta geral e não
+altera o comportamento interno dos provedores.

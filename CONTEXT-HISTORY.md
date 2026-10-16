@@ -191,6 +191,32 @@ conteúdo explícita e é removido do histórico de metadados. A cobertura abran
 skills/guidance MCP V1 e skills/recursos/guidance MCP V2; outros loaders permanecem
 fora dela. Não constitui rastreabilidade universal ou autenticação dos produtores.
 
+## Partes preparadas pelo V2
+
+Nas chamadas principais V2, o snapshot acompanha a conversão canônica até o
+pedido preparado. O coletor existe somente com auditoria habilitada e observa
+as cópias síncronas de `Message.tool`, da mensagem assistant e de `LLM.request`,
+conferindo ordem, quantidade, papel e estrutura. Não procura partes por igualdade
+de texto nem por call ID. O texto confere uma posição já identificada.
+
+`mapping: observed-at-prepared-request` informa esse modo de observação; cada
+fonte tem seu próprio `prepared`, com a posição final ou um motivo explícito de
+ausência. Cópias não observadas, substituições nativas, mudanças de estrutura e
+ocorrências ambíguas não recebem mapeamento. Um resultado reduzido pode ter posição
+conhecida sem ter origem de corpo verificada: `prepared` e `tool.observation`
+respondem a perguntas distintas.
+
+Os índices são metadados locais, sujeitos aos mesmos limites de retenção; não
+entram no pedido do provedor. Relatórios anteriores continuam legíveis. V1,
+compactação e transformações posteriores nos adaptadores permanecem fora dessa
+atribuição; não é uma captura do tráfego enviado ao provedor.
+
+Os testes deste mapeamento incluem os construtores reais, saídas idênticas com e
+sem coletor, textos/call IDs repetidos, mídia com texto, substituição nativa,
+cópias não observadas, invalidação sem recuperação por aliases antigos e os
+resultados de skill/recursos/guidance no runner. A regressão integrada passou com
+320 testes e 1.892 verificações em 28 arquivos; Core/OpenCode passaram nos tipos.
+
 ## Validação
 
 Os testes cobrem exclusão de texto e campos desconhecidos, retenção por bytes e

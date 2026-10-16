@@ -2,6 +2,7 @@ import type { Report } from "./audit"
 import type { ContextManifestSchema } from "@opencode-ai/schema/context-manifest"
 import type { ContextTrace } from "./trace"
 import { ToolSource } from "./tool-source"
+import { PreparedSource } from "./prepared-source"
 
 /** Explicit allowlist: new report fields do not silently extend historical retention. */
 export function metadata(value: Report): Report {
@@ -30,6 +31,7 @@ export function metadata(value: Report): Report {
               : { omittedSources: value.historySnapshot.omittedSources }),
             sources: value.historySnapshot.sources.map((source) => ({
               source: source.source,
+              ...(source.prepared === undefined ? {} : { prepared: PreparedSource.copy(source.prepared) }),
               ...(source.tool === undefined
                 ? {}
                 : {

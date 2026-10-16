@@ -36,6 +36,7 @@ import { type RunError, type RunInput, Service } from "./index"
 import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
+import { HistoryProjection } from "./history-projection"
 import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
@@ -264,6 +265,11 @@ const layer = Layer.effect(
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const agentSystem = agent.info?.system ?? (policy.contextMode === "lean" ? HarnessPolicy.BASE : undefined)
       const historySnapshot = audit.enabled ? HistorySource.capture(context) : undefined
+      const historyProjection = historySnapshot ? HistoryProjection.create(historySnapshot) : undefined
+      const preparedMessages = [
+        ...toLLMMessages(context, model, historyProjection),
+        ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
+      ]
       const request = LLM.request({
         model,
         http: sessionHTTP(session),
@@ -271,10 +277,12 @@ const layer = Layer.effect(
         system: [agentSystem, system.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
-        messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
+        messages: preparedMessages,
         tools: toolMaterialization?.definitions ?? [],
         toolChoice: isLastStep ? "none" : undefined,
       })
+      // LLMRequest's schema constructor clones message parts while retaining their order.
+      historyProjection?.copied(preparedMessages, request.messages)
       if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
         return yield* Effect.die(continueAfterCompaction(currentStep))
       const startSnapshot = yield* snapshots.capture()
@@ -302,7 +310,7 @@ const layer = Layer.effect(
         yield* audit.record({
           runtime: "v2",
           purpose: "main",
-          ...(historySnapshot ? { historySnapshot } : {}),
+          ...(historyProjection ? { historySnapshot: historyProjection.capture(request.messages) } : {}),
           sessionID: session.id,
           agent: agent.id,
           model: { provider: model.provider, id: model.id },

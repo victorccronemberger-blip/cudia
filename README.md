@@ -41,8 +41,8 @@ opt-in de compactação/checkpoints e resumos auxiliares sem snapshots de arquiv
 Preserva MCP por chamada explícita, instruções remotas fora do sistema e limites
 nos cabeçalhos agregados do catálogo. Os 21 testes compilados passaram por variante,
 com 1.717 verificações em cada uma.
-[Evidências da entrega](provenance/preview-12/README.md). ChatGPT foi validado na
-Preview 10; não foi repetido para este motor.
+[Evidências da entrega](provenance/preview-12/README.md). A conferência posterior
+do executável instalado também confirmou resposta ChatGPT com `openai/gpt-6-luna`.
 A tasklist está em
 [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md). Os comandos abaixo iniciam ou instalam um
 checkout de desenvolvimento.

@@ -114,6 +114,69 @@ test("correlates source snapshots without claiming final part identities or reta
   expect(ContextAudit.report({ ...sample, historySnapshot: undefined }, policy, "now")).not.toHaveProperty("captureID")
 })
 
+test("retains prepared-part mappings as bounded metadata and reads earlier unmapped reports", async () => {
+  await using directory = await tmpdir()
+  const filename = path.join(directory.path, ContextHistory.FILE)
+  const privateText = "PRIVATE_SYNTHETIC_MAPPED_OUTPUT"
+  const expected = {
+    state: "mapped" as const,
+    messageIndex: 2,
+    partIndex: 0,
+    role: "tool" as const,
+    resultType: "content" as const,
+    resultContentIndex: 3,
+  }
+  const prepared = Object.defineProperty({ ...expected }, "unknownRawBody", {
+    get: () => {
+      throw new Error("Unknown prepared metadata getter must not execute")
+    },
+    enumerable: true,
+  })
+  const current = ContextAudit.report(
+    {
+      ...sample,
+      runtime: "v2",
+      historySnapshot: {
+        ...snapshot,
+        mapping: "observed-at-prepared-request",
+        sources: [{ ...snapshot.sources[0]!, text: privateText, prepared }],
+      },
+    },
+    { ...policy, auditMode: "content" },
+    "now",
+  )
+  const earlier = ContextAudit.report(sample, policy, "earlier")
+  expect(earlier.historySnapshot?.mapping).toBe("unmapped-after-conversion")
+  expect(current.historySnapshot).toMatchObject({
+    mapping: "observed-at-prepared-request",
+    sources: [{ prepared: expected }],
+  })
+  expect(metadata(current).historySnapshot?.sources[0]?.prepared).toEqual(expected)
+  await Effect.runPromise(ContextHistory.append(filename, earlier))
+  await Effect.runPromise(ContextHistory.append(filename, current))
+  const page = await Effect.runPromise(ContextHistory.read(filename))
+  expect(page?.entries.map((entry) => entry.capture.historySnapshot?.mapping)).toEqual([
+    "observed-at-prepared-request",
+    "unmapped-after-conversion",
+  ])
+  expect(page?.entries[0]?.capture.historySnapshot?.sources[0]?.prepared).toEqual(expected)
+  expect(JSON.stringify(page)).not.toContain(privateText)
+  expect(await Bun.file(filename).text()).not.toContain(privateText)
+  const exhausted = ContextAudit.report(
+    {
+      ...sample,
+      historySnapshot: {
+        ...snapshot,
+        mapping: "observed-at-prepared-request",
+        sources: [{ ...snapshot.sources[0]!, messageID: "x".repeat(ContextAudit.MAX_MANIFEST_BYTES), prepared }],
+      },
+    },
+    policy,
+    "now",
+  )
+  expect(exhausted.historySnapshot).toMatchObject({ omittedSources: 1, sources: [] })
+})
+
 test("SQLite retains resource source identities and omission metadata without the MCP body", async () => {
   await using directory = await tmpdir()
   const filename = path.join(directory.path, ContextHistory.FILE)

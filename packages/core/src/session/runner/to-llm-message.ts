@@ -9,6 +9,7 @@ import {
 } from "@opencode-ai/llm"
 import { SessionMessage } from "../message"
 import type { FileAttachment } from "../prompt"
+import type { HistoryProjection } from "./history-projection"
 
 const media = (file: FileAttachment): ContentPart => ({
   type: "media",
@@ -67,11 +68,16 @@ const toolResult = (tool: SessionMessage.AssistantTool, providerMetadata: Provid
   }
 }
 
-const assistant = (message: SessionMessage.Assistant, model: Model) => {
+const assistant = (
+  message: SessionMessage.Assistant,
+  model: Model,
+  messageIndex: number,
+  projection?: HistoryProjection.Collector,
+) => {
   const sameModel =
     String(message.model.providerID) === String(model.provider) && String(message.model.id) === String(model.id)
   const reuseProviderMetadata = sameModel && message.error === undefined
-  const content = message.content.flatMap((item): ContentPart[] => {
+  const content = message.content.flatMap((item, partIndex): ContentPart[] => {
     if (item.type === "text") return [{ type: "text", text: item.text }]
     if (item.type === "reasoning")
       return sameModel
@@ -91,6 +97,7 @@ const assistant = (message: SessionMessage.Assistant, model: Model) => {
       item,
       reuseProviderMetadata ? (item.provider.resultMetadata ?? item.provider.metadata) : undefined,
     )
+    if (result) projection?.toolResult(messageIndex, partIndex, message.id, item, result)
     return result ? [call, result] : [call]
   })
   const meaningful = content.filter((part) => {
@@ -98,21 +105,31 @@ const assistant = (message: SessionMessage.Assistant, model: Model) => {
     if (part.type !== "reasoning") return true
     return part.text !== "" || (part.providerMetadata !== undefined && Object.keys(part.providerMetadata).length > 0)
   })
-  const results = message.content
-    .filter((item): item is SessionMessage.AssistantTool => item.type === "tool" && item.provider?.executed !== true)
-    .map((item) =>
-      toolResult(item, reuseProviderMetadata ? (item.provider?.resultMetadata ?? item.provider?.metadata) : undefined),
+  const results = message.content.flatMap((item, partIndex) => {
+    if (item.type !== "tool" || item.provider?.executed === true) return []
+    const result = toolResult(
+      item,
+      reuseProviderMetadata ? (item.provider?.resultMetadata ?? item.provider?.metadata) : undefined,
     )
-    .filter((message) => message !== undefined)
-    .map(Message.tool)
+    if (!result) return []
+    projection?.toolResult(messageIndex, partIndex, message.id, item, result)
+    const converted = Message.tool(result)
+    projection?.copied([{ role: "tool", content: [result] }], [converted])
+    return [converted]
+  })
   if (meaningful.length === 0) return results
-  return [
-    Message.make({ id: message.id, role: "assistant", content: meaningful, metadata: message.metadata }),
-    ...results,
-  ]
+  const input = { id: message.id, role: "assistant" as const, content: meaningful, metadata: message.metadata }
+  const converted = Message.make(input)
+  projection?.copied([input], [converted])
+  return [converted, ...results]
 }
 
-function toLLMMessage(message: SessionMessage.Message, model: Model): Message[] {
+function toLLMMessage(
+  message: SessionMessage.Message,
+  model: Model,
+  messageIndex: number,
+  projection?: HistoryProjection.Collector,
+): Message[] {
   switch (message.type) {
     case "agent-switched":
     case "model-switched":
@@ -143,7 +160,7 @@ function toLLMMessage(message: SessionMessage.Message, model: Model): Message[] 
         }),
       ]
     case "assistant":
-      return assistant(message, model)
+      return assistant(message, model, messageIndex, projection)
     case "compaction":
       return [
         Message.make({
@@ -167,5 +184,8 @@ ${message.recent}
 }
 
 /** Translate projected V2 Session history into canonical @opencode-ai/llm context. */
-export const toLLMMessages = (messages: readonly SessionMessage.Message[], model: Model) =>
-  messages.flatMap((message) => toLLMMessage(message, model))
+export const toLLMMessages = (
+  messages: readonly SessionMessage.Message[],
+  model: Model,
+  projection?: HistoryProjection.Collector,
+) => messages.flatMap((message, messageIndex) => toLLMMessage(message, model, messageIndex, projection))

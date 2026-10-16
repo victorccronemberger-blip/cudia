@@ -7,18 +7,19 @@ arquivos deve ser promovido a produção apenas por existir.
 
 ## Preview ativa
 
-O manifest Preview ativo é a sequência 11, com motor
-`1.18.35+cudia.2daad05e1bb3.7af12daab3dc`. A release pública contém dois
+O manifest Preview ativo é a sequência 12, com motor
+`1.18.35+cudia.881809bd1c2a.e4bf58b2f4e8`. A release pública contém dois
 instaladores Inno Setup e dois arquivos de atualização. O publicador verificou
 os quatro downloads antes de ativar o manifest em `cyara.com.br`. Os mesmos
 instaladores passaram por instalação, PATH, abertura fria e remoção em duas VMs
-Windows Server 2025 novas. A máquina de trabalho atualizou de 10 para 11 por HTTPS,
+Windows Server 2025 novas. A máquina de trabalho atualizou de 11 para 12 por HTTPS,
 verificou caminho físico e hash do motor, CMD em outra pasta, versão anterior
 preservada, resposta Grok e consulta sem update pendente.
-O motor foi compilado do commit `2daad05e1bb326acf30b117f22a1c6e399e55794`;
-o cliente 10 foi preservado byte a byte. A alteração limita os cabeçalhos agregados
-de namespaces, preservando busca e execução. Os 20 cenários compilados passaram
-nas duas variantes. [Evidências](../../provenance/preview-11/README.md).
+O motor foi compilado do commit `881809bd1c2a4c92823bdf4ae0668a04ed004e50`;
+o cliente 11 foi preservado byte a byte. A entrega preserva estado de Goal ilegível,
+amplia a auditoria opt-in de compactação/checkpoints e omite snapshots de arquivos
+dos resumos auxiliares. Os 21 cenários compilados passaram nas duas variantes,
+com 1.717 verificações por variante. [Evidências](../../provenance/preview-12/README.md).
 
 O manifest e o manifest incorporado nos instaladores expiram em **15/11/2026**.
 As candidatas 7 e 8 foram retiradas antes da ativação; seus assets são preservados

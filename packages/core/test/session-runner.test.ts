@@ -771,6 +771,17 @@ describe("SessionRunnerLLM", () => {
       })
       expect(toolSource?.messageID).toMatch(/^msg_/)
       expect(toolSource?.partID).toBe("call-skill-provenance")
+      expect(audits[1]?.historySnapshot?.mapping).toBe("observed-at-prepared-request")
+      expect(toolSource?.prepared).toMatchObject({ state: "mapped", role: "tool", resultType: "text", partIndex: 0 })
+      if (toolSource?.prepared?.state !== "mapped") throw new Error("Expected prepared skill mapping")
+      expect(
+        requests[1]?.messages[toolSource.prepared.messageIndex]?.content[toolSource.prepared.partIndex],
+      ).toMatchObject({
+        type: "tool-result",
+        id: "call-skill-provenance",
+        result: { type: "text", value: outputText },
+      })
+      expect(toolRequestJson).not.toContain("observed-at-prepared-request")
 
       yield* replaySessionProjection(sessionID)
       const projected = yield* session.context(sessionID)
@@ -871,6 +882,10 @@ describe("SessionRunnerLLM", () => {
         })),
       )
       expect(observed?.map((source) => source.tool?.contentIndex)).toEqual([0, 1])
+      expect(observed?.map((source) => source.prepared)).toMatchObject([
+        { state: "mapped", role: "tool", resultType: "content", partIndex: 0, resultContentIndex: 0 },
+        { state: "mapped", role: "tool", resultType: "content", partIndex: 0, resultContentIndex: 1 },
+      ])
       expect(JSON.stringify(requests)).not.toContain("contextSources")
       expect(JSON.stringify(requests)).not.toContain("hashEncoding")
       yield* replaySessionProjection(sessionID)
@@ -1011,6 +1026,15 @@ describe("SessionRunnerLLM", () => {
       })
       expect(captured?.messageID).toMatch(/^msg_/)
       expect(captured?.partID).toBe("call-guidance")
+      expect(captured?.prepared).toMatchObject({ state: "mapped", role: "tool", resultType: "text", partIndex: 0 })
+      if (captured?.prepared?.state !== "mapped") throw new Error("Expected prepared guidance mapping")
+      expect(requests[2]?.messages[captured.prepared.messageIndex]?.content[captured.prepared.partIndex]).toMatchObject(
+        {
+          type: "tool-result",
+          id: "call-guidance",
+          result: { type: "text", value: JSON.stringify({ server, instructions: guidance }) },
+        },
+      )
 
       yield* replaySessionProjection(sessionID)
       const projected = yield* session.context(sessionID)

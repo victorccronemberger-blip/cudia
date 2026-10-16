@@ -11,6 +11,7 @@ import { HarnessPolicy } from "./policy"
 import { ContextTrace } from "./trace"
 import { ContextManifestSchema } from "@opencode-ai/schema/context-manifest"
 import { ToolSource } from "./tool-source"
+import { PreparedSource } from "./prepared-source"
 
 export const FILE = "cudia-context-latest.json"
 export const MAX_CONTENT_BYTES = 65_536
@@ -27,10 +28,12 @@ export type Input = {
   readonly compactionMessageID?: string
   readonly historySnapshot?: {
     readonly id: string
+    readonly mapping?: "observed-at-prepared-request"
     readonly count: number
     readonly bytes: number
     readonly sources: ReadonlyArray<{
       readonly source?: "conversation-checkpoint" | "loaded-tool-result"
+      readonly prepared?: PreparedSource.Mapping
       readonly tool?: {
         readonly name: string
         readonly callID: string
@@ -85,13 +88,14 @@ export const Report = Schema.Struct({
     Schema.Struct({
       id: Schema.String,
       stage: Schema.Literal("pre-model-conversion"),
-      mapping: Schema.Literal("unmapped-after-conversion"),
+      mapping: Schema.Literals(["unmapped-after-conversion", "observed-at-prepared-request"]),
       sourceCount: Schema.Number,
       sourceBytes: Schema.Number,
       omittedSources: Schema.optional(Schema.Number),
       sources: Schema.Array(
         Schema.Struct({
           source: Schema.Literals(["conversation-checkpoint", "loaded-tool-result"]),
+          prepared: Schema.optional(PreparedSource.Mapping),
           tool: Schema.optional(
             Schema.Struct({
               name: Schema.String,
@@ -266,6 +270,7 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
     const bytes = Buffer.byteLength(item.text, "utf8")
     const entry = {
       source: item.source ?? "conversation-checkpoint",
+      ...(item.prepared === undefined ? {} : { prepared: PreparedSource.copy(item.prepared) }),
       ...(item.tool === undefined
         ? {}
         : {
@@ -320,7 +325,7 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
           historySnapshot: {
             id: input.historySnapshot.id,
             stage: "pre-model-conversion" as const,
-            mapping: "unmapped-after-conversion" as const,
+            mapping: input.historySnapshot.mapping ?? ("unmapped-after-conversion" as const),
             sourceCount: input.historySnapshot.count,
             sourceBytes: input.historySnapshot.bytes,
             sources: historySources,
