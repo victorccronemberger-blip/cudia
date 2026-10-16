@@ -2,25 +2,25 @@
   "schema": 1,
   "repository": "victorccronemberger-blip/cudia",
   "channel": "preview",
-  "sequence": 8,
+  "sequence": 9,
   "version": "1.18.35+cudia.a1c9471a1874.34d5ef8b73ad",
-  "releaseId": 414936062,
+  "releaseId": 414944074,
   "artifacts": [
     {
       "variant": "normal",
-      "assetId": 647258042,
-      "size": 57867242,
-      "sha256": "8d83dd09a8bfca28a2a1385884edb071ed4339fde0b65360b521e1432447045b",
+      "assetId": 647281309,
+      "size": 57870569,
+      "sha256": "a4eb796ef3332dbdd9094845e44d31d5726b3121179e773089b5138838aaae4a",
       "engineSha256": "91087e50e5e55db1b0ab1a391f57788df25e4052d81f8c0a272a8c0812925463",
-      "bootstrapSha256": "52863095e39d4afa4f8c7ef21ddbb5a4b76f223df8d93c4b2ca6bd413537c800"
+      "bootstrapSha256": "e6422d69d0d44171d0ea222785e133c5e1f582270f0eb4b806f5e80e735d9bb1"
     },
     {
       "variant": "baseline",
-      "assetId": 647258728,
-      "size": 57867797,
-      "sha256": "7b0aa1120578a63705a750bd9c50273e0b460145cb37ad3ac297c0c9834bf040",
+      "assetId": 647282165,
+      "size": 57870745,
+      "sha256": "d6f1ce13cd90c8fd5825e00f03551f4ac6b3ccf8d4b3df79c192a4969f9d2487",
       "engineSha256": "91087e50e5e55db1b0ab1a391f57788df25e4052d81f8c0a272a8c0812925463",
-      "bootstrapSha256": "52863095e39d4afa4f8c7ef21ddbb5a4b76f223df8d93c4b2ca6bd413537c800"
+      "bootstrapSha256": "e6422d69d0d44171d0ea222785e133c5e1f582270f0eb4b806f5e80e735d9bb1"
     }
   ]
 }
