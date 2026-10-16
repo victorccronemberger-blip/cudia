@@ -2857,3 +2857,15 @@ a falha inicial sem causa demonstrada e os gates de produção ainda abertos. Os
 commit, push ou deploy. Fingerprint, stamps e SHA-256 das duas variantes padrão
 continuam correspondendo ao motor e703d2d44076. Nenhum processo do usuário foi
 encerrado e nenhuma política do runtime foi alterada neste incremento.
+
+## Incremento dos fontes — MCP V1 sob demanda
+
+- [x] Eliminar conexão automática ao ler configuração/status/catálogo nos dois modos.
+- [x] Manter conexão, ferramentas e instruções acessíveis por chamada explícita.
+- [x] Retirar promoção automática de instruções MCP para o prompt de sistema.
+- [x] Corrigir limpeza stdio durante cancelamento e descarte da instância.
+- [x] Validar 89 testes e os typechecks de opencode/tui; revisão independente concluída.
+- [ ] Compilar e qualificar distribuição posterior à Preview 9 com este incremento.
+
+Detalhes e limites: [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md). A Preview 9 continua publicada
+e utilizável; este registro descreve uma mudança posterior somente nos fontes.

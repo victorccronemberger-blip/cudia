@@ -54,11 +54,7 @@ const systemLayer = (
     [
       MCP.node,
       Layer.mock(MCP.Service, {
-        instructions: () =>
-          Effect.succeed([
-            { name: "guide-server", instructions: "Use lookup before mutate.", tools: [] },
-            { name: "tool-server", instructions: "Prefer search before update.", tools: ["tool-server_search"] },
-          ]),
+        instructions: () => Effect.die("SystemPrompt must not query MCP instructions"),
       }),
     ],
     [
@@ -158,11 +154,11 @@ const standard = testEffect(systemLayer("standard", false))
 const lean = testEffect(systemLayer("lean", true))
 
 describe("HarnessContext V1 system prompt", () => {
-  standard.effect("keeps the skill catalog and MCP guidance in standard mode", () =>
+  standard.effect("keeps the skill catalog and leaves MCP guidance out of the system prompt", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
       expect(yield* prompt.skills(build)).toContain("- effect: Build applications with Effect")
-      expect(yield* prompt.mcp(build)).toContain("Use lookup before mutate.")
+      expect(yield* prompt.mcp(build)).toBeUndefined()
     }),
   )
 
@@ -367,15 +363,16 @@ describe("HarnessContext byte accounting", () => {
           const prompt = yield* SystemPrompt.Service
           const skills = yield* prompt.skills(build)
           const mcp = yield* prompt.mcp(build)
-          if (skills === undefined || mcp === undefined)
+          if (skills === undefined || mcp !== undefined)
             return yield* Effect.die("standard prompt unexpectedly omitted context")
-          return [skills, mcp]
+          return [skills]
         }).pipe(Effect.provide(systemLayer("standard", true, fixtureSkills)))
 
         const leanSystem = yield* Effect.gen(function* () {
           const prompt = yield* SystemPrompt.Service
           const skills = yield* prompt.skills(build)
           const mcp = yield* prompt.mcp(build)
+          if (mcp !== undefined) return yield* Effect.die("lean prompt unexpectedly included MCP guidance")
           return [...(skills ? [skills] : []), ...(mcp ? [mcp] : [])]
         }).pipe(Effect.provide(systemLayer("lean", true, fixtureSkills)))
 
@@ -389,9 +386,6 @@ describe("HarnessContext byte accounting", () => {
             client: {} as MCP.McpTool["client"],
           },
         } satisfies Record<string, MCP.McpTool>
-        const codeModeGuidance = [
-          { name: "guide-server", instructions: "Use lookup before mutating data.", tools: ["guide-server_lookup"] },
-        ]
         const codeTool = yield* CodeModeTool.pipe(
           Effect.flatMap(Tool.init),
           Effect.provide(
@@ -404,10 +398,7 @@ describe("HarnessContext byte accounting", () => {
             ),
           ),
         )
-        const executeDescription = [
-          codeTool.description,
-          describeCatalog(codeModeTools, ["guide-server"], codeModeGuidance),
-        ].join("\n")
+        const executeDescription = [codeTool.description, describeCatalog(codeModeTools, ["guide-server"])].join("\n")
         const toolSchemas = {
           skill: jsonSchema(Schema.toJsonSchemaDocument(SkillTool.Input).schema),
           [CODE_MODE_TOOL]: jsonSchema(Schema.toJsonSchemaDocument(codeTool.parameters).schema),
@@ -436,9 +427,11 @@ describe("HarnessContext byte accounting", () => {
         const leanBytes = Buffer.byteLength(lean.system.join("\n")) + toolDefinitionBytes
 
         expect(standard.system.join("\n")).toContain("skill-15")
-        expect(standard.system.join("\n")).toContain("MCP servers with guidance")
+        expect(standard.system.join("\n")).not.toContain("MCP_DEMAND_GUIDANCE")
+        expect(standard.system.join("\n")).not.toContain("MCP servers with guidance")
         expect(lean.system.join("\n")).not.toContain("skill-15")
         expect(lean.system.join("\n")).not.toContain("MCP servers with guidance")
+        expect(executeDescription).not.toContain("Use lookup before mutating data.")
         expect(standardBytes - leanBytes).toBeGreaterThan(0)
         expect(standard.tools.skill?.description).toBe(SkillTool.description)
         expect(standard.tools.execute?.description).toBe(executeDescription)

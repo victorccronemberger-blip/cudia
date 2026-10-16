@@ -63,7 +63,11 @@ function View(props: { api: TuiPluginApi }) {
                       <Match when={item.status === "failed"}>
                         <i>{item.error}</i>
                       </Match>
-                      <Match when={item.status === "disabled"}>Disabled</Match>
+                      <Match when={item.status === "disabled"}>
+                        {props.api.state.config.mcp?.[item.name]?.enabled === false
+                          ? "Disabled in saved configuration"
+                          : "Not connected"}
+                      </Match>
                       <Match when={item.status === "needs_auth"}>Needs auth</Match>
                       <Match when={item.status === "needs_client_registration"}>Needs client ID</Match>
                     </Switch>

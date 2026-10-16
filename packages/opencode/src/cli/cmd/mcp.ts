@@ -143,7 +143,7 @@ export const McpListCommand = effectCmd({
         }
       } else if (status.status === "disabled") {
         statusIcon = "○"
-        statusText = "disabled"
+        statusText = serverConfig.enabled === false ? "disabled in saved configuration" : "not connected"
       } else if (status.status === "needs_auth") {
         statusIcon = "⚠"
         statusText = "needs authentication"

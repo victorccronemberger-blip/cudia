@@ -115,6 +115,8 @@ const layer = Layer.effect(
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
+    const mcpMode = codeMode ? undefined : yield* Effect.promise(() => import("./mcp"))
+    const mcpTool = mcpMode ? yield* mcpMode.McpTool : undefined
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -230,6 +232,7 @@ const layer = Layer.effect(
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
+          ...(mcpTool ? { mcp: Tool.init(mcpTool) } : {}),
         })
 
         return {
@@ -252,6 +255,7 @@ const layer = Layer.effect(
             tool.tool_result,
             tool.patch,
             ...(tool.execute ? [tool.execute] : []),
+            ...(tool.mcp ? [tool.mcp] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],

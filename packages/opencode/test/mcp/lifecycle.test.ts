@@ -14,9 +14,10 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit } from "effect"
+import { Cause, Effect, Exit, Fiber } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { MCP } from "../../src/mcp/index"
+import { InstanceStore } from "../../src/project/instance-store"
 import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -35,6 +36,9 @@ interface LifecycleServerState {
   promptPages?: Record<string, Page<{ name: string; description?: string }>>
   resourcePages?: Record<string, Page<{ name: string; uri: string; description?: string }>>
   resourceTemplatePages?: Record<string, Page<{ name: string; uriTemplate: string; description?: string }>>
+  lists: number
+  listed: number
+  toolsDelay?: number
   listToolsError?: string
   requestDelay?: number
   roots?: Array<{ uri: string; name?: string }>
@@ -51,6 +55,8 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         prompts: [],
         resources: [],
         resourceTemplates: [],
+        lists: 0,
+        listed: 0,
         requests: [],
         aborted: 0,
       }
@@ -66,7 +72,10 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         })
 
         if (capabilities.tools) {
-          protocol.setRequestHandler(ListToolsRequestSchema, (request) => {
+          protocol.setRequestHandler(ListToolsRequestSchema, async (request) => {
+            state.lists++
+            if (state.toolsDelay) await Bun.sleep(state.toolsDelay)
+            state.listed++
             if (state.listToolsError) throw new Error(state.listToolsError)
             const page = state.toolPages?.[request.params?.cursor ?? "initial"]
             return Promise.resolve({ tools: page?.items ?? state.tools, nextCursor: page?.nextCursor })
@@ -558,3 +567,178 @@ it.live("McpOAuthCallback.cancelPending rejects the pending callback", () =>
     () => Effect.promise(() => McpOAuthCallback.stop()).pipe(Effect.ignore),
   ),
 )
+
+it.instance("concurrent connects share one successful attempt and disconnect removes its catalog", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    server.state.toolsDelay = 75
+    const mcp = yield* MCP.Service
+    yield* mcp.add("demand", { ...remote(server.url), enabled: false })
+    expect(server.state.requests).toEqual([])
+    expect(yield* mcp.tools()).toEqual({})
+    expect(yield* mcp.instructions()).toEqual([])
+    yield* Effect.all(
+      Array.from({ length: 4 }, () => mcp.connect("demand")),
+      { concurrency: "unbounded" },
+    )
+    expect(server.state.lists).toBe(1)
+    expect((yield* mcp.status()).demand?.status).toBe("connected")
+    expect(Object.keys(yield* mcp.tools())).toEqual(["demand_test_tool"])
+    yield* mcp.connect("demand")
+    expect(server.state.lists).toBe(1)
+    yield* mcp.disconnect("demand")
+    expect(yield* mcp.tools()).toEqual({})
+  }),
+)
+
+it.instance("concurrent failed connects share one attempt and an explicit retry can recover", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    server.state.toolsDelay = 75
+    server.state.listToolsError = "fixture list failed"
+    const mcp = yield* MCP.Service
+    yield* mcp.add("retry", { ...remote(server.url), enabled: false })
+    yield* Effect.all(
+      Array.from({ length: 4 }, () => mcp.connect("retry")),
+      { concurrency: "unbounded" },
+    )
+    expect(server.state.lists).toBe(1)
+    expect((yield* mcp.status()).retry?.status).toBe("failed")
+    expect(yield* mcp.clients()).toEqual({})
+    server.state.listToolsError = undefined
+    yield* Effect.promise(server.restart)
+    yield* mcp.connect("retry")
+    expect(server.state.lists).toBe(2)
+    expect((yield* mcp.status()).retry?.status).toBe("connected")
+  }),
+)
+
+it.instance("disconnect during a connection leaves no late connected client", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    server.state.toolsDelay = 75
+    const mcp = yield* MCP.Service
+    yield* mcp.add("ordered", { ...remote(server.url), enabled: false })
+    const connecting = yield* mcp.connect("ordered").pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      Effect.sync(() => server.state.lists || undefined),
+      "connection never listed tools",
+    )
+    yield* mcp.disconnect("ordered")
+    yield* Fiber.join(connecting)
+    expect((yield* mcp.status()).ordered?.status).toBe("disabled")
+    expect(yield* mcp.clients()).toEqual({})
+    expect(yield* mcp.tools()).toEqual({})
+  }),
+)
+
+it.instance("cancelled connect releases the pending attempt and permits retry", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    server.state.toolsDelay = 500
+    const mcp = yield* MCP.Service
+    yield* mcp.add("cancel", { ...remote(server.url), enabled: false })
+    const connecting = yield* mcp.connect("cancel").pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      Effect.sync(() => server.state.lists || undefined),
+      "connection never listed tools",
+    )
+    yield* Fiber.interrupt(connecting)
+    expect(yield* mcp.clients()).toEqual({})
+    expect(yield* mcp.tools()).toEqual({})
+    server.state.toolsDelay = undefined
+    yield* Effect.promise(server.restart)
+    yield* mcp.connect("cancel")
+    expect((yield* mcp.status()).cancel?.status).toBe("connected")
+    expect(server.state.lists).toBe(2)
+  }),
+)
+
+it.instance("cancelling a follower leaves the shared connection running", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    server.state.toolsDelay = 100
+    const mcp = yield* MCP.Service
+    yield* mcp.add("follower", { ...remote(server.url), enabled: false })
+    const owner = yield* mcp.connect("follower").pipe(Effect.forkChild({ startImmediately: true }))
+    yield* pollWithTimeout(
+      Effect.sync(() => server.state.lists || undefined),
+      "connection never listed tools",
+    )
+    const follower = yield* mcp.connect("follower").pipe(Effect.forkChild({ startImmediately: true }))
+    yield* Fiber.interrupt(follower)
+    yield* Fiber.join(owner)
+    expect(server.state.lists).toBe(1)
+    expect((yield* mcp.status()).follower?.status).toBe("connected")
+  }),
+)
+
+it.instance("cancelling the initiating caller settles followers before a fresh retry", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    server.state.toolsDelay = 500
+    const mcp = yield* MCP.Service
+    yield* mcp.add("owner", { ...remote(server.url), enabled: false })
+    const owner = yield* mcp.connect("owner").pipe(Effect.forkChild({ startImmediately: true }))
+    yield* pollWithTimeout(
+      Effect.sync(() => server.state.lists || undefined),
+      "connection never listed tools",
+    )
+    const follower = yield* mcp.connect("owner").pipe(Effect.forkChild({ startImmediately: true }))
+    yield* Fiber.interrupt(owner)
+    expect(Exit.isFailure(yield* Fiber.await(follower))).toBe(true)
+    expect(server.state.lists).toBe(1)
+    expect(yield* mcp.clients()).toEqual({})
+    server.state.toolsDelay = undefined
+    yield* Effect.promise(server.restart)
+    yield* mcp.connect("owner")
+    expect(server.state.lists).toBe(2)
+    expect((yield* mcp.status()).owner?.status).toBe("connected")
+  }),
+)
+
+for (const operation of ["cancel", "dispose"] as const)
+  it.instance(
+    `${operation} during stdio listing terminates its owned process`,
+    () =>
+      Effect.gen(function* () {
+        const mcp = yield* MCP.Service
+        const test = yield* TestInstance
+        const store = yield* InstanceStore.Service
+        const pidFile = path.join(test.directory, "pending-mcp.pid")
+        const listingFile = path.join(test.directory, "pending-mcp.listing")
+        yield* mcp.add("disposed", {
+          type: "local",
+          enabled: false,
+          command: [process.execPath, stdioFixture],
+          environment: {
+            MCP_LIFECYCLE_PID_FILE: pidFile,
+            MCP_LIFECYCLE_LISTING_FILE: listingFile,
+            MCP_LIFECYCLE_DELAY_MS: "1500",
+          },
+        })
+        const clients = yield* mcp.clients()
+        const pending = yield* mcp.connect("disposed").pipe(Effect.forkChild({ startImmediately: true }))
+        yield* pollWithTimeout(
+          Effect.promise(async () => (await Bun.file(listingFile).exists()) || undefined),
+          "stdio listing never started",
+        )
+        const pid = Number(yield* Effect.promise(() => Bun.file(pidFile).text()))
+        if (operation === "dispose") yield* store.disposeDirectory(test.directory)
+        else yield* Fiber.interrupt(pending)
+        expect(Exit.isFailure(yield* Fiber.await(pending))).toBe(true)
+        yield* pollWithTimeout(
+          Effect.sync(() => {
+            try {
+              process.kill(pid, 0)
+              return undefined
+            } catch {
+              return true
+            }
+          }),
+          "pending stdio process survived disposal",
+        )
+        expect(clients).toEqual({})
+      }),
+    15_000,
+  )

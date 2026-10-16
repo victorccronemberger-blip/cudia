@@ -10,6 +10,7 @@ import { SystemPrompt } from "../../src/session/system"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
+import { HarnessPolicy } from "@opencode-ai/core/harness/policy"
 
 const skills: Skill.Info[] = [
   {
@@ -50,19 +51,7 @@ const systemLayer = (codeMode = false) =>
     [
       MCP.node,
       Layer.mock(MCP.Service, {
-        instructions: () =>
-          Effect.succeed([
-            {
-              name: "guide-server",
-              instructions: "Use lookup before mutate.",
-              tools: [],
-            },
-            {
-              name: "tool-server",
-              instructions: "Prefer search before update.",
-              tools: ["tool-server_search", "tool-server_update"],
-            },
-          ]),
+        instructions: () => Effect.die("SystemPrompt must not query MCP instructions"),
       }),
     ],
     [
@@ -88,29 +77,13 @@ const it = testEffect(systemLayer())
 const withCodeMode = testEffect(systemLayer(true))
 
 describe("session.system", () => {
-  test("selects the Meta prompt for Muse Spark model IDs", () => {
-    for (const id of ["meta/muse-spark-preview", "muse-spark-1.1", "muse-spark-1.2"]) {
-      const prompt = SystemPrompt.provider({ api: { id } } as Provider.Model)[0]
-      expect(prompt).toContain("powered by Muse Spark,")
-      expect(prompt).toContain("using Meta Muse Spark.")
-      expect(prompt).not.toContain("{{MODEL_NAME}}")
-    }
-  })
-
-  test("selects the Meta prompt for Muse Glimmer model IDs", () => {
-    for (const id of ["meta/muse-glimmer", "meta/muse-glimmer-30b", "muse-glimmer-30b"]) {
-      const prompt = SystemPrompt.provider({ api: { id } } as Provider.Model)[0]
-      expect(prompt).toContain("powered by Muse Glimmer,")
-      expect(prompt).toContain("using Meta Muse Glimmer.")
-      expect(prompt).not.toContain("{{MODEL_NAME}}")
-    }
-  })
-
-  test("selects the Kimi prompt for official provider model IDs", () => {
-    for (const providerID of ["kimi-for-coding", "moonshotai", "moonshotai-cn"]) {
-      const prompt = SystemPrompt.provider({ providerID, api: { id: "k3" } } as Provider.Model)[0]
-      expect(prompt).toContain("# Prompt and Tool Use")
-    }
+  test("uses the same neutral provider prompt across model families", () => {
+    const models = [
+      ...["meta/muse-spark-preview", "muse-spark-1.1", "muse-spark-1.2"].map((id) => ({ api: { id } })),
+      ...["meta/muse-glimmer", "meta/muse-glimmer-30b", "muse-glimmer-30b"].map((id) => ({ api: { id } })),
+      ...["kimi-for-coding", "moonshotai", "moonshotai-cn"].map((providerID) => ({ providerID, api: { id: "k3" } })),
+    ]
+    for (const model of models) expect(SystemPrompt.provider(model as Provider.Model)).toEqual([HarnessPolicy.BASE])
   })
 
   it.effect("skills output is sorted by name and stable across calls", () =>
@@ -135,72 +108,27 @@ describe("session.system", () => {
     }),
   )
 
-  it.effect("MCP output includes connected server instructions", () =>
+  it.effect("MCP instructions are omitted from the system prompt", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
       const output = yield* prompt.mcp(build)
-
-      expect(output).toBe(
-        [
-          "<mcp_instructions>",
-          '  <server name="guide-server">',
-          "    Use lookup before mutate.",
-          "  </server>",
-          '  <server name="tool-server">',
-          "    Prefer search before update.",
-          "  </server>",
-          "</mcp_instructions>",
-        ].join("\n"),
-      )
+      expect(output).toBeUndefined()
     }),
   )
 
-  it.effect("MCP output omits servers when all advertised tools are denied", () =>
+  it.effect("MCP instruction lookup stays out of the system prompt with legacy deny records", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
       const output = yield* prompt.mcp(build, Permission.fromConfig({ "tool-server_*": "deny" }))
-
-      expect(output).toBe(
-        [
-          "<mcp_instructions>",
-          '  <server name="guide-server">',
-          "    Use lookup before mutate.",
-          "  </server>",
-          "</mcp_instructions>",
-        ].join("\n"),
-      )
+      expect(output).toBeUndefined()
     }),
   )
 
-  withCodeMode.effect("MCP guidance is indexed without its body in code mode", () =>
+  withCodeMode.effect("MCP instructions remain an explicit tool result in code mode", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
-      const output = yield* prompt.mcp(build)
-      expect(output).toContain('MCP servers with guidance: "guide-server", "tool-server".')
-      expect(output).toContain("return await tools.$mcp.instructions(")
-      expect(output).not.toContain("Use lookup before mutate.")
-      expect(output).not.toContain("Prefer search before update.")
-      expect(output?.length).toBeLessThan(350)
-    }),
-  )
-
-  withCodeMode.effect("MCP guidance index respects tool permissions and keeps resource-only servers", () =>
-    Effect.gen(function* () {
-      const prompt = yield* SystemPrompt.Service
-      const output = yield* prompt.mcp(build, Permission.fromConfig({ "tool-server_*": "deny" }))
-      expect(output).toContain('MCP servers with guidance: "guide-server".')
-      expect(output).not.toContain("tool-server")
-      expect(output).not.toContain("Use lookup before mutate.")
-    }),
-  )
-
-  withCodeMode.effect("MCP guidance remains available when execute is denied", () =>
-    Effect.gen(function* () {
-      const prompt = yield* SystemPrompt.Service
-      const output = yield* prompt.mcp(build, Permission.fromConfig({ execute: "deny" }))
-      expect(output).toContain("Use lookup before mutate.")
-      expect(output).toContain("Prefer search before update.")
-      expect(output).not.toContain("tools.$mcp.instructions")
+      expect(yield* prompt.mcp(build)).toBeUndefined()
+      expect(yield* prompt.mcp(build, Permission.fromConfig({ execute: "deny" }))).toBeUndefined()
     }),
   )
 })

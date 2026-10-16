@@ -79,7 +79,11 @@ export function DialogStatus() {
                     <Switch fallback={item.status}>
                       <Match when={item.status === "connected"}>Connected</Match>
                       <Match when={item.status === "failed" && item}>{(val) => val().error}</Match>
-                      <Match when={item.status === "disabled"}>Disabled in configuration</Match>
+                      <Match when={item.status === "disabled"}>
+                        {sync.data.config.mcp?.[key]?.enabled === false
+                          ? "Disabled in saved configuration"
+                          : "Not connected"}
+                      </Match>
                       <Match when={(item.status as string) === "needs_auth"}>
                         Needs authentication (run: opencode mcp auth {key})
                       </Match>
