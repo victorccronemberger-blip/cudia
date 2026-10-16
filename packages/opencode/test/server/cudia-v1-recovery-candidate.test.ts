@@ -243,7 +243,10 @@ test.skipIf(candidate === undefined)(
       expect(await stat(snapshotRoot).catch(() => undefined)).toBeUndefined()
       const messagesResponse = await fetch(route(`/session/${summaryID}/message`), { headers })
       expect(messagesResponse.status).toBe(200)
-      const summary = ((await messagesResponse.json()) as Message[]).find((message) => message.info.summary)
+      const summary = ((await messagesResponse.json()) as Message[]).find(
+        (message) => message.info.role === "assistant" && message.info.summary === true,
+      )
+      expect(summary).toBeDefined()
       expect(summary?.info.error).toBeUndefined()
       expect(summary?.parts.some((part) => part.type === "text" && part.text === "RECOVERY_CHECKPOINT_OK")).toBe(true)
       expect(summary?.parts.some((part) => part.type === "patch")).toBe(false)
