@@ -14,6 +14,31 @@ export function metadata(value: Report): Report {
     model: { provider: value.model.provider, id: value.model.id },
     ...(value.purpose === undefined ? {} : { purpose: value.purpose }),
     ...(value.compactionMessageID === undefined ? {} : { compactionMessageID: value.compactionMessageID }),
+    ...(value.captureID === undefined ? {} : { captureID: value.captureID }),
+    ...(value.historySnapshot === undefined
+      ? {}
+      : {
+          historySnapshot: {
+            id: value.historySnapshot.id,
+            stage: value.historySnapshot.stage,
+            mapping: value.historySnapshot.mapping,
+            sourceCount: value.historySnapshot.sourceCount,
+            sourceBytes: value.historySnapshot.sourceBytes,
+            ...(value.historySnapshot.omittedSources === undefined
+              ? {}
+              : { omittedSources: value.historySnapshot.omittedSources }),
+            sources: value.historySnapshot.sources.map((source) => ({
+              source: source.source,
+              role: source.role,
+              messageID: source.messageID,
+              partID: source.partID,
+              messageIndex: source.messageIndex,
+              partIndex: source.partIndex,
+              bytes: source.bytes,
+              sha256: source.sha256,
+            })),
+          },
+        }),
     contextMode: value.contextMode,
     contentIncluded: false,
     ...(value.trace ? { trace: trace(value.trace) } : {}),

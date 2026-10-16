@@ -258,9 +258,19 @@ No V1, o prompt de compactação é observado depois das transformações, no po
 de captura de cada adaptador. Os índices descrevem as mensagens e partes dessa
 representação final preparada. `compactionMessageID` identifica a tentativa
 reservada, inclusive em falha, repetição ou interrupção. O checkpoint de retomada
-V1 ainda não tem atribuição por ID comprovada; chamadas auxiliares `small` e o
+V1 ainda não tem atribuição por ID às partes finais comprovada; chamadas auxiliares `small` e o
 workflow remoto conservam suas exclusões existentes. Essa ampliação é em fonte,
 fora do instalador Preview 12.
+
+Nos mesmos fontes, `historySnapshot` registra os resumos selecionados na entrada
+da conversão V1, depois dos hooks de mensagens. Conserva os IDs observados de
+mensagem/parte, posições nessa entrada, bytes e hashes. `stage` é
+`pre-model-conversion` e `mapping` permanece `unmapped-after-conversion`: esses
+índices não apontam para as partes finais do pedido. O ID local do snapshot liga
+essa observação à captura; `captureID` distingue capturas e tentativas que usam o
+mesmo snapshot. Nenhum desses identificadores vai ao provedor. O texto só é
+incluído no modo `content`, dentro do orçamento compartilhado; consultas de
+metadados e o histórico opcional o removem.
 
 A captura cobre V1 AI SDK, V1 nativo e o runner V2. Ela observa o contexto
 preparado antes do adaptador do provedor, não o tráfego final ou instruções

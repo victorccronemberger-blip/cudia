@@ -100,6 +100,17 @@ export const ContextCommand = effectCmd({
         {
           storage: "latest successfully persisted capture; check time, runtime, and sessionID",
           ...report,
+          ...(report.historySnapshot === undefined
+            ? {}
+            : {
+                historySnapshot: {
+                  ...report.historySnapshot,
+                  sources: report.historySnapshot.sources.map(({ content, ...metadata }) => ({
+                    ...metadata,
+                    ...(args.content && content !== undefined ? { content } : {}),
+                  })),
+                },
+              }),
           instructions: report.instructions.map(({ content, ...metadata }) => ({
             ...metadata,
             ...(report.version === 1 ? { originState: "missing" } : {}),

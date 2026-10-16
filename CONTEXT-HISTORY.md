@@ -59,6 +59,26 @@ execução deste incremento foram feitos com Bun. Não foi acrescentado um teste
 cancelamento com histórico habilitado; os testes existentes de cancelamento do
 runner não demonstram essa combinação específica.
 
+## Origem dos resumos V1
+
+`historySnapshot` observa os resumos concluídos selecionados após os hooks e antes
+da conversão de mensagens. Inclui IDs observados de mensagem e parte, posições na
+entrada, hashes e bytes UTF-8. IDs após hooks são referências observadas; não
+constituem uma nova consulta ao banco nem comprovam autoria de plugins.
+
+Seu identificador local acompanha a captura final sem entrar no pedido do
+provedor. `captureID` diferencia capturas que compartilham o mesmo snapshot, como
+em repetições. O campo `mapping: unmapped-after-conversion` explicita que o
+conversor e os adaptadores não preservam a relação com cada parte final. Não há
+atribuição por igualdade de texto, inclusive quando vários resumos têm conteúdo
+idêntico.
+
+São conservadas até 128 fontes; contagens e bytes incluem as demais, e
+`omittedSources` informa exclusões por quantidade ou orçamento. Seus metadados
+compartilham 64 KiB com manifests, outras fontes e trace. Texto opcional usa o
+mesmo orçamento de conteúdo de 64 KiB e não entra no histórico de metadados.
+Chamadas sem auditoria não coletam esse snapshot.
+
 ## Validação
 
 Os testes cobrem exclusão de texto e campos desconhecidos, retenção por bytes e
@@ -66,4 +86,7 @@ quantidade, paginação, arquivos incompatíveis, falha de transação, contenç
 dois processos concorrentes e encerramento antes do commit. A integração usa um
 provedor HTTP local e compara exatamente mensagens e ferramentas com o histórico
 desligado, habilitado e indisponível. A regressão de Core inclui runner,
-compactação e migrações: 175 testes passaram.
+compactação e migrações: 177 testes passaram na regressão integrada. A conversão
+de mensagens passou em 44 testes; o ciclo real de conversa passou em 53, com
+14 skips existentes de Windows/projector. Testes adicionais conferem privacidade
+na CLI e persistência da correlação no SQLite sem o texto dos resumos.

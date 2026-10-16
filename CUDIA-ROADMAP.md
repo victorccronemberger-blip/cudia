@@ -60,6 +60,13 @@ interrupção conservam o vínculo. Chamadas antigas sem finalidade continuam n�
 classificadas. A atribuição do checkpoint V1 e a cobertura de corpos de ferramentas
 permanecem abertas; esse incremento não declara linhagem completa.
 
+**Origem selecionada dos resumos V1, em fonte:** um snapshot local observa os IDs
+de mensagem/parte e o texto na entrada da conversão, depois dos hooks. A captura
+conserva correlação, hashes, bytes e posições dessa entrada, sem atribuir por texto
+as partes finais. `unmapped-after-conversion` mantém visível essa lacuna. Texto
+segue opt-in e orçamento compartilhado; o histórico persiste apenas metadados.
+Não representa comprovação completa da linhagem nem nova versão do instalador.
+
 - [x] Instalador compilado: instalar/reparar/remover, pasta Unicode, PATH e
       preservação do SQLite local; 16 retomadas de interrupção passaram no
       ensaio isolado de 16/10, com o candidato `31d2c80a4998`.

@@ -1638,6 +1638,20 @@ describe("session.llm.stream", () => {
           const sessionID = SessionID.make("session-compaction-attribution")
           const agent = { name: "compaction", mode: "primary", options: {}, permission: [] } satisfies Agent.Info
           const input: LLM.StreamInput = {
+            historySnapshot: {
+              id: "snapshot_correlation_only",
+              count: 1,
+              bytes: 34,
+              sources: [
+                {
+                  messageID: "msg_persisted_source_only",
+                  partID: "prt_persisted_source_only",
+                  messageIndex: 0,
+                  partIndex: 0,
+                  text: "SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE",
+                },
+              ],
+            },
             sessionID,
             model: resolved,
             agent,
@@ -1722,9 +1736,12 @@ describe("session.llm.stream", () => {
             }
             expect(bodies[1]).toEqual(bodies[0])
             expect(JSON.stringify(bodies)).not.toContain("msg_reserved_attempt")
+            expect(JSON.stringify(bodies)).not.toContain("snapshot_correlation_only")
+            expect(JSON.stringify(bodies)).not.toContain("SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE")
             expect(captures).toHaveLength(1)
             const capture = captures[0]!
             expect(capture.runtime).toBe(native ? "v1-native" : "v1-ai-sdk")
+            expect(capture.historySnapshot).toEqual(input.historySnapshot)
             expect(capture.purpose).toBe(purpose)
             expect(capture.compactionMessageID).toBe(purpose === "compaction" ? "msg_reserved_attempt" : undefined)
             if (purpose !== "compaction") {

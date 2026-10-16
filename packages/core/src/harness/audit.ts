@@ -24,6 +24,18 @@ export type Input = {
   readonly purpose?: "main" | "compaction"
   /** Reserved result-message ID for this attempt; capture does not establish successful completion. */
   readonly compactionMessageID?: string
+  readonly historySnapshot?: {
+    readonly id: string
+    readonly count: number
+    readonly bytes: number
+    readonly sources: ReadonlyArray<{
+      readonly messageID: string
+      readonly partID: string
+      readonly messageIndex: number
+      readonly partIndex: number
+      readonly text: string
+    }>
+  }
   readonly trace?: ContextTrace.Capture
   readonly instructions: ReadonlyArray<{
     readonly source: string
@@ -58,6 +70,31 @@ export const Report = Schema.Struct({
   model: Schema.Struct({ provider: Schema.String, id: Schema.String }),
   purpose: Schema.optional(Schema.Literals(["main", "compaction"])),
   compactionMessageID: Schema.optional(Schema.String),
+  captureID: Schema.optional(Schema.String),
+  historySnapshot: Schema.optional(
+    Schema.Struct({
+      id: Schema.String,
+      stage: Schema.Literal("pre-model-conversion"),
+      mapping: Schema.Literal("unmapped-after-conversion"),
+      sourceCount: Schema.Number,
+      sourceBytes: Schema.Number,
+      omittedSources: Schema.optional(Schema.Number),
+      sources: Schema.Array(
+        Schema.Struct({
+          source: Schema.Literal("conversation-checkpoint"),
+          role: Schema.Literal("assistant"),
+          messageID: Schema.String,
+          partID: Schema.String,
+          messageIndex: Schema.Number,
+          partIndex: Schema.Number,
+          bytes: Schema.Number,
+          sha256: Schema.String,
+          content: Schema.optional(Schema.String),
+          contentOmitted: Schema.optional(Schema.Boolean),
+        }),
+      ),
+    }),
+  ),
   contextMode: Schema.Literals(["standard", "lean"]),
   contentIncluded: Schema.Boolean,
   trace: Schema.optional(ContextTrace.CaptureSchema),
@@ -181,6 +218,29 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
       ...(include ? { content: item.text } : contentOmitted ? { contentOmitted } : {}),
     })
   }
+  const historySources: NonNullable<Report["historySnapshot"]>["sources"][number][] = []
+  for (const item of input.historySnapshot?.sources.slice(0, 128) ?? []) {
+    const bytes = Buffer.byteLength(item.text, "utf8")
+    const entry = {
+      source: "conversation-checkpoint" as const,
+      role: "assistant" as const,
+      messageID: item.messageID,
+      partID: item.partID,
+      messageIndex: item.messageIndex,
+      partIndex: item.partIndex,
+      bytes,
+      sha256: createHash("sha256").update(item.text).digest("hex"),
+    }
+    const metadataBytes = Buffer.byteLength(JSON.stringify(entry), "utf8") + 24
+    if (metadataBytes > remainingManifestBytes) continue
+    remainingManifestBytes -= metadataBytes
+    const include = policy.auditMode === "content" && bytes <= remaining
+    if (include) remaining -= bytes
+    historySources.push({
+      ...entry,
+      ...(include ? { content: item.text } : policy.auditMode === "content" ? { contentOmitted: true } : {}),
+    })
+  }
   // Count the actual normalized definitions, without persisting descriptions or schemas.
   const tools = input.tools.map((tool) => ({
     name: tool.name,
@@ -198,6 +258,22 @@ export function report(input: Input, policy: HarnessPolicy.Interface, time: stri
     model: input.model,
     ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
     ...(input.compactionMessageID === undefined ? {} : { compactionMessageID: input.compactionMessageID }),
+    ...(input.historySnapshot === undefined
+      ? {}
+      : {
+          captureID: randomUUID(),
+          historySnapshot: {
+            id: input.historySnapshot.id,
+            stage: "pre-model-conversion" as const,
+            mapping: "unmapped-after-conversion" as const,
+            sourceCount: input.historySnapshot.count,
+            sourceBytes: input.historySnapshot.bytes,
+            sources: historySources,
+            ...(input.historySnapshot.count > historySources.length
+              ? { omittedSources: input.historySnapshot.count - historySources.length }
+              : {}),
+          },
+        }),
     contextMode: policy.contextMode,
     contentIncluded: policy.auditMode === "content",
     ...(trace?.value ? { trace: trace.value } : {}),

@@ -4,6 +4,7 @@ import { createXai } from "@ai-sdk/xai"
 import { APICallError, generateText } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderTransform } from "@/provider/transform"
+import { HistorySource } from "../../src/session/history-source"
 import type { Provider } from "@/provider/provider"
 
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
@@ -113,6 +114,96 @@ function basePart(messageID: string, id: string) {
 }
 
 describe("session.message-v2.toModelMessage", () => {
+  test("checkpoint source identities remain distinct when duplicate text loses IDs and step grouping changes positions", async () => {
+    const messages: SessionV1.WithParts[] = [
+      {
+        info: { ...assistantInfo("msg_saved_one", "msg_parent"), summary: true, finish: "stop" },
+        parts: [
+          { ...basePart("msg_saved_one", "prt_first"), type: "text", text: "same checkpoint" },
+          { ...basePart("msg_saved_one", "prt_boundary"), type: "step-start" },
+          { ...basePart("msg_saved_one", "prt_second"), type: "text", text: "after step" },
+        ],
+      },
+      {
+        info: { ...assistantInfo("msg_saved_two", "msg_parent"), summary: true, finish: "stop" },
+        parts: [{ ...basePart("msg_saved_two", "prt_duplicate"), type: "text", text: "same checkpoint" }],
+      },
+    ]
+    const baseline = await MessageV2.toModelMessages(structuredClone(messages), model)
+    const original = structuredClone(messages)
+    const snapshot = HistorySource.capture(messages)
+    expect(messages).toEqual(original)
+    expect(
+      snapshot.sources.map((source) => [source.messageID, source.partID, source.messageIndex, source.partIndex]),
+    ).toEqual([
+      ["msg_saved_one", "prt_first", 0, 0],
+      ["msg_saved_one", "prt_second", 0, 2],
+      ["msg_saved_two", "prt_duplicate", 1, 0],
+    ])
+    const converted = await MessageV2.toModelMessages(messages, model)
+    expect(converted).toEqual(baseline)
+    expect(converted).toHaveLength(3)
+    expect(JSON.stringify(converted)).not.toContain("msg_saved_")
+    expect(HistorySource.capture(messages).id).not.toBe(snapshot.id)
+  })
+
+  test("checkpoint source snapshot observes removal and rewriting without guessing from duplicate text", () => {
+    const messages: SessionV1.WithParts[] = [
+      {
+        info: { ...assistantInfo("msg_saved", "msg_parent"), summary: true, finish: "stop" },
+        parts: [{ ...basePart("msg_saved", "prt_saved"), type: "text", text: "before hook" }],
+      },
+    ]
+    const before = HistorySource.capture(messages)
+    messages[0]!.parts = [{ ...basePart("msg_saved", "prt_saved"), type: "text", text: "rewritten after hook" }]
+    const rewritten = HistorySource.capture(messages)
+    expect(before.sources[0]?.text).toBe("before hook")
+    expect(rewritten.sources[0]?.text).toBe("rewritten after hook")
+    const removed = HistorySource.capture([
+      {
+        info: userInfo("msg_other"),
+        parts: [{ ...basePart("msg_other", "prt_other"), type: "text", text: "before hook" }],
+      },
+    ])
+    expect(removed.sources).toEqual([])
+    expect(
+      HistorySource.capture([
+        {
+          ...messages[0]!,
+          info: { ...assistantInfo("msg_unfinished", "msg_parent"), summary: true, finish: undefined },
+        },
+      ]).sources,
+    ).toEqual([])
+    expect(
+      HistorySource.capture([
+        {
+          ...messages[0]!,
+          info: {
+            ...assistantInfo("msg_failed", "msg_parent"),
+            summary: true,
+            finish: "error",
+            error: new SessionV1.AbortedError({ message: "synthetic" }).toObject(),
+          },
+        },
+      ]).sources,
+    ).toEqual([])
+  })
+
+  test("checkpoint source collection bounds retained entries while reporting total UTF-8 bytes", () => {
+    const text = "ação 🌍"
+    const parts: SessionV1.Part[] = Array.from({ length: 130 }, (_, index) => ({
+      ...basePart("msg_many", "prt_" + index),
+      type: "text",
+      text,
+    }))
+    const snapshot = HistorySource.capture([
+      { info: { ...assistantInfo("msg_many", "msg_parent"), summary: true, finish: "stop" }, parts },
+    ])
+    expect(snapshot.count).toBe(130)
+    expect(snapshot.bytes).toBe(Buffer.byteLength(text) * 130)
+    expect(snapshot.sources).toHaveLength(128)
+  })
+
   test("filters out messages with no parts", async () => {
     const input: SessionV1.WithParts[] = [
       {

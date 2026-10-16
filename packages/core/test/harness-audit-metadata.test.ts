@@ -28,6 +28,20 @@ function sample() {
       runtime: "v2",
       purpose: "compaction",
       compactionMessageID: "msg_attempt",
+      historySnapshot: {
+        id: "snapshot_fixture",
+        count: 1,
+        bytes: 34,
+        sources: [
+          {
+            messageID: "msg_persisted",
+            partID: "prt_persisted",
+            messageIndex: 0,
+            partIndex: 0,
+            text: "SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE",
+          },
+        ],
+      },
       sessionID: "ses_fixture",
       agent: "compaction",
       model: { provider: "fixture", id: "fixture" },
@@ -73,6 +87,13 @@ describe("Context audit historical metadata", () => {
       messageSources: [{ messageID: "msg_checkpoint" }],
     })
     expect(projected.trace).toEqual(report.trace)
+    expect(projected.captureID).toBe(report.captureID)
+    expect(projected.historySnapshot).toMatchObject({
+      id: "snapshot_fixture",
+      mapping: "unmapped-after-conversion",
+      sources: [{ messageID: "msg_persisted", partID: "prt_persisted" }],
+    })
+    expect(projected.historySnapshot?.sources[0]).not.toHaveProperty("content")
     expect(report.instructions[0]?.content).toContain("SYNTHETIC_PRIVATE_INSTRUCTION")
     expect(report.messageSources?.[0]?.content).toBe("SYNTHETIC_PRIVATE_HISTORY")
   })
@@ -89,6 +110,8 @@ describe("Context audit historical metadata", () => {
       manifest.parts[0]!.origins[0]!,
       report.messageSources![0]!,
       report.tools[0]!,
+      report.historySnapshot!,
+      report.historySnapshot!.sources[0]!,
       report.trace!,
       report.trace!.records[0]!,
       report.trace!.records[0]!.source,
@@ -102,7 +125,7 @@ describe("Context audit historical metadata", () => {
           throw new Error("Unknown fields must not be inspected")
         },
       })
-    for (const value of [report.instructions[0]!, report.messageSources![0]!])
+    for (const value of [report.instructions[0]!, report.messageSources![0]!, report.historySnapshot!.sources[0]!])
       Object.defineProperty(value, "content", {
         enumerable: true,
         get() {

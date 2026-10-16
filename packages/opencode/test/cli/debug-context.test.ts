@@ -125,6 +125,20 @@ cliIt.live(
         purpose: "compaction",
         compactionMessageID: "msg_synthetic_attempt",
         sessionID: "ses_synthetic_audit",
+        historySnapshot: {
+          id: "snapshot_synthetic",
+          count: 1,
+          bytes: 36,
+          sources: [
+            {
+              messageID: "msg_saved_source",
+              partID: "prt_saved_source",
+              messageIndex: 0,
+              partIndex: 0,
+              text: "SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE",
+            },
+          ],
+        },
         agent: "compaction",
         model: { provider: "test", id: "test" },
         instructions: [{ source: "agent", text: "SYNTHETIC_PRIVATE_INSTRUCTION" }],
@@ -150,6 +164,7 @@ cliIt.live(
       opencode.expectExit(metadata, 0, "context metadata")
       expect(metadata.stdout).not.toContain("SYNTHETIC_PRIVATE_INSTRUCTION")
       expect(metadata.stdout).not.toContain("SYNTHETIC_PRIVATE_HISTORY")
+      expect(metadata.stdout).not.toContain("SYNTHETIC_PRIVATE_CHECKPOINT_SOURCE")
       expect(JSON.parse(metadata.stdout)).toMatchObject({
         purpose: "compaction",
         compactionMessageID: "msg_synthetic_attempt",
@@ -159,6 +174,7 @@ cliIt.live(
       opencode.expectExit(shown, 0, "context content")
       expect(JSON.parse(shown.stdout).instructions[0].content).toBe(input.instructions[0]!.text)
       expect(JSON.parse(shown.stdout).messageSources[0].content).toBe(input.messageSources![0]!.text)
+      expect(JSON.parse(shown.stdout).historySnapshot.sources[0].content).toBe(input.historySnapshot!.sources[0]!.text)
       expect(yield* Effect.promise(() => Bun.file(file).text())).toBe(content)
 
       const summary = JSON.stringify(

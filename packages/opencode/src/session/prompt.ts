@@ -60,6 +60,7 @@ import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
 import { ContextAudit } from "@opencode-ai/core/harness/audit"
+import { HistorySource } from "./history-source"
 import { ContextTrace } from "@opencode-ai/core/harness/trace"
 
 // @ts-ignore
@@ -1288,6 +1289,7 @@ const layer = Layer.effect(
                 : undefined,
             )
 
+            const historySnapshot = audit.enabled ? HistorySource.capture(msgs) : undefined
             const prepared = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
@@ -1339,6 +1341,7 @@ const layer = Layer.effect(
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
               ...(contextTrace ? { contextTrace } : {}),
+              ...(historySnapshot ? { historySnapshot } : {}),
             })
 
             if (structured !== undefined) {
