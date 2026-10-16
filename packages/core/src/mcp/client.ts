@@ -219,7 +219,17 @@ export function open(input: {
                 Effect.mapError((error) => failure("startup", error.message)),
               )
             })
-          : { command, args, env: environment }
+          : command === "cudia:rea"
+            ? yield* Effect.gen(function* () {
+                const { prepare } = yield* Effect.tryPromise({
+                  try: () => import("./managed-rea"),
+                  catch: () => failure("unavailable", "Managed REA preparation is unavailable"),
+                })
+                return yield* prepare(args, environment, getDefaultEnvironment()).pipe(
+                  Effect.mapError((error) => failure("startup", error.message)),
+                )
+              })
+            : { command, args, env: environment }
       const transport = new LocalTransport({
         ...local,
         cwd: resolve(input.directory, input.server.cwd ?? "."),

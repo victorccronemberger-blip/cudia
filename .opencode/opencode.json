@@ -346,6 +346,13 @@
       "enabled": false,
       "timeout": 120000
     },
+    "rea": {
+      "type": "local",
+      "command": ["cudia:rea", "mcp"],
+      "environment": { "REA_MCP_OUTPUT_SCHEMA_PROFILE": "off" },
+      "enabled": false,
+      "timeout": 180000
+    },
     "claude-bridge": {
       "type": "local",
       "command": [

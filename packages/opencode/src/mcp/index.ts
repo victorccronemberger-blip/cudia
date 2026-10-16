@@ -354,15 +354,20 @@ const layer = Layer.effect(
               const { prepare } = yield* Effect.promise(() => import("@opencode-ai/core/mcp/managed-browser"))
               return yield* prepare(args, mcp.environment)
             })
-          : {
-              command: cmd,
-              args,
-              env: {
-                ...process.env,
-                ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
-                ...mcp.environment,
-              },
-            }
+          : cmd === "cudia:rea"
+            ? yield* Effect.gen(function* () {
+                const { prepare } = yield* Effect.promise(() => import("@opencode-ai/core/mcp/managed-rea"))
+                return yield* prepare(args, mcp.environment)
+              })
+            : {
+                command: cmd,
+                args,
+                env: {
+                  ...process.env,
+                  ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
+                  ...mcp.environment,
+                },
+              }
       const transport = new StdioClientTransport({
         ...local,
         stderr: "pipe",

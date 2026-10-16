@@ -1,4 +1,6 @@
 packages/core/migration/**/snapshot.json linguist-generated
 packages/core/src/database/migration.gen.ts linguist-generated
 *.sh text eol=lf
+packages/core/src/mcp/rea-deps/package.json text eol=lf
+packages/core/src/mcp/rea-deps/bun.lock text eol=lf
 

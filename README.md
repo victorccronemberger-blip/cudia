@@ -4,6 +4,9 @@ Harness de IA para programação e trabalho de segurança. Usa o **OpenCode 1.18
 com agentes, skills sob demanda, continuidade de contexto, OAuth ChatGPT/Grok e o comando
 `/goal`. A origem exata do motor está em [cudia-engine.json](cudia-engine.json).
 
+A integração [REA](REA.md) acrescenta engenharia reversa sob demanda pelo comando
+`/rea`, com runtime portátil e ferramentas MCP selecionadas conforme a tarefa.
+
 Os agentes seguem o pedido do operador: explicar, revisar, planejar ou executar.
 O CUDIA não impõe filtros por assunto nem proibições de ferramentas por papel de
 agente. **Regras legadas `ask/deny` são preservadas como dados de compatibilidade,
