@@ -2881,7 +2881,11 @@ a revisão compilada e os recibos estão em [provenance/preview-10](provenance/p
       resumo quando excedidos, preservando busca, paginação e execução.
 - [x] Verificar nomes multibyte, limiar exato, nomes enormes, assinaturas parciais
       e completas e uso da última ferramenta em 1.000 namespaces/servidores MCP.
-- [ ] Compilar e qualificar este incremento para uma distribuição posterior.
+- [x] Compilar normal/baseline e verificar sete cenários do motor por variante,
+      incluindo captura HTTP com 128 conexões MCP e execução da última ferramenta.
+      Na normal, um timeout da fixture exigiu repetição focada; a baseline passou
+      nos sete cenários na mesma rodada.
+- [ ] Empacotar e qualificar instaladores/atualização para uma distribuição posterior.
 
 A Preview 10 permanece instalada e publicada. Detalhes e limites:
 [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md#incremento-seguinte-nos-fontes--muitos-servidores).

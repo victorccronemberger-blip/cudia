@@ -70,4 +70,13 @@ Validação: 266 testes do pacote CodeMode e 42 da integração V1 passaram, com
 O executor principal implementou a correção; gpt-6-astra/high revisou a decisão
 e os resultados pela skill codex-advisor, sem apontar pendência material.
 
-Este incremento ainda não foi compilado ou publicado como instalador.
+O incremento foi compilado em normal/baseline a partir de
+`2daad05e1bb326acf30b117f22a1c6e399e55794`. Um novo teste HTTP confirmou 128
+conexões explícitas e 3.032 bytes na descrição real de `execute`, sem orientação
+remota no sistema, com busca e chamada da última ferramenta em quatro turnos.
+O teste falha na Preview 10 anterior pela ausência do resumo compacto.
+Sete cenários compilados foram cobertos por variante; a normal precisou de uma
+repetição focada após corrigir o timeout da consulta de prontidão da fixture.
+Recibos, hashes, resultados e limites estão em
+[provenance/mcp-budget-candidate](provenance/mcp-budget-candidate/README.md).
+O candidato ainda não foi empacotado ou publicado como instalador.

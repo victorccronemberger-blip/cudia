@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "kind": "local-engine-qualification",
+  "recordedAt": "2026-10-16T14:32:56.243Z",
+  "engineSourceCommit": "2daad05e1bb326acf30b117f22a1c6e399e55794",
+  "version": "1.18.35+cudia.2daad05e1bb3.7af12daab3dc",
+  "fingerprint": "7af12daab3dc34179be0df24ad2e7982cb2c0529",
+  "publication": {
+    "installer": false,
+    "release": false,
+    "installedPreviewSequence": 10,
+    "installedEngineChanged": false
+  },
+  "artifacts": [
+    {
+      "variant": "normal",
+      "size": 138416640,
+      "sha256": "c134851dac48911dbf006db9ae459b4b5fc328366ca6a700ebe920c40d1ef545",
+      "receiptSha256": "44bc54f80a5b25a28edf907136b453c38cb63f3b77027488cd5652dde18a4cfa",
+      "inventory": {
+        "path": "engine-inputs.json",
+        "size": 2861000,
+        "sha256": "329f307cb9675b2a1a9c40f7575e6ea8cf5149a0d1b35f8e55b7961c9bd95bd9"
+      },
+      "coverage": {
+        "repository": "git-listed paths in the declared source scope, checked before and after compilation",
+        "bundler": "discovered input set and file bytes checked before and after final compilation",
+        "generated": "explicit virtual files, model data and effective settings frozen for both passes",
+        "buildPlugins": "explicitly named entry files; transitive runtime reads are not fully inventoried",
+        "environment": "effective build settings only; unrestricted environment is not captured",
+        "targetRuntime": "managed by Bun; separate target runtime artifact is not inventoried",
+        "hermetic": false,
+        "reproducible": false,
+        "independentlyVerified": false
+      }
+    },
+    {
+      "variant": "baseline",
+      "size": 138416640,
+      "sha256": "c134851dac48911dbf006db9ae459b4b5fc328366ca6a700ebe920c40d1ef545",
+      "receiptSha256": "0d81154d72a7b411f772710918242bd7200a43a6c26047fba2567c2e57420d54",
+      "inventory": {
+        "path": "engine-inputs.json",
+        "size": 2861000,
+        "sha256": "329f307cb9675b2a1a9c40f7575e6ea8cf5149a0d1b35f8e55b7961c9bd95bd9"
+      },
+      "coverage": {
+        "repository": "git-listed paths in the declared source scope, checked before and after compilation",
+        "bundler": "discovered input set and file bytes checked before and after final compilation",
+        "generated": "explicit virtual files, model data and effective settings frozen for both passes",
+        "buildPlugins": "explicitly named entry files; transitive runtime reads are not fully inventoried",
+        "environment": "effective build settings only; unrestricted environment is not captured",
+        "targetRuntime": "managed by Bun; separate target runtime artifact is not inventoried",
+        "hermetic": false,
+        "reproducible": false,
+        "independentlyVerified": false
+      }
+    }
+  ],
+  "validation": {
+    "source": {
+      "name": "mcp-namespace-wire-source-final.log",
+      "sha256": "1fe009fde6f265da9e0846fc59a36c3d047efcdd811f5b4ae6206b7e7079a306",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 434,
+      "scenarios": ["compiled or source V1 keeps many connected MCP namespaces compact on the provider wire"]
+    },
+    "previousPreview10NegativeControl": {
+      "name": "mcp-namespace-wire-preview10-negative.log",
+      "sha256": "44756b8a17a01334ba80f1b6b1a49c1245a1c103ea60e134296234408f7ae439",
+      "pass": 0,
+      "fail": 1,
+      "skip": 0,
+      "assertions": 19,
+      "scenarios": [],
+      "expectedFailure": "missing compact namespace summary"
+    },
+    "normal": {
+      "initial": {
+        "name": "mcp-budget-compiled-normal.log",
+        "sha256": "f13578bbd1556b833f45a86d53169abc3c90a7016d741e611a81c9ad7838e052",
+        "pass": 6,
+        "fail": 1,
+        "skip": 0,
+        "assertions": 963,
+        "scenarios": [
+          "compiled candidate sends ambient instructions only after explicit CLI opt-in in V1 and V2",
+          "compiled or source V1 keeps many connected MCP namespaces compact on the provider wire",
+          "compiled CUDIA candidate serves the V2 manual compaction flow",
+          "compiled native context origins survive updates, restart, removal and compaction without entering the model prompt",
+          "compiled CUDIA candidate exposes session-scoped MCP tools only after explicit exposure",
+          "compiled CUDIA candidate pages native MCP output across compaction and restart"
+        ]
+      },
+      "focused": {
+        "name": "mcp-budget-demand-normal-focused.log",
+        "sha256": "bc22155b2b99b40649abc03250b23058151189d882eb9b3417d2935410eb1d27",
+        "pass": 1,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 54,
+        "scenarios": ["compiled or source V1 connects configured stdio MCP only on request in both tool modes"]
+      },
+      "coverage": "seven scenarios across two runs",
+      "initialFailure": "MCP demand readiness timed out; precise stall cause was not established"
+    },
+    "baseline": {
+      "name": "mcp-budget-compiled-baseline.log",
+      "sha256": "31c2e2e713412747bc8272b23ebc13a021bce86145751b7a43ec33bca98a963b",
+      "pass": 7,
+      "fail": 0,
+      "skip": 0,
+      "assertions": 989,
+      "scenarios": [
+        "compiled candidate sends ambient instructions only after explicit CLI opt-in in V1 and V2",
+        "compiled or source V1 keeps many connected MCP namespaces compact on the provider wire",
+        "compiled or source V1 connects configured stdio MCP only on request in both tool modes",
+        "compiled CUDIA candidate serves the V2 manual compaction flow",
+        "compiled native context origins survive updates, restart, removal and compaction without entering the model prompt",
+        "compiled CUDIA candidate exposes session-scoped MCP tools only after explicit exposure",
+        "compiled CUDIA candidate pages native MCP output across compaction and restart"
+      ]
+    },
+    "postBuildTestOnlyChanges": [
+      {
+        "path": "packages/opencode/test/server/cudia-v1-mcp-demand.test.ts",
+        "sha256": "430ba19cf375e0bac075fc7159fd8044671334ddfae2097bb5f5e9d7b7f2c415",
+        "change": "Bound each health probe to 2000 ms; retain the existing 30000 ms outer readiness deadline"
+      }
+    ],
+    "mainWireScenario": {
+      "servers": 128,
+      "turns": 4,
+      "executeDescriptionBytes": 3032,
+      "initializations": 128,
+      "toolLists": 128,
+      "toolCalls": 1,
+      "eagerConnections": 0,
+      "remoteGuidanceInSystem": false
+    }
+  },
+  "limits": [
+    "Local Windows x64 engine tests only; no installer, fresh-PC, signing, HTTPS update, OAuth or model-intelligence qualification",
+    "Normal coverage spans an initial run and a focused repair run; not a unified seven-pass run",
+    "Namespace-header overhead is bounded; total prompt bytes/tokens are not universally bounded",
+    "Receipts record observed inputs; builds are not claimed hermetic, reproducible or independently rebuilt"
+  ]
+}

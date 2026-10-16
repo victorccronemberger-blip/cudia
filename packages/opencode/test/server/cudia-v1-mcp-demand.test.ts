@@ -227,7 +227,9 @@ async function runMode(codeMode: boolean) {
       windowsHide: true,
     })
     await poll(
-      async () => (await fetch(`${baseURL}/api/health`).catch(() => undefined))?.ok === true,
+      async () =>
+        (await fetch(`${baseURL}/api/health`, { signal: AbortSignal.timeout(2_000) }).catch(() => undefined))?.ok ===
+        true,
       child,
       "server did not start",
     )
