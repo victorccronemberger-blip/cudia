@@ -1,0 +1,232 @@
+{
+  "schema": 1,
+  "product": "cudia",
+  "kind": "published-preview-evidence",
+  "channel": "preview",
+  "sequence": 12,
+  "version": "1.18.35+cudia.881809bd1c2a.e4bf58b2f4e8",
+  "sourceCommit": "881809bd1c2a4c92823bdf4ae0668a04ed004e50",
+  "validationCommit": "2d78d830eb498167b9bee4d193190244fd4675d3",
+  "sourceBranch": "codex/mcp-on-demand",
+  "tag": "cudia-preview-20261016-seq12-e4bf58b2f4e8",
+  "releaseId": 415175733,
+  "fingerprint": "e4bf58b2f4e8d7baf13bf5a1547ba3d611b94da6",
+  "service": {
+    "previousCommit": "e4e46022b485e26d4926e225158a9db18b3de075",
+    "commit": "1f060ec8e8a9609853794396970aa64c29d4b398",
+    "changedPaths": ["deploy/updates/releases/preview.json"],
+    "manifestSha256": "858b392f1efa0c62c202705418f4acbeafe95dfbe133df0c90069409c8c11996",
+    "keyId": "cudia-release-20261016",
+    "issuedAt": "2026-10-16T16:43:22.850Z",
+    "expiresAt": "2026-11-15T16:43:22.850Z"
+  },
+  "artifacts": [
+    {
+      "kind": "archive",
+      "platform": "windows",
+      "arch": "x64",
+      "variant": "normal",
+      "url": "https://github.com/victorccronemberger-blip/cudia/releases/download/cudia-preview-20261016-seq12-e4bf58b2f4e8/cudia-windows-x64-normal-seq12.zip",
+      "size": 53223752,
+      "sha256": "fab0216712acdb2f32c53fc74cfbb8846c1b91bdfd4dff2daced8f45a84d316e"
+    },
+    {
+      "kind": "installer",
+      "platform": "windows",
+      "arch": "x64",
+      "variant": "normal",
+      "url": "https://github.com/victorccronemberger-blip/cudia/releases/download/cudia-preview-20261016-seq12-e4bf58b2f4e8/CUDIA-Preview-Setup-windows-x64-normal.exe",
+      "size": 57876701,
+      "sha256": "b56391e893e44e179aa3ea95c1647a4eddf3f088c4c6ef890421ca6305ead72e"
+    },
+    {
+      "kind": "archive",
+      "platform": "windows",
+      "arch": "x64",
+      "variant": "baseline",
+      "url": "https://github.com/victorccronemberger-blip/cudia/releases/download/cudia-preview-20261016-seq12-e4bf58b2f4e8/cudia-windows-x64-baseline-seq12.zip",
+      "size": 53223764,
+      "sha256": "3faf297678629586a41d792efc6f8dcdbbc2c67670c228d8968d5744c1bb6cd6"
+    },
+    {
+      "kind": "installer",
+      "platform": "windows",
+      "arch": "x64",
+      "variant": "baseline",
+      "url": "https://github.com/victorccronemberger-blip/cudia/releases/download/cudia-preview-20261016-seq12-e4bf58b2f4e8/CUDIA-Preview-Setup-windows-x64-baseline.exe",
+      "size": 57877048,
+      "sha256": "a858091dd8b480ff65c198ed84c8fb562e3647a7a853a65ef254b21aaa80318f"
+    }
+  ],
+  "engines": [
+    {
+      "variant": "normal",
+      "output": {
+        "size": 138419200,
+        "sha256": "b59a5b8680a11ebece8b967693dd3184225e0106264af9c457b7531b69054039"
+      },
+      "receiptSha256": "ee5971fd7fbfb302c9c09e035ad30063a163587025cea1ee5752b1c560c9a3f8",
+      "inventory": {
+        "path": "engine-inputs.json",
+        "size": 2861546,
+        "sha256": "f48786911deaebc66274408ac53910c42b222c92757fd992f2f5a3a07b0f6e59"
+      },
+      "coverage": {
+        "repository": "git-listed paths in the declared source scope, checked before and after compilation",
+        "bundler": "discovered input set and file bytes checked before and after final compilation",
+        "generated": "explicit virtual files, model data and effective settings frozen for both passes",
+        "buildPlugins": "explicitly named entry files; transitive runtime reads are not fully inventoried",
+        "environment": "effective build settings only; unrestricted environment is not captured",
+        "targetRuntime": "managed by Bun; separate target runtime artifact is not inventoried",
+        "hermetic": false,
+        "reproducible": false,
+        "independentlyVerified": false
+      }
+    },
+    {
+      "variant": "baseline",
+      "output": {
+        "size": 138419200,
+        "sha256": "b59a5b8680a11ebece8b967693dd3184225e0106264af9c457b7531b69054039"
+      },
+      "receiptSha256": "4407fc5aebc38a94f9dc1e062da7e055ba3dd650af0477f3e69ca64087211b47",
+      "inventory": {
+        "path": "engine-inputs.json",
+        "size": 2861546,
+        "sha256": "f48786911deaebc66274408ac53910c42b222c92757fd992f2f5a3a07b0f6e59"
+      },
+      "coverage": {
+        "repository": "git-listed paths in the declared source scope, checked before and after compilation",
+        "bundler": "discovered input set and file bytes checked before and after final compilation",
+        "generated": "explicit virtual files, model data and effective settings frozen for both passes",
+        "buildPlugins": "explicitly named entry files; transitive runtime reads are not fully inventoried",
+        "environment": "effective build settings only; unrestricted environment is not captured",
+        "targetRuntime": "managed by Bun; separate target runtime artifact is not inventoried",
+        "hermetic": false,
+        "reproducible": false,
+        "independentlyVerified": false
+      }
+    }
+  ],
+  "validation": {
+    "compiled": {
+      "normal": {
+        "passed": 21,
+        "assertions": 1717,
+        "cleanupCompleted": true,
+        "logSha256": "8ef8a48e50b4fcc1d9272a7db0be593b423ab3c5451fc65d11950c16ce3a0bd2"
+      },
+      "baseline": {
+        "passed": 21,
+        "assertions": 1717,
+        "cleanupCompleted": true,
+        "logSha256": "75dd230498da72ee7d2984984cecce6aa472ea506bc544211a0a61e9d1c49632"
+      }
+    },
+    "freshWindows": {
+      "runId": 38934887928,
+      "attempt": 1,
+      "commit": "fc4dcae824506949a064cee971f881e611d9ed3e",
+      "jobs": [
+        {
+          "variant": "normal",
+          "jobId": 117087780849,
+          "logSha256": "c842609da4a39d4d7008829a087c2153744af60e86f83f0c88b55027f3f0a5e4",
+          "installerSha256": "b56391e893e44e179aa3ea95c1647a4eddf3f088c4c6ef890421ca6305ead72e",
+          "engineSha256": "b59a5b8680a11ebece8b967693dd3184225e0106264af9c457b7531b69054039",
+          "completed": true
+        },
+        {
+          "variant": "baseline",
+          "jobId": 117087781087,
+          "logSha256": "ad8b79d7bf8c4f6d3c592465bb72256b43487706b2151e51337a03de48b48efe",
+          "installerSha256": "a858091dd8b480ff65c198ed84c8fb562e3647a7a853a65ef254b21aaa80318f",
+          "engineSha256": "b59a5b8680a11ebece8b967693dd3184225e0106264af9c457b7531b69054039",
+          "completed": true
+        }
+      ]
+    },
+    "installed": {
+      "from": 11,
+      "to": 12,
+      "version": "1.18.35+cudia.881809bd1c2a.e4bf58b2f4e8",
+      "physicalPathVerified": true,
+      "engineSha256": "b59a5b8680a11ebece8b967693dd3184225e0106264af9c457b7531b69054039",
+      "cmdLaunchVerified": true,
+      "defaultAmbientInstructions": {
+        "automatic": false,
+        "source": "default"
+      },
+      "bootstrapPreserved": true,
+      "priorVersionPreserved": true,
+      "updateCurrent": true,
+      "liveProviders": [
+        {
+          "provider": "xai",
+          "model": "xai/grok-build-0.1",
+          "passed": true
+        }
+      ],
+      "scope": "Existing Grok account responded. ChatGPT, fresh authorization and forced renewal were not retested for this engine."
+    },
+    "signedLocalTransition": {
+      "passed": true,
+      "transport": "signed-local-bundle",
+      "networkUpdateVerified": false,
+      "records": [
+        {
+          "variant": "normal",
+          "from": 11,
+          "to": 12,
+          "version": "1.18.35+cudia.881809bd1c2a.e4bf58b2f4e8",
+          "selectedReleaseId": "seq-12-fab0216712acdb2f32c53fc74cfbb8846c1b91bdfd4dff2daced8f45a84d316e",
+          "engineSha256": "b59a5b8680a11ebece8b967693dd3184225e0106264af9c457b7531b69054039",
+          "bootstrapUnchanged": true,
+          "userStatePreserved": true,
+          "previousEngineRetained": true
+        },
+        {
+          "variant": "baseline",
+          "from": 11,
+          "to": 12,
+          "version": "1.18.35+cudia.881809bd1c2a.e4bf58b2f4e8",
+          "selectedReleaseId": "seq-12-3faf297678629586a41d792efc6f8dcdbbc2c67670c228d8968d5744c1bb6cd6",
+          "engineSha256": "b59a5b8680a11ebece8b967693dd3184225e0106264af9c457b7531b69054039",
+          "bootstrapUnchanged": true,
+          "userStatePreserved": true,
+          "previousEngineRetained": true
+        }
+      ]
+    },
+    "publisherTests": 15,
+    "testCorrection": "The first normal run selected a user message with summary metadata. The corrected selector requires an assistant with summary===true. The full confirmed normal run and baseline run pass; engine bytes were unchanged."
+  },
+  "client": {
+    "reusedFromSequence": 11,
+    "bytesPreserved": true,
+    "files": {
+      "cudia.exe": {
+        "size": 5384704,
+        "sha256": "e6422d69d0d44171d0ea222785e133c5e1f582270f0eb4b806f5e80e735d9bb1"
+      },
+      "launcher.exe": {
+        "size": 8343552,
+        "sha256": "f5f8fb008d8d602778991bc974f8fc56841816934ecb64608661fb021c6e96f8"
+      },
+      "client-build.json": {
+        "size": 9802,
+        "sha256": "d6edd0423028970e502fa1973e057703822c0b689993907e37f5ffc5b0fca363"
+      },
+      "trust-info.json": {
+        "size": 148,
+        "sha256": "2a58c9040caba70bc52351bbe0e55c4f74695c5ba3273fc1b3182b824ca571a8"
+      }
+    }
+  },
+  "limitations": [
+    "Preview: Windows Server VM coverage does not establish interactive standard-user Windows 10/11 coverage.",
+    "No publisher Authenticode certificate configured.",
+    "Observed build inventory, without hermetic or independent reproducibility claims.",
+    "ChatGPT, fresh account authorization and forced renewal were not retested for this engine."
+  ]
+}

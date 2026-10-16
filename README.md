@@ -32,14 +32,16 @@ próprio, que o CUDIA não remove nem controla.
 
 O [site oficial](https://cyara.com.br) mostra os downloads verificados de cada
 canal. A Preview usa `cudia` no PATH e atualizações assinadas descobertas pelo
-domínio do CUDIA. A sequência 11 está publicada com instaladores normal/baseline
+domínio do CUDIA. A sequência 12 está publicada com instaladores normal/baseline
 e pacotes de atualização. Instalação, PATH, abertura em outra pasta e remoção
 passaram em duas VMs Windows Server 2025 novas, sem Node, Bun ou Git no PATH.
-No Windows desta máquina, a atualização real 10 → 11 e a resposta Grok passaram.
-A Preview 11 preserva MCP por chamada explícita e instruções remotas fora do sistema,
-e limita os cabeçalhos agregados do catálogo para evitar crescimento do contexto
-com muitos servidores. Os 20 testes compilados passaram por variante.
-[Evidências da entrega](provenance/preview-11/README.md). ChatGPT foi validado na
+No Windows desta máquina, a atualização real 11 → 12 e a resposta Grok passaram.
+A Preview 12 inclui recuperação de Goal sem substituir estado ilegível, auditoria
+opt-in de compactação/checkpoints e resumos auxiliares sem snapshots de arquivos.
+Preserva MCP por chamada explícita, instruções remotas fora do sistema e limites
+nos cabeçalhos agregados do catálogo. Os 21 testes compilados passaram por variante,
+com 1.717 verificações em cada uma.
+[Evidências da entrega](provenance/preview-12/README.md). ChatGPT foi validado na
 Preview 10; não foi repetido para este motor.
 A tasklist está em
 [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md). Os comandos abaixo iniciam ou instalam um
@@ -63,8 +65,8 @@ permanecem pendentes.
 
 ### Checkout de desenvolvimento
 
-As fontes da Preview 11 estão na branch `codex/mcp-on-demand`; o motor foi
-compilado do commit `2daad05e1bb326acf30b117f22a1c6e399e55794`.
+As fontes da Preview 12 estão na branch `codex/mcp-on-demand`; o motor foi
+compilado do commit `881809bd1c2a4c92823bdf4ae0668a04ed004e50`.
 [MCP-ON-DEMAND.md](MCP-ON-DEMAND.md) descreve o contrato e sua validação.
 As fontes históricas da Preview 9 estão na branch `codex/preview-source`.
 [SOURCE-PREVIEW-9.md](SOURCE-PREVIEW-9.md) descreve os recibos, a correspondência
@@ -228,7 +230,7 @@ Esses comandos não chamam um modelo. Só o último relatório é mantido, com l
 de 512 KiB; o horário, a sessão e o runtime identificam a captura. Se uma gravação
 falhar, a execução continua e o comando pode mostrar a captura anterior.
 
-Nos fontes posteriores à Preview 11, `purpose` distingue chamadas `main` e
+Desde a Preview 12, `purpose` distingue chamadas `main` e
 `compaction` do V2. Ausência desse campo em capturas antigas ou no V1 significa
 finalidade não classificada. `messageSources` identifica o prompt de compactação
 e o checkpoint da retomada como conteúdo de mensagem de usuário, separado das
@@ -334,7 +336,7 @@ pendente, evidências, arquivos e IDs de tarefas. Operações de resultado incer
 continuam marcadas como incertas. Essas instruções só entram na chamada de
 compactação, fora do system prompt fixo do executor.
 
-Nos fontes posteriores à Preview 11, mensagens auxiliares marcadas internamente
+Desde a Preview 12, mensagens auxiliares marcadas internamente
 como resumo não capturam snapshots de arquivos. A compactação mantém seus
 registros de etapa, consumo, erros, tentativas e interrupções. As execuções
 normais continuam capturando o estado antes de iniciar o provedor e suas
