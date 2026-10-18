@@ -1,4 +1,5 @@
 import { expect } from "bun:test"
+import type { Hooks } from "@opencode-ai/plugin"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer } from "effect"
 import { Auth } from "@/auth"
@@ -10,6 +11,8 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { testEffect } from "../lib/effect"
 
+type HookProvider = Parameters<NonNullable<NonNullable<Hooks["provider"]>["models"]>>[0]
+
 const failedProvider = ProviderV2.ID.anthropic
 const failedModel = ModelV2.ID.make("claude-sonnet-4-6")
 const healthyProvider = ProviderV2.ID.make("isolation-compatible")
@@ -17,7 +20,7 @@ const healthyModel = ModelV2.ID.make("healthy-model")
 const apiAuth = { type: "api", key: "synthetic-test-key" } as const
 
 function suite(options: {
-  models?: (provider: Provider.Info) => Promise<Record<string, never>>
+  models?: (provider: HookProvider) => Promise<Record<string, never>>
   authLoader?: () => Promise<Record<string, never>>
   authGetFailure?: string
   storedAuth?: boolean
@@ -28,7 +31,7 @@ function suite(options: {
       ...(options.models && {
         provider: {
           id: String(failedProvider),
-          models: async (provider: Provider.Info) => {
+          models: async (provider: HookProvider) => {
             state.modelCalls++
             return options.models!(provider)
           },
