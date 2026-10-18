@@ -9,3 +9,8 @@ export const go = {
 }
 
 export const marks = "_^~,"
+
+export function homeLogoHeight(width: number, height: number) {
+  const columns = Math.max(...logo.left.map((line, index) => line.length + 1 + logo.right[index]!.length))
+  return height >= 18 && width >= columns + 4 ? logo.left.length : 0
+}

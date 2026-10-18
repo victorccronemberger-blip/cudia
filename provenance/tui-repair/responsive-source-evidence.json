@@ -1,0 +1,187 @@
+{
+  "state": "Source qualification; next compiled distribution pending",
+  "minimumTestedTerminal": {
+    "columns": 50,
+    "rows": 12
+  },
+  "rejectedSequence": 17,
+  "activeSequenceAtQualification": 16,
+  "reports": [
+    {
+      "file": "tui-conversation-source-long-version-50-resize-check-state-1792362860738/report.json",
+      "sha256": "670d4e85e32b152fd7b50af87ea31d29e6340371b6ce7c69807096e7cc232f56",
+      "checks": {
+        "footer retains release-version prefix": true,
+        "footer retains project path suffix": true,
+        "configured model opens real prompt": true,
+        "no first-run provider dialog": true,
+        "prompt entered in actual TUI": true,
+        "prompt caret position captured in bounds": true,
+        "built-in read tool offered to model": true,
+        "read tool row visible in PTY": true,
+        "engine sent actual fixture text back to model": true,
+        "engine preserved fixture Unicode in tool result": true,
+        "assistant partial content rendered before stream completion": true,
+        "terminal stayed 50x12 through stream": true,
+        "draft visible during active stream": true,
+        "draft caret position captured in bounds": true,
+        "partial assistant stream visible in 50x12 frame": true,
+        "final completion marker visible": true,
+        "50x12 final viewport shows completion tail": true,
+        "50x12 final viewport shows tool-derived reply": false,
+        "50x12 final viewport shows Unicode response": false,
+        "50x12 final viewport shows wrapped line": false,
+        "terminal widened after narrow conversation": true,
+        "actual application renderer moved to 120x36 geometry": true,
+        "widened frame shows tool-derived response": true,
+        "widened frame shows Unicode response": true,
+        "widened frame shows wrapped response": true,
+        "unsent draft preserved": true,
+        "no unexpected raw runtime error": true,
+        "local API fixture had no errors": true,
+        "unsent draft can be cleared after verification": true,
+        "clean TUI exit": true,
+        "terminal alternate screen restored": true
+      },
+      "error": null
+    },
+    {
+      "file": "tui-conversation-source-long-version-120-50-120-state-1792362185706/report.json",
+      "sha256": "2cf5fb6a4607ed33836453a15b6407e7d241529b196204335b710d8b576aec6c",
+      "checks": {
+        "footer retains release-version prefix": true,
+        "footer retains project path suffix": true,
+        "configured model opens real prompt": true,
+        "no first-run provider dialog": true,
+        "prompt entered in actual TUI": true,
+        "built-in read tool offered to model": true,
+        "read tool row visible in PTY": true,
+        "engine sent actual fixture text back to model": true,
+        "engine preserved fixture Unicode in tool result": true,
+        "terminal narrowed to 50x12 before stream": true,
+        "assistant partial content rendered before stream completion": true,
+        "stream start visible in narrow active frame": true,
+        "terminal widened to 120x36 before stream completion": true,
+        "streamed text survives resize": true,
+        "final completion marker visible": true,
+        "model response references tool result": true,
+        "Unicode response visible": true,
+        "long wrapped line visible": true,
+        "unsent draft preserved": true,
+        "no unexpected raw runtime error": true,
+        "local API fixture had no errors": true,
+        "unsent draft can be cleared after verification": true,
+        "clean TUI exit": true,
+        "terminal alternate screen restored": true
+      },
+      "error": null
+    },
+    {
+      "file": "tui-conversation-source-long-version-120-50-120-state-1792362185706/resume-report-assistant-only-predicate.json",
+      "sha256": "ab9da1d449b10325218eb62e6e88521facbaf24c47f475321e3b46a063c19f16",
+      "checks": {
+        "read tool row restored": true,
+        "assistant tool-derived reply restored": true,
+        "assistant completion marker restored": false,
+        "resume TUI exits cleanly": true,
+        "resume terminal restored": true
+      },
+      "error": null
+    }
+  ],
+  "timeline": [
+    {
+      "type": "second-stream-start",
+      "at": 1792362899127
+    },
+    {
+      "type": "chunk-sent",
+      "index": 1,
+      "at": 1792362904656,
+      "elapsedMs": 5529
+    },
+    {
+      "type": "draft-write",
+      "at": 1792362904951,
+      "chunksSent": 1,
+      "cursorX": 5,
+      "cursorY": 6
+    },
+    {
+      "type": "first-draft-render",
+      "at": 1792362905261,
+      "elapsedMs": 310,
+      "chunksSent": 1,
+      "cursorX": 33,
+      "cursorY": 6
+    },
+    {
+      "type": "draft-observation-end",
+      "at": 1792362905277,
+      "chunksSent": 1,
+      "draftVisibleWhileActive": true,
+      "observationCount": 4
+    },
+    {
+      "type": "chunk-sent",
+      "index": 2,
+      "at": 1792362906672,
+      "elapsedMs": 7545
+    },
+    {
+      "type": "chunk-sent",
+      "index": 3,
+      "at": 1792362908675,
+      "elapsedMs": 9548
+    },
+    {
+      "type": "chunk-sent",
+      "index": 4,
+      "at": 1792362910680,
+      "elapsedMs": 11553
+    },
+    {
+      "type": "chunk-sent",
+      "index": 5,
+      "at": 1792362912694,
+      "elapsedMs": 13567
+    },
+    {
+      "type": "chunk-sent",
+      "index": 6,
+      "at": 1792362914709,
+      "elapsedMs": 15582
+    }
+  ],
+  "resumeSavedFrameInspection": {
+    "frame": "resumed-transcript-120x36",
+    "assistantStreamRow": 8,
+    "toolDerivedReplyRow": 9,
+    "assistantCompletionRow": 15,
+    "passed": true,
+    "originalCompletionPredicate": false,
+    "note": "Original false boolean preserved. Independent inspection of its saved final frame finds the completion marker after the assistant-only stream and tool-derived reply; the prompt marker is earlier and is not used as proof."
+  },
+  "limits": [
+    "Three false narrow final-viewport observations record earlier text outside the limited-height viewport; widening shows the complete reply.",
+    "A prior 100ms draft sample was premature; final bounded wait observed draft while only one of six chunks was sent.",
+    "Earlier resize samples preceded application geometry update; final run waits for renderer movement.",
+    "The resume record retains a false completion predicate despite its saved final frame showing the assistant completion; sampling or extraction cause was not established.",
+    "External providers and arbitrary tool pressure are outside this owned local fixture."
+  ],
+  "remainingGates": [
+    "Compiled normal and baseline qualification",
+    "Signed update and fresh Windows distribution qualification"
+  ],
+  "sourceRegression": {
+    "passed": 216,
+    "skipped": 1,
+    "failed": 0,
+    "assertions": 593,
+    "snapshots": 8,
+    "files": 51,
+    "log": "tui-responsive-frozen-regression.log",
+    "logSha256": "0cb9b23b012f3d2618dc73161ba76eb32720f3ad54dc702d8a516f823aee99fc",
+    "typecheckExitCode": 0
+  }
+}

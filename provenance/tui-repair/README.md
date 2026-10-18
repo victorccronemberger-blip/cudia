@@ -13,6 +13,18 @@ This work is not a completed release. Preview 16 remains the installed release.
 - An owned deterministic local provider exercised the actual source CLI and real built-in `read` tool. Exact fixture text and Unicode reached the next model request; tool rows, delayed streaming, wrapping, resizing, draft preservation, clean exit, and session resume passed. The partial response was not visible at 50x12 before widening; streaming was visible at 120x36. This does not qualify arbitrary external-provider/tool pressure.
 - Compile and qualify both distribution variants. Still required before release.
 
+## Responsive-layout follow-up
+
+The first compiled candidate, sequence 17, was rejected before signing or publication. Its full release version and long Windows path overflowed the Home footer at 50x12 and obscured typed input. Sequence 16 remains active; sequence 17 is recorded as withdrawn and its artifacts are not reused.
+
+The source repair assigns explicit footer column budgets, preserves the path suffix and version prefix with grapheme-aware ellipses, hides the decorative logo when the viewport cannot accommodate it, and bounds prompt height so a session retains transcript space. Metadata and status stay on single rows. Retry errors retain an explicit details action and a keyboard-accessible command instead of relying on the former mismatched 80/120-character truncation thresholds. Their optional scrolling dialog keeps the original error text available through keyboard navigation.
+
+The first native 50x12 run after this repair showed the actual `read` result and the first assistant chunk before stream completion. Its old final-response assertion expected all response text in a two-row viewport and failed; this is retained as a failed fixture assertion, not a passing run. The final bounded 50x12 run observed the draft after 310 ms while only one of six chunks had been sent. After waiting for the application to process a resize to 120x36, it showed the complete tool-derived, Unicode and wrapped reply. Exit and terminal restoration passed.
+
+The separate 120x36 → 50x12 → 120x36 run passed its checks. A resume record retains a false completion predicate, but independent inspection of that same saved final frame finds the assistant completion after the assistant-only stream marker and tool-derived response; the earlier occurrence inside the user prompt is excluded. This discrepancy is preserved, not relabelled as a passing predicate. [Report hashes and the frame inspection](responsive-source-evidence.json) record these limits.
+
+Final source regression: 216 passes, one existing skip, eight snapshots and 593 assertions across 51 files; TUI typecheck passed. New actual-component tests cover the footer, three retry-error shapes, End/Home scrolling, open-dialog resizing, draft preservation and focus restoration. The replacement-slot fixture does not establish actual Escape-to-abort behavior. Both compiled variants, native compiled interaction and fresh Windows installation remain release gates. Fresh-Windows CI now also checks that optional REA discovery reports five missing tools without an external Node, Bun or Git on PATH.
+
 ## Checks and outstanding findings
 
 Both package typechecks passed. The full TUI suite passed 214 tests, with one existing skip, eight snapshots, and 555 assertions across 49 files. RPC and bridge checks cover request-local rejection, serialization failures, unexpected close, bootstrap failure, malformed responses, intentional disposal, background error diagnostics with healthy subsequent RPC, and native fatal errors. The first five-second lifecycle invocation timed out on a cold import; the three lifecycle cases passed with the package's 30-second timeout.
