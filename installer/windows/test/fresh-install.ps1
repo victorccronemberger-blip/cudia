@@ -172,6 +172,13 @@ public static class CudiaFreshPhysical {
     $taskMode = & $taskBootstrap debug context --status | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $taskMode.ambientInstructions.automatic -ne $false) { throw 'Cold context mode differs.' }
     $taskResult.contextMode = $taskMode.ambientInstructions
+    $taskReaTools = @(& $taskBootstrap rea status --json | ConvertFrom-Json)
+    if ($LASTEXITCODE -ne 0 -or $taskReaTools.Count -ne 5 -or
+        (@($taskReaTools | Where-Object { $_.state -ne 'missing' }).Count -ne 0) -or
+        ((@($taskReaTools.name | Sort-Object) -join ',') -cne 'adb,apktool,jadx,jdk,wabt')) {
+        throw 'Fresh optional REA tools status differs or requires an external runtime.'
+    }
+    $taskResult['reaToolsFresh'] = $taskReaTools
     $taskCatalog = & $taskBootstrap models --refresh
     if ($LASTEXITCODE -ne 0 -or ($taskCatalog -join "`n") -match '(?m)^opencode(?:-go)?/') { throw 'Cold model catalog failed or activated an OpenCode provider.' }
     $taskResult.coldCatalogPassed = $true
