@@ -35,7 +35,8 @@ próprio, que o CUDIA não remove nem controla.
 
 O [site oficial](https://cyara.com.br) mostra os downloads verificados de cada
 canal. A Preview usa `cudia` no PATH e atualizações assinadas descobertas pelo
-domínio do CUDIA. A sequência 14 está ativa; o estado do REA e a limitação de preparação automática
+domínio do CUDIA. A sequência 16 está ativa com [isolamento de falhas de provedores](provenance/preview-16/README.md).
+O estado do REA e a limitação de preparação automática
 estão nas [evidências da Preview 14](provenance/preview-14/README.md). A sequência 13,
 descrita a seguir como histórico, foi publicada com instaladores normal/baseline
 e pacotes de atualização. Instalação, PATH, abertura em outra pasta e remoção

@@ -1,0 +1,155 @@
+{
+  "sequence": 16,
+  "version": "1.18.35+cudia.d432cbe1bbbb.00c710065e74",
+  "sourceCommit": "d432cbe1bbbb976a69e0e203f29ae866938ce72a",
+  "engineFingerprint": "00c710065e74a3c1fa9c62ecb43bf578d9ad6c83",
+  "engineSha256": "4fcbea35f58a9a884a4ebf927c5d14751265366178773e961473e5ad5aa19f0f",
+  "tests": {
+    "providerRegression": {
+      "passed": 114,
+      "failed": 0,
+      "assertions": 281
+    },
+    "isolation": {
+      "passed": 9,
+      "failed": 0,
+      "assertions": 44
+    },
+    "cliErrors": {
+      "passed": 7,
+      "failed": 0,
+      "assertions": 20
+    },
+    "httpErrors": {
+      "passed": 6,
+      "failed": 0,
+      "assertions": 20
+    },
+    "typecheckExitCode": 0
+  },
+  "installed": {
+    "completed": true,
+    "version": "1.18.35+cudia.d432cbe1bbbb.00c710065e74",
+    "from": 14,
+    "to": 16,
+    "bootstrapPreserved": true,
+    "previousVersionPreserved": true,
+    "workaroundRemoved": true,
+    "error": null
+  },
+  "startup": {
+    "checks": [
+      {
+        "endpoint": "/project/current",
+        "status": 200
+      },
+      {
+        "endpoint": "/config",
+        "status": 200
+      },
+      {
+        "endpoint": "/config/providers",
+        "status": 200
+      },
+      {
+        "endpoint": "/provider",
+        "status": 200
+      },
+      {
+        "endpoint": "/agent",
+        "status": 200
+      },
+      {
+        "endpoint": "/path",
+        "status": 200
+      },
+      {
+        "endpoint": "/session",
+        "status": 200
+      },
+      {
+        "endpoint": "selected-failed-model",
+        "status": 400,
+        "errorBody": "{\"name\":\"UnknownError\",\"data\":{\"message\":\"Provider unavailable: openai. Check its connection before using gpt-6.1.\"}}"
+      }
+    ],
+    "openaiEnabledByConfig": true,
+    "failedProviderAbsent": true,
+    "healthyProvidersPresent": true,
+    "credentialsPreserved": true,
+    "error": null
+  },
+  "healthyRouting": {
+    "passed": true,
+    "onlySyntheticInference": true,
+    "failedModelStatus": 400,
+    "healthyModelStatus": 200,
+    "fixtureCalls": 3,
+    "error": null
+  },
+  "signedLocalTransition": {
+    "passed": true,
+    "transport": "signed-local-bundle",
+    "networkUpdateVerified": false,
+    "records": [
+      {
+        "variant": "normal",
+        "from": 14,
+        "to": 16,
+        "version": "1.18.35+cudia.d432cbe1bbbb.00c710065e74",
+        "selectedReleaseId": "seq-16-3c99b00375391eddebcf9e15c10a686bee3e82fe77c1f86b299938f9fd690aea",
+        "engineSha256": "4fcbea35f58a9a884a4ebf927c5d14751265366178773e961473e5ad5aa19f0f",
+        "bootstrapUnchanged": true,
+        "userStatePreserved": true,
+        "previousEngineRetained": true
+      },
+      {
+        "variant": "baseline",
+        "from": 14,
+        "to": 16,
+        "version": "1.18.35+cudia.d432cbe1bbbb.00c710065e74",
+        "selectedReleaseId": "seq-16-4fe901995063394daabe1928a6fcc6ac1cf8b83671fa94f07f0bd8ce8f526722",
+        "engineSha256": "4fcbea35f58a9a884a4ebf927c5d14751265366178773e961473e5ad5aa19f0f",
+        "bootstrapUnchanged": true,
+        "userStatePreserved": true,
+        "previousEngineRetained": true
+      }
+    ]
+  },
+  "ci": {
+    "runId": 39161385887,
+    "commit": "b7e260bad9a8a1be57f4251e192998f9f5bb8ba9",
+    "jobs": [
+      {
+        "id": 117775243180,
+        "name": "fresh-install (normal)",
+        "conclusion": "success"
+      },
+      {
+        "id": 117775243392,
+        "name": "fresh-install (baseline)",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "publication": {
+    "channel": "preview",
+    "version": "1.18.35+cudia.d432cbe1bbbb.00c710065e74",
+    "sequence": 16,
+    "tag": "cudia-preview-20261018-seq16-00c710065e74",
+    "manifestSha256": "986f0d694f370974550f2520d57f6002857fc7b0f0bb8ceb2256c6cfc8e3bdfd",
+    "artifacts": 4
+  },
+  "limitations": [
+    "Per-stage10s deadlines can accumulate sequentially.",
+    "Plugins without abort support may finish underlying work later; registry updates are guarded.",
+    "Caller cancellation is covered through outer timeout return; no claim of direct interruption test.",
+    "Managed REA first-use provisioning remains unqualified outside MSIX."
+  ],
+  "liveHealthyProviderInferenceVerified": false,
+  "installedUpdateCheck": {
+    "exitCode": 0,
+    "output": "Cudia is current.",
+    "checkedAt": "2026-10-18T20:05:55.0923224Z"
+  }
+}

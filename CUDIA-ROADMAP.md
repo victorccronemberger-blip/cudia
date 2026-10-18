@@ -24,6 +24,16 @@ incrementos. Referências antigas a negações, escopo imposto e Arena somente l
 não representam a política atual. A auditoria não autoriza uma afirmação universal
 de que nenhuma dependência, integração ou prompt externo possa impor limites.
 
+## Isolamento de provedores — 18/10/2026
+
+- [x] Conter falhas de descoberta, autenticação e loaders por provedor.
+- [x] Preservar catálogos, credenciais e acesso aos provedores saudáveis.
+- [x] Abrir o CUDIA instalado com OpenAI habilitado e credencial expirada.
+- [x] Após a falha do modelo OpenAI, concluir inferência sintética em outro provedor.
+- [x] Remover o contorno que desativava OpenAI; atualizar este PC e os instaladores.
+
+A Preview 16 está ativa. [Evidências](provenance/preview-16/README.md).
+
 ## REA — estado em 16/10/2026
 
 - [x] Integrar REA 6.5.0 por MCP, skill e comando `/rea`, sob demanda.
