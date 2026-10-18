@@ -93,3 +93,14 @@ describe("cli.error", () => {
     expect(FormatError(new UI.CancelledError())).toBe("")
   })
 })
+
+test("unavailable provider errors identify the affected connection without exposing credentials", () => {
+  const input = {
+    _tag: "ProviderModelNotFoundError",
+    providerID: "openai",
+    modelID: "gpt-test",
+    cause: { _tag: "ProviderInitError", providerID: "openai", cause: new Error("private provider response") },
+  }
+  expect(FormatError(input)).toBe("Provider unavailable: openai. Check its connection before using gpt-test.")
+  expect(FormatError({ name: input._tag, data: input })).toBe(FormatError(input))
+})

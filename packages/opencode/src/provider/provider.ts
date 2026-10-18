@@ -18,7 +18,7 @@ import { iife } from "@/util/iife"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
 import { pathToFileURL } from "url"
-import { Effect, Layer, Context, Schema, Types } from "effect"
+import { Cause, Duration, Effect, Layer, Context, Schema, Types } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectPromise } from "@/effect/promise"
@@ -33,6 +33,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
+const PROVIDER_INITIALIZATION_TIMEOUT = Duration.seconds(10)
 
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
@@ -1196,6 +1197,8 @@ export class ModelNotFoundError extends Schema.TaggedErrorClass<ModelNotFoundErr
   cause: Schema.optional(Schema.Defect()),
 }) {
   override get message() {
+    if (InitError.isInstance(this.cause))
+      return `Provider unavailable: ${this.providerID}. Check its connection before using ${this.modelID}.`
     const suggestions = this.suggestions?.length ? ` Did you mean: ${this.suggestions.join(", ")}?` : ""
     return `Model not found: ${this.providerID}/${this.modelID}.${suggestions}`
   }
@@ -1264,6 +1267,7 @@ interface State {
   models: Map<string, LanguageModelV3>
   providers: Record<ProviderV2.ID, Info>
   catalog: Record<ProviderV2.ID, Info>
+  failures: Record<string, InitError>
   sdk: Map<string, BundledSDK>
   modelLoaders: Record<string, CustomModelLoader>
   varsLoaders: Record<string, CustomVarsLoader>
@@ -1485,7 +1489,27 @@ const layer = Layer.effect(
           get: (key: string) => env.get(key),
         }
 
+        const failures: Record<string, InitError> = {}
+        function initialize<A, E, R>(providerID: ProviderV2.ID, stage: string, operation: Effect.Effect<A, E, R>) {
+          if (failures[providerID]) return Effect.succeed(undefined)
+          return operation.pipe(
+            Effect.timeout(PROVIDER_INITIALIZATION_TIMEOUT),
+            Effect.map((value) => ({ value })),
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterrupts(cause)) return Effect.interrupt
+              failures[providerID] = new InitError({ providerID, cause: Cause.squash(cause) })
+              delete providers[providerID]
+              delete modelLoaders[providerID]
+              delete varsLoaders[providerID]
+              delete discoveryLoaders[providerID]
+              return Effect.logWarning("provider initialization failed", { providerID, stage }).pipe(
+                Effect.as(undefined),
+              )
+            }),
+          )
+        }
         function mergeProvider(providerID: ProviderV2.ID, provider: Partial<Info>) {
+          if (failures[providerID]) return
           const existing = providers[providerID]
           if (existing) {
             // @ts-expect-error
@@ -1518,25 +1542,24 @@ const layer = Layer.effect(
           if (!p || !models) continue
 
           const providerID = ProviderV2.ID.make(p.id)
-          if (disabled.has(providerID)) continue
+          if (!isProviderAllowed(providerID) || failures[providerID]) continue
 
           const provider = database[providerID]
           if (!provider) continue
-          const pluginAuth = yield* auth.get(providerID).pipe(Effect.orDie)
-
-          provider.models = yield* Effect.promise(async () => {
-            const next = await models(toPublicInfo(provider), { auth: pluginAuth })
-            return Object.fromEntries(
-              Object.entries(next).map(([id, model]) => [
-                id,
-                {
-                  ...model,
-                  id: ModelV2.ID.make(id),
-                  providerID,
-                },
-              ]),
-            )
-          })
+          const discovered = yield* initialize(
+            providerID,
+            "models",
+            Effect.gen(function* () {
+              const pluginAuth = yield* auth.get(providerID)
+              return yield* Effect.promise(async () => {
+                const next = await models(structuredClone(toPublicInfo(provider)), { auth: pluginAuth })
+                return Object.fromEntries(
+                  Object.entries(next).map(([id, model]) => [id, { ...model, id: ModelV2.ID.make(id), providerID }]),
+                )
+              })
+            }),
+          )
+          if (discovered) provider.models = discovered.value
         }
 
         // extend database from config
@@ -1646,7 +1669,7 @@ const layer = Layer.effect(
         const envs = yield* env.all()
         for (const [id, provider] of Object.entries(database)) {
           const providerID = ProviderV2.ID.make(id)
-          if (disabled.has(providerID)) continue
+          if (!isProviderAllowed(providerID) || failures[providerID]) continue
           const apiKey = provider.env.map((item) => envs[item]).find(Boolean)
           if (!apiKey) continue
           mergeProvider(providerID, {
@@ -1666,7 +1689,7 @@ const layer = Layer.effect(
         const auths = yield* auth.all().pipe(Effect.orDie)
         for (const [id, provider] of Object.entries(auths)) {
           const providerID = ProviderV2.ID.make(id)
-          if (disabled.has(providerID)) continue
+          if (!isProviderAllowed(providerID) || failures[providerID]) continue
           if (provider.type === "api") {
             mergeProvider(providerID, {
               source: "api",
@@ -1679,26 +1702,38 @@ const layer = Layer.effect(
         for (const plugin of plugins) {
           if (!plugin.auth) continue
           const providerID = ProviderV2.ID.make(plugin.auth.provider)
-          if (disabled.has(providerID)) continue
+          if (!isProviderAllowed(providerID) || failures[providerID]) continue
 
-          const stored = yield* auth.get(providerID).pipe(Effect.orDie)
-          if (!stored) continue
-          if (!plugin.auth.loader) continue
-
-          const options = yield* Effect.promise(() =>
-            plugin.auth!.loader!(
-              () => bridge.promise(auth.get(providerID).pipe(Effect.orDie)) as any,
-              toPublicInfo(database[plugin.auth!.provider]),
-            ),
+          const load = plugin.auth.loader
+          const data = database[providerID]
+          if (!load || !data) continue
+          const loaded = yield* initialize(
+            providerID,
+            "auth",
+            Effect.gen(function* () {
+              const stored = yield* auth.get(providerID)
+              if (!stored) return undefined
+              return yield* Effect.promise(() =>
+                load(
+                  async () => {
+                    const current = await bridge.promise(auth.get(providerID))
+                    if (!current) throw new Error(`Authentication changed for provider: ${providerID}`)
+                    return current
+                  },
+                  structuredClone(toPublicInfo(data)),
+                ),
+              )
+            }),
           )
-          const opts = options ?? {}
+          if (!loaded || loaded.value === undefined) continue
+          const opts = loaded.value ?? {}
           const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
           mergeProvider(providerID, patch)
         }
 
         for (const [id, fn] of Object.entries(custom(dep))) {
           const providerID = ProviderV2.ID.make(id)
-          if (disabled.has(providerID)) continue
+          if (!isProviderAllowed(providerID) || failures[providerID]) continue
           const data = database[providerID]
           if (!data) {
             continue
@@ -1709,7 +1744,17 @@ const layer = Layer.effect(
             bundledProviders.has(providerID) && !providers[providerID] && !hasConfiguredApiKey(providerID)
               ? { ...data, source: "custom" as const }
               : data
-          const result = yield* fn(input)
+          const staged = structuredClone(input)
+          const initialized = yield* initialize(
+            providerID,
+            "loader",
+            Effect.suspend(() => fn(staged)),
+          )
+          if (initialized) {
+            data.models = staged.models
+            if (providers[providerID]) providers[providerID].models = staged.models
+          }
+          const result = initialized?.value
           if (result && (result.autoload || providers[providerID])) {
             if (result.getModel) modelLoaders[providerID] = result.getModel
             if (result.vars) varsLoaders[providerID] = result.vars
@@ -1733,16 +1778,16 @@ const layer = Layer.effect(
 
         const gitlab = ProviderV2.ID.make("gitlab")
         if (discoveryLoaders[gitlab] && providers[gitlab] && isProviderAllowed(gitlab)) {
-          yield* Effect.promise(async () => {
-            try {
-              const discovered = await discoveryLoaders[gitlab]()
-              for (const [modelID, model] of Object.entries(discovered)) {
-                if (!providers[gitlab].models[modelID]) {
-                  providers[gitlab].models[modelID] = model
-                }
-              }
-            } catch (e) {}
-          })
+          const discovered = yield* initialize(
+            gitlab,
+            "discovery",
+            Effect.promise(() => discoveryLoaders[gitlab]()),
+          )
+          if (discovered) {
+            for (const [modelID, model] of Object.entries(discovered.value)) {
+              if (!providers[gitlab].models[modelID]) providers[gitlab].models[modelID] = model
+            }
+          }
         }
 
         for (const [id, provider] of Object.entries(providers)) {
@@ -1799,6 +1844,7 @@ const layer = Layer.effect(
           models: languages,
           providers,
           catalog: providerCatalog,
+          failures,
           sdk,
           modelLoaders,
           varsLoaders,
@@ -1920,6 +1966,8 @@ const layer = Layer.effect(
 
     const getModel = Effect.fn("Provider.getModel")(function* (providerID: ProviderV2.ID, modelID: ModelV2.ID) {
       const s = yield* InstanceState.get(state)
+      if (s.failures[providerID])
+        return yield* new ModelNotFoundError({ providerID, modelID, cause: s.failures[providerID] })
       const provider = s.providers[providerID]
       if (!provider) {
         const catalogProvider = s.catalog[providerID]
@@ -1944,6 +1992,12 @@ const layer = Layer.effect(
 
     const getLanguage = Effect.fn("Provider.getLanguage")(function* (model: Model, options?: { cache?: boolean }) {
       const s = yield* InstanceState.get(state)
+      if (s.failures[model.providerID])
+        return yield* new ModelNotFoundError({
+          providerID: model.providerID,
+          modelID: model.id,
+          cause: s.failures[model.providerID],
+        })
       const envs = yield* env.all()
       const key = `${model.providerID}/${model.id}`
       const cache = options?.cache !== false
