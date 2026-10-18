@@ -172,7 +172,7 @@ public static class CudiaFreshPhysical {
     $taskMode = & $taskBootstrap debug context --status | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $taskMode.ambientInstructions.automatic -ne $false) { throw 'Cold context mode differs.' }
     $taskResult.contextMode = $taskMode.ambientInstructions
-    $taskReaTools = @(& $taskBootstrap rea status --json | ConvertFrom-Json)
+    $taskReaTools = & $taskBootstrap rea status --json | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $taskReaTools.Count -ne 5 -or
         (@($taskReaTools | Where-Object { $_.state -ne 'missing' }).Count -ne 0) -or
         ((@($taskReaTools.name | Sort-Object) -join ',') -cne 'adb,apktool,jadx,jdk,wabt')) {
