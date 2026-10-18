@@ -50,10 +50,54 @@ acima medem bytes de JSON do catálogo local, não tokens do prompt. Resultados
 continuam sujeitos à paginação e aos artefatos de saída do CUDIA e do REA.
 
 Análise estática de JavaScript/Electron e .NET não requer Ghidra, IDA ou Hopper.
-Outras operações têm requisitos próprios: engines, JDK/JADX, adb, navegador ou
-ferramentas de captura. A integração não os instala automaticamente. `binary_session`
-e os resultados das operações informam a disponibilidade efetiva. Habilitar o MCP
-não comprova que todas essas capacidades funcionam neste computador.
+Outras operações têm requisitos próprios. A preparação opcional abaixo foi adicionada
+ao código e está em qualificação; ainda não está publicada no instalador Preview 16.
+`binary_session` e os resultados das operações informam a disponibilidade efetiva.
+Habilitar o MCP não comprova que todas essas capacidades funcionam neste computador.
+
+## Ferramentas opcionais no Windows x64
+
+```text
+cudia rea install wabt
+cudia rea install jadx apktool adb
+cudia rea status
+```
+
+O primeiro comando prepara WebAssembly. O segundo prepara as ferramentas Android
+e um JDK completo, sem depender de Java no PATH de um PC novo. Sem nomes,
+`cudia rea install` prepara somente WABT. `status --json` retorna o inventário local.
+
+| Pacote | Versão fixada | Seleção fornecida ao processo REA |
+| --- | --- | --- |
+| WABT | 1.0.42 | `REA_WABT_BIN_DIRECTORY`, incluindo `wasm-validate`, `wasm-objdump`, `wasm2wat` |
+| JADX headless MCP | 0.7.1 | `REA_JADX_MCP_JAR` (o JAR de engine aceito pelo REA, diferente do JADX comum) |
+| Eclipse Temurin JDK | 21.0.12.1+1 | `JAVA_HOME`, com `java` e `javac` |
+| Android Platform Tools | 37.0.1 | `REA_ADB_PATH` |
+| Apktool | 3.0.3 | `REA_APKTOOL_COMMAND`, com launcher que usa o Java selecionado |
+
+Instalações ficam no cache privado do CUDIA. O download usa URL, tamanho e SHA-256
+fixados; arquivos instalados são inventariados e conferidos nas próximas conexões.
+A publicação da instalação é atômica e preparações simultâneas compartilham um lock.
+O download interrompido pode ser repetido; os pacotes já concluídos são reutilizados.
+
+A descoberta acontece ao conectar um REA reconhecido, tanto pelo alias gerenciado
+quanto pelo comando Node do pacote oficial. Ela não baixa nem repara pacotes.
+Valores explícitos do operador têm precedência. Pacote opcional ausente ou
+corrompido não impede o servidor REA de abrir nem desabilita os outros pacotes.
+Reconecte o REA após instalar ferramentas para receber o novo ambiente.
+Não há alteração no PATH global nem inclusão de catálogos no prompt fixo.
+
+Ghidra e ILSpy ainda exigem instalações próprias. IDA, Hopper e JEB conservam seus
+requisitos de licença e configuração. Binwalk/Unblob e outras integrações Linux
+não são apresentadas como ferramentas nativas disponíveis no Windows.
+
+Origens: [WABT](https://github.com/WebAssembly/wabt/releases/tag/1.0.42),
+[JADX headless](https://github.com/1013503897/jadx-headless-mcp/releases/tag/v0.7.1),
+[Temurin](https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.12.1%2B1),
+[Apktool](https://github.com/iBotPeaches/Apktool/releases/tag/v3.0.3),
+[Platform Tools](https://developer.android.com/tools/releases/platform-tools).
+O SHA-256 de Platform Tools foi calculado sobre o ZIP oficial, após conferir seu
+tamanho e SHA-1 contra `repository2-3.xml` do Google; não é um SHA-256 publicado pelo Google.
 
 ## Integridade e origem
 

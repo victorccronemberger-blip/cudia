@@ -4,6 +4,7 @@ import { Effect, Exit, Result } from "effect"
 import type { JsonSchema, Scope } from "effect"
 import type { MCPConfig } from "./config"
 import { MCPError } from "./error"
+import { isReaCommand } from "./rea-command"
 import type { Compiler } from "../tool/json-input"
 import type {
   CallToolResult,
@@ -230,8 +231,21 @@ export function open(input: {
                 )
               })
             : { command, args, env: environment }
+      const env = isReaCommand(local.command, local.args)
+        ? yield* Effect.gen(function* () {
+            const { environmentFor } = yield* Effect.tryPromise({
+              try: () => import("./rea-tools"),
+              catch: () => failure("unavailable", "REA tool discovery is unavailable"),
+            })
+            return yield* Effect.tryPromise({
+              try: (signal) => environmentFor(local.command, local.args, local.env, undefined, undefined, signal),
+              catch: () => failure("startup", "Could not resolve the REA launch environment"),
+            })
+          })
+        : local.env
       const transport = new LocalTransport({
         ...local,
+        env,
         cwd: resolve(input.directory, input.server.cwd ?? "."),
         stderr: "pipe",
       })

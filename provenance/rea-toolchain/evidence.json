@@ -1,0 +1,736 @@
+{
+  "state": "Source implementation and local host tool setup; not yet included in a published CUDIA installer",
+  "upstreamRea": "6.5.0; no REA package upgrade included",
+  "tools": [
+    {
+      "name": "adb",
+      "version": "37.0.1",
+      "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip",
+      "sha256": "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99",
+      "size": 8044989,
+      "format": "archive",
+      "required": ["platform-tools/adb.exe", "platform-tools/AdbWinApi.dll", "platform-tools/AdbWinUsbApi.dll"],
+      "environment": {
+        "REA_ADB_PATH": "platform-tools/adb.exe"
+      }
+    },
+    {
+      "name": "wabt",
+      "version": "1.0.42",
+      "url": "https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-windows-x64.tar.gz",
+      "sha256": "62f1eb2b51aa57cf0f0b8ba333bf2c72a049930aa9c5de01dcad271c4fe48c88",
+      "size": 6519558,
+      "format": "archive",
+      "required": [
+        "wabt-1.0.42/bin/wasm-validate.exe",
+        "wabt-1.0.42/bin/wasm-objdump.exe",
+        "wabt-1.0.42/bin/wasm2wat.exe"
+      ],
+      "environment": {
+        "REA_WABT_BIN_DIRECTORY": "wabt-1.0.42/bin"
+      }
+    },
+    {
+      "name": "jadx",
+      "version": "0.7.1",
+      "url": "https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar",
+      "sha256": "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
+      "size": 42619858,
+      "format": "file",
+      "required": ["jadx-headless-mcp.jar"],
+      "environment": {
+        "REA_JADX_MCP_JAR": "jadx-headless-mcp.jar"
+      }
+    },
+    {
+      "name": "apktool",
+      "version": "3.0.3",
+      "url": "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
+      "sha256": "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423",
+      "size": 15478013,
+      "format": "file",
+      "required": ["apktool.jar", "apktool.cmd"],
+      "environment": {
+        "REA_APKTOOL_COMMAND": "apktool.cmd"
+      },
+      "generated": {
+        "apktool.cmd": "@echo off\r\nif defined JAVA_HOME (\r\n  \"%JAVA_HOME%\\bin\\java.exe\" -jar \"%~dp0apktool.jar\" %*\r\n) else (\r\n  java -jar \"%~dp0apktool.jar\" %*\r\n)\r\n"
+      }
+    },
+    {
+      "name": "jdk",
+      "version": "21.0.12.1+1",
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip",
+      "sha256": "f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e",
+      "size": 205073461,
+      "format": "archive",
+      "required": ["jdk-21.0.12.1+1/bin/java.exe", "jdk-21.0.12.1+1/bin/javac.exe"],
+      "environment": {
+        "JAVA_HOME": "jdk-21.0.12.1+1"
+      }
+    }
+  ],
+  "reports": {
+    "mcp-wasm-report": {
+      "server": {
+        "name": "rea",
+        "version": "6.5.0"
+      },
+      "toolCount": 207,
+      "tool": {
+        "name": "inspect_wasm_artifact",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/__schema0",
+              "description": "Absolute selected local WASM artifact path"
+            },
+            "glue_paths": {
+              "$ref": "#/$defs/__schema2"
+            },
+            "candidate_paths": {
+              "$ref": "#/$defs/__schema3"
+            },
+            "detail": {
+              "$ref": "#/$defs/__schema4"
+            }
+          },
+          "required": ["path"],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "$defs": {
+            "__schema0": {
+              "description": "Absolute selected local WASM artifact path",
+              "$ref": "#/$defs/__schema1"
+            },
+            "__schema1": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$"
+            },
+            "__schema2": {
+              "default": [],
+              "maxItems": 16,
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/__schema1"
+              }
+            },
+            "__schema3": {
+              "default": [],
+              "maxItems": 16,
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/__schema1"
+              }
+            },
+            "__schema4": {
+              "type": "string",
+              "enum": ["complete", "summary"]
+            }
+          },
+          "examples": [
+            {
+              "path": "/artifacts/module.wasm",
+              "glue_paths": [],
+              "candidate_paths": []
+            }
+          ]
+        }
+      },
+      "call": {
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"evidence_id\":\"ev_fed401fe175243562b15f4eee911bbe2565fb8579c9758d2e422ebae5dee3f64\",\"subject\":{\"name\":\"audit.wasm\",\"digest\":{\"sha256\":\"9dc7f20d42319ad523fef16624ded077ee01caeb913305913af1f56c8234d797\"},\"local_path\":\"C:\\\\Users\\\\victo\\\\Documents\\\\Codex\\\\2026-10-18\\\\e-como-eu-volto-para-essa\\\\rea-toolchain-qa-state-1792360738272\\\\audit.wasm\",\"format\":\"file\",\"architecture\":null},\"provider\":{\"id\":\"rea-analysis-view\",\"name\":\"REA analysis view projection\",\"version\":\"1\"},\"analysis_profile\":null,\"predicate_type\":\"rea.analysis-view\",\"operation\":\"inspect_analysis_view\",\"parameters\":{\"parent_evidence_id\""
+          }
+        ],
+        "structuredKeys": [
+          "evidence_id",
+          "subject",
+          "provider",
+          "analysis_profile",
+          "predicate_type",
+          "operation",
+          "parameters",
+          "raw_result",
+          "normalized_result",
+          "confidence",
+          "authority",
+          "environment",
+          "limitations",
+          "relationship_coverage",
+          "locations",
+          "evidence_links"
+        ],
+        "evidence_id": "ev_fed401fe175243562b15f4eee911bbe2565fb8579c9758d2e422ebae5dee3f64",
+        "subject": {
+          "name": "audit.wasm",
+          "digest": {
+            "sha256": "9dc7f20d42319ad523fef16624ded077ee01caeb913305913af1f56c8234d797"
+          },
+          "local_path": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\audit.wasm",
+          "format": "file",
+          "architecture": null
+        },
+        "provider": {
+          "id": "rea-analysis-view",
+          "name": "REA analysis view projection",
+          "version": "1"
+        },
+        "analysis_profile": null,
+        "predicate_type": "rea.analysis-view",
+        "operation": "inspect_analysis_view",
+        "normalized_result": {
+          "kind": "summary",
+          "view": {
+            "kind": "summary"
+          },
+          "parent_evidence_id": "ev_58658926e11e9292b523506983cca6f41e10f82f0ccbbf5d081c0bc865e1f0d8",
+          "parent_operation": "inspect_wasm_artifact",
+          "parent_digest": "58658926e11e9292b523506983cca6f41e10f82f0ccbbf5d081c0bc865e1f0d8",
+          "view_digest": "022b42fda0173b1f1d8eb009aec7ba94e45d1574e8c85a26c9cecd6f57218b2d",
+          "artifact": {
+            "path": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\audit.wasm",
+            "sha256": "9dc7f20d42319ad523fef16624ded077ee01caeb913305913af1f56c8234d797"
+          },
+          "coverage": {
+            "status": "complete-within-view",
+            "examined": 5,
+            "total": 5,
+            "next_offset": null,
+            "exhausted": true
+          },
+          "limitations": [
+            "Each subprocess has a 30-second deadline and 32 MiB combined output budget. Oversized output fails instead of producing truncated success.",
+            "Imports and exports retain exact top-level WABT WAT forms. Names remain escaped producer text; unescaped objdump display names are not parsed as unambiguous identifiers.",
+            "JavaScript references are AST-observed static literals only. Candidate matches are associations, not proven data flow, URL-to-file identity or runtime loading. Computed references and aliases are not resolved.",
+            "No target execution or implicit fetch. WABT tools are trusted caller-supplied executables; SHA-256 identifies their bytes, not publisher authenticity. No OS memory sandbox is claimed.",
+            "WAT is a decoded representation, not original source or proof of runtime behavior. Custom annotations may retain payloads, but WAT does not establish original binary layout or round-trip byte identity. Original bytes and objdump output remain authoritative."
+          ],
+          "unknowns": [
+            "Decoded WAT is not original source. Runtime behavior and network acquisition were not performed."
+          ],
+          "summary": {
+            "bytes": 47,
+            "validation": "valid",
+            "available_counts": {
+              "sections": 4,
+              "imports": 0,
+              "exports": 1,
+              "candidates": 1,
+              "glue": 0
+            },
+            "wat": {
+              "sha256": "b00d38198bcbfd1cc46877b2c97813fd6aad0f7dd9e7bf8151390bd6fedb53c2",
+              "representation": "decoded-wat",
+              "code_units": 189
+            },
+            "tool_profile": {
+              "source": "https://github.com/WebAssembly/wabt",
+              "release": "1.0.42",
+              "source_commit": "ff0ef7e0009402740c805a9744c09b05be063e48",
+              "commands": [
+                {
+                  "tool": "wasm-validate",
+                  "path": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-wabt-307152ec845b435b8afa2010b9688e35\\wabt-1.0.42\\bin\\wasm-validate.exe",
+                  "sha256": "4939f4bcc66b8b0370685f656c1a33df068f5d1b245b75c94b10c74ffdd946a3",
+                  "version_banner": "1.0.42\n",
+                  "arguments": ["--enable-all", "module.wasm"]
+                },
+                {
+                  "tool": "wasm-objdump",
+                  "path": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-wabt-307152ec845b435b8afa2010b9688e35\\wabt-1.0.42\\bin\\wasm-objdump.exe",
+                  "sha256": "7f9cf21ca410d867261f719e01f2a0f7b5f13eb83abf0efa975a207307069ac8",
+                  "version_banner": "1.0.42\n",
+                  "arguments": ["-h", "-x", "module.wasm"]
+                },
+                {
+                  "tool": "wasm2wat",
+                  "path": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-wabt-307152ec845b435b8afa2010b9688e35\\wabt-1.0.42\\bin\\wasm2wat.exe",
+                  "sha256": "9ccce93d1000e4d3ba7e5c365bd1e3b5d909dea2f72c7511d584f8a8e9108873",
+                  "version_banner": "1.0.42\n",
+                  "arguments": ["--enable-all", "module.wasm"]
+                }
+              ],
+              "timeout_ms": 30000,
+              "output_budget_bytes": 33554432
+            },
+            "runtime_execution": "not-performed",
+            "network_fetch": "not-performed",
+            "limitation_count": 5
+          }
+        }
+      },
+      "stderr": "{\"level\":30,\"time\":1792360807047,\"application\":\"rea\",\"mode\":\"mcp\",\"layer\":\"server\",\"tool\":\"inspect_wasm_artifact\",\"durationMs\":444.79,\"status\":\"ok\",\"msg\":\"MCP tool execution completed\"}\n"
+    },
+    "mcp-android-report": {
+      "server": {
+        "name": "rea",
+        "version": "6.5.0"
+      },
+      "toolCount": 207,
+      "toolSchema": {
+        "name": "inspect_android_package",
+        "required": ["path"],
+        "properties": ["path", "detail"]
+      },
+      "callerEnvRecordNames": [
+        "REA_JADX_MCP_JAR",
+        "JAVA_HOME",
+        "REA_APKTOOL_COMMAND",
+        "REA_ADB_PATH",
+        "REA_MCP_OUTPUT_SCHEMA_PROFILE"
+      ],
+      "wabtEnvPassed": false,
+      "call": {
+        "isError": false,
+        "content": [
+          "{\"evidence_id\":\"ev_eb7368f08b21fc281bdd3b439636fc0f7a9aa3f2778d9132cbb19bb5d27a4649\",\"subject\":{\"name\":\"synthetic-audit.apk\",\"digest\":{\"sha256\":\"86e8839eefaa452adebb01f30689fda12b2245fa3c1a7fd2fb201f3688f97860\"},\"local_path\":\"C:\\\\Users\\\\victo\\\\Documents\\\\Codex\\\\2026-10-18\\\\e-como-eu-volto-para-essa\\\\rea-toolchain-qa-state-1792360738272\\\\synthetic-audit.apk\",\"format\":\"apk\",\"architecture\":null},\"provider\":{\"id\":\"rea-analysis-view\",\"name\":\"REA analysis view projection\",\"version\":\"1\"},\"analysis_prof"
+        ],
+        "evidence_id": "ev_eb7368f08b21fc281bdd3b439636fc0f7a9aa3f2778d9132cbb19bb5d27a4649",
+        "subject": {
+          "name": "synthetic-audit.apk",
+          "digest": {
+            "sha256": "86e8839eefaa452adebb01f30689fda12b2245fa3c1a7fd2fb201f3688f97860"
+          },
+          "local_path": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\synthetic-audit.apk",
+          "format": "apk",
+          "architecture": null
+        },
+        "provider": {
+          "id": "rea-analysis-view",
+          "name": "REA analysis view projection",
+          "version": "1"
+        },
+        "analysis_profile": null,
+        "predicate_type": "rea.analysis-view",
+        "operation": "inspect_analysis_view",
+        "parent_evidence_id": "ev_a18d3c646502570705c8f7674a873e48dc1cbf53280b306af5edc8ef8408f903",
+        "normalized_result": {
+          "kind": "summary",
+          "view": {
+            "kind": "summary"
+          },
+          "parent_evidence_id": "ev_a18d3c646502570705c8f7674a873e48dc1cbf53280b306af5edc8ef8408f903",
+          "parent_operation": "inspect_android_package",
+          "parent_digest": "a18d3c646502570705c8f7674a873e48dc1cbf53280b306af5edc8ef8408f903",
+          "view_digest": "33dfb2e55056c8a77212a10c9959311a6e800f5a6a7744b4839596a1e8f30359",
+          "artifact": {
+            "path": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\synthetic-audit.apk",
+            "sha256": "86e8839eefaa452adebb01f30689fda12b2245fa3c1a7fd2fb201f3688f97860"
+          },
+          "coverage": {
+            "status": "complete-within-view",
+            "examined": 1,
+            "total": 1,
+            "next_offset": null,
+            "exhausted": true
+          },
+          "limitations": [
+            "Static decompiler observations do not establish runtime behavior; the APK is never executed.",
+            "Method signatures use provider display types; DEX prototypes come from frozen JADX metadata. Display names may be aliases, and overload indices are local to this engine and artifact.",
+            "Class inventories use parsed metadata before code generation, including synthetic members that may be omitted from decompiled source. Source positions remain unknown.",
+            "Incoming reference totals count JADX using nodes. Direct invoke entries within a using method report raw DEX code-unit offsets and method indexes, but coverage is limited to those nodes and directly matched invokes; it does not establish every possible dynamic or reflective call site.",
+            "Manifest summary fields are extracted by the upstream engine; decoded XML is retained for verification. APK signatures, split APKs, native libraries and Android runtime capture are not verified by this provider."
+          ],
+          "unknowns": [
+            "APK signatures were not verified; package declarations do not establish authenticity or runtime behavior."
+          ],
+          "summary": {
+            "engine": {
+              "name": "jadx-headless-mcp",
+              "version": "0.7.1",
+              "artifact_sha256": "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
+              "source_revision": "5844800a486d2248fa949b74c9896285f5b54de2",
+              "worker_count": 1,
+              "heap_limit_mib": 3998
+            },
+            "package_name": "org.cudia.audit.synthetic",
+            "version_name": "1.0",
+            "version_code": "1",
+            "min_sdk": "21",
+            "target_sdk": "28",
+            "permissions": [],
+            "manifest": {
+              "status": "complete",
+              "reported_total_bytes": null,
+              "text_code_units": 368,
+              "text_included": false
+            },
+            "class_count": 1,
+            "resource_count": 2,
+            "signature_verification": "not_performed"
+          }
+        }
+      },
+      "stderr": "{\"level\":30,\"time\":1792360873901,\"application\":\"rea\",\"mode\":\"mcp\",\"layer\":\"server\",\"tool\":\"inspect_android_package\",\"durationMs\":3019.54,\"status\":\"ok\",\"msg\":\"MCP tool execution completed\"}\n"
+    },
+    "mcp-apktool-decode-report": {
+      "server": {
+        "name": "rea",
+        "version": "6.5.0"
+      },
+      "toolCount": 207,
+      "tool": {
+        "name": "decode_android_resources",
+        "required": ["path"],
+        "properties": ["path", "include_strings", "locale"]
+      },
+      "explicitLauncher": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\tool wrappers with spaces\\apktool.cmd",
+      "explicitJavaHome": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\tool wrappers with spaces\\JDK with spaces",
+      "call": {
+        "isError": false,
+        "evidence_id": "ev_505586f11ab826e1c92fde39cf1f12c0b0c83957552bc3c4555305bf0ed66256",
+        "subject": null,
+        "provider": {
+          "id": "apktool",
+          "name": "Apktool",
+          "version": "3.0.3"
+        },
+        "analysis_profile": null,
+        "predicate_type": "rea.analysis",
+        "operation": "decode_android_resources",
+        "normalized_result": {
+          "client": {
+            "command": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\tool wrappers with spaces\\apktool.cmd",
+            "command_source": "environment",
+            "apktool_version": "3.0.3"
+          },
+          "target": {
+            "path": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\synthetic-audit.apk",
+            "bytes": 815,
+            "sha256": "86e8839eefaa452adebb01f30689fda12b2245fa3c1a7fd2fb201f3688f97860"
+          },
+          "metadata": {
+            "version_name": "1.0",
+            "version_code": "1",
+            "min_sdk_version": "21",
+            "target_sdk_version": "28",
+            "package_name": "org.cudia.audit.synthetic"
+          },
+          "manifest": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"org.cudia.audit.synthetic\">\r\n    <application android:label=\"@string/app_name\"/>\r\n</manifest>\r\n",
+          "strings": [
+            {
+              "name": "app_name",
+              "value": "Cudia Synthetic Audit"
+            }
+          ],
+          "locale": null,
+          "locales": [],
+          "decoded_file_count": 5,
+          "coverage": "complete"
+        }
+      },
+      "stderr": "{\"level\":30,\"time\":1792360924661,\"application\":\"rea\",\"mode\":\"mcp\",\"layer\":\"server\",\"tool\":\"decode_android_resources\",\"durationMs\":1044.95,\"status\":\"ok\",\"msg\":\"MCP tool execution completed\"}\n"
+    },
+    "mcp-timing-report": [
+      {
+        "label": "cold",
+        "connectMs": 1011.9075,
+        "listToolsMs": 250.7424,
+        "totalMs": 1262.6499,
+        "toolCount": 207,
+        "wabtEnvPassed": true,
+        "toolEnvNames": [
+          "REA_WABT_BIN_DIRECTORY",
+          "REA_JADX_MCP_JAR",
+          "JAVA_HOME",
+          "REA_APKTOOL_COMMAND",
+          "REA_ADB_PATH",
+          "REA_MCP_OUTPUT_SCHEMA_PROFILE"
+        ],
+        "server": {
+          "name": "rea",
+          "version": "6.5.0"
+        },
+        "stderr": ""
+      },
+      {
+        "label": "warm",
+        "connectMs": 1013.7576,
+        "listToolsMs": 277.0117,
+        "totalMs": 1290.7693,
+        "toolCount": 207,
+        "wabtEnvPassed": true,
+        "toolEnvNames": [
+          "REA_WABT_BIN_DIRECTORY",
+          "REA_JADX_MCP_JAR",
+          "JAVA_HOME",
+          "REA_APKTOOL_COMMAND",
+          "REA_ADB_PATH",
+          "REA_MCP_OUTPUT_SCHEMA_PROFILE"
+        ],
+        "server": {
+          "name": "rea",
+          "version": "6.5.0"
+        },
+        "stderr": ""
+      }
+    ],
+    "registeredEnvironment": {
+      "configPath": "C:/Users/victo/.config/opencode/opencode.jsonc",
+      "parser": "jsonc-parser@3.3.1",
+      "registrationFound": true,
+      "registrationCommand": [
+        "C:\\Users\\victo\\AppData\\Local\\CudiaIntegrations\\rea-6.5.0\\r-398afe10b3e9\\node.exe",
+        "C:\\Users\\victo\\AppData\\Local\\CudiaIntegrations\\rea-6.5.0\\r-398afe10b3e9\\node_modules\\rea-agents\\scripts\\rea.mjs",
+        "mcp"
+      ],
+      "registrationArgs": [],
+      "registrationEnvKeys": [
+        "BUN_BE_BUN",
+        "GHIDRA_INSTALL_DIR",
+        "JAVA_HOME",
+        "PATH",
+        "REA_ADB_PATH",
+        "REA_APKTOOL_COMMAND",
+        "REA_JADX_MCP_JAR",
+        "REA_MCP_OUTPUT_SCHEMA_PROFILE",
+        "REA_WABT_BIN_DIRECTORY"
+      ],
+      "secretLikeEnvKeyNames": [],
+      "isolatedHomeApplied": true,
+      "javaHomeRegistered": true,
+      "javaHomeExists": true,
+      "hostProcessHasWabtEnv": false,
+      "childEnvHasWabtEnv": true,
+      "started": true,
+      "resolvedProcessCommand": "C:\\Users\\victo\\AppData\\Local\\CudiaIntegrations\\rea-6.5.0\\r-398afe10b3e9\\node.exe",
+      "resolvedProcessArgs": [
+        "C:\\Users\\victo\\AppData\\Local\\CudiaIntegrations\\rea-6.5.0\\r-398afe10b3e9\\node_modules\\rea-agents\\scripts\\rea.mjs",
+        "mcp"
+      ],
+      "sdkDefaultEnvKeyNames": [
+        "APPDATA",
+        "COMSPEC",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "USERNAME",
+        "USERPROFILE",
+        "WINDIR"
+      ],
+      "server": {
+        "name": "rea",
+        "version": "6.5.0"
+      },
+      "toolCount": 207,
+      "connectMs": 1131.7841,
+      "listToolsMs": 253.6982,
+      "selectedSchemas": {
+        "inspect_wasm_artifact": {
+          "required": ["path"],
+          "properties": ["path", "glue_paths", "candidate_paths", "detail"]
+        },
+        "inspect_android_package": {
+          "required": ["path"],
+          "properties": ["path", "detail"]
+        },
+        "decode_android_resources": {
+          "required": ["path"],
+          "properties": ["path", "include_strings", "locale"]
+        }
+      },
+      "calls": [
+        {
+          "label": "wasm",
+          "name": "inspect_wasm_artifact",
+          "isError": false,
+          "resultFile": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\registered-wasm-result.json",
+          "evidenceId": "ev_fed401fe175243562b15f4eee911bbe2565fb8579c9758d2e422ebae5dee3f64",
+          "parentEvidenceId": "ev_58658926e11e9292b523506983cca6f41e10f82f0ccbbf5d081c0bc865e1f0d8",
+          "provider": {
+            "id": "rea-analysis-view",
+            "name": "REA analysis view projection",
+            "version": "1"
+          },
+          "operation": "inspect_analysis_view",
+          "summary": {
+            "bytes": 47,
+            "validation": "valid",
+            "available_counts": {
+              "sections": 4,
+              "imports": 0,
+              "exports": 1,
+              "candidates": 1,
+              "glue": 0
+            },
+            "wat": {
+              "sha256": "b00d38198bcbfd1cc46877b2c97813fd6aad0f7dd9e7bf8151390bd6fedb53c2",
+              "representation": "decoded-wat",
+              "code_units": 189
+            },
+            "tool_profile": {
+              "source": "https://github.com/WebAssembly/wabt",
+              "release": "1.0.42",
+              "source_commit": "ff0ef7e0009402740c805a9744c09b05be063e48",
+              "commands": [
+                {
+                  "tool": "wasm-validate",
+                  "path": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-wabt-307152ec845b435b8afa2010b9688e35\\wabt-1.0.42\\bin\\wasm-validate.exe",
+                  "sha256": "4939f4bcc66b8b0370685f656c1a33df068f5d1b245b75c94b10c74ffdd946a3",
+                  "version_banner": "1.0.42\n",
+                  "arguments": ["--enable-all", "module.wasm"]
+                },
+                {
+                  "tool": "wasm-objdump",
+                  "path": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-wabt-307152ec845b435b8afa2010b9688e35\\wabt-1.0.42\\bin\\wasm-objdump.exe",
+                  "sha256": "7f9cf21ca410d867261f719e01f2a0f7b5f13eb83abf0efa975a207307069ac8",
+                  "version_banner": "1.0.42\n",
+                  "arguments": ["-h", "-x", "module.wasm"]
+                },
+                {
+                  "tool": "wasm2wat",
+                  "path": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-wabt-307152ec845b435b8afa2010b9688e35\\wabt-1.0.42\\bin\\wasm2wat.exe",
+                  "sha256": "9ccce93d1000e4d3ba7e5c365bd1e3b5d909dea2f72c7511d584f8a8e9108873",
+                  "version_banner": "1.0.42\n",
+                  "arguments": ["--enable-all", "module.wasm"]
+                }
+              ],
+              "timeout_ms": 30000,
+              "output_budget_bytes": 33554432
+            },
+            "runtime_execution": "not-performed",
+            "network_fetch": "not-performed",
+            "limitation_count": 5
+          },
+          "apktoolMetadata": null,
+          "apktoolStrings": null
+        },
+        {
+          "label": "jadx",
+          "name": "inspect_android_package",
+          "isError": false,
+          "resultFile": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\registered-jadx-result.json",
+          "evidenceId": "ev_d8b2c0a7bfc550adfab810ce1f39c0fbd3e6ea78f02bb2afa9bb5a0ba7d5759a",
+          "parentEvidenceId": "ev_61bfe01d3c134292c5b8b026396da0da39ec33ea991a3970d1105a6f18bc3b7c",
+          "provider": {
+            "id": "rea-analysis-view",
+            "name": "REA analysis view projection",
+            "version": "1"
+          },
+          "operation": "inspect_analysis_view",
+          "summary": {
+            "engine": {
+              "name": "jadx-headless-mcp",
+              "version": "0.7.1",
+              "artifact_sha256": "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
+              "source_revision": "5844800a486d2248fa949b74c9896285f5b54de2",
+              "worker_count": 1,
+              "heap_limit_mib": 3998
+            },
+            "package_name": "org.cudia.audit.synthetic",
+            "version_name": "1.0",
+            "version_code": "1",
+            "min_sdk": "21",
+            "target_sdk": "28",
+            "permissions": [],
+            "manifest": {
+              "status": "complete",
+              "reported_total_bytes": null,
+              "text_code_units": 368,
+              "text_included": false
+            },
+            "class_count": 1,
+            "resource_count": 2,
+            "signature_verification": "not_performed"
+          },
+          "apktoolMetadata": null,
+          "apktoolStrings": null
+        },
+        {
+          "label": "apktool",
+          "name": "decode_android_resources",
+          "isError": false,
+          "resultFile": "C:\\Users\\victo\\Documents\\Codex\\2026-10-18\\e-como-eu-volto-para-essa\\rea-toolchain-qa-state-1792360738272\\registered-apktool-result.json",
+          "evidenceId": "ev_3d3baac89823a95c9bcb22e67979550c0a17d5d5d7df08a17e1a6c4384ad59f8",
+          "parentEvidenceId": null,
+          "provider": {
+            "id": "apktool",
+            "name": "Apktool",
+            "version": "3.0.3"
+          },
+          "operation": "decode_android_resources",
+          "summary": null,
+          "apktoolMetadata": {
+            "version_name": "1.0",
+            "version_code": "1",
+            "min_sdk_version": "21",
+            "target_sdk_version": "28",
+            "package_name": "org.cudia.audit.synthetic"
+          },
+          "apktoolStrings": [
+            {
+              "name": "app_name",
+              "value": "Cudia Synthetic Audit"
+            }
+          ]
+        }
+      ],
+      "stderrBytes": 564
+    }
+  },
+  "installation": "Five pinned receipts ready; optional tools remain off the global PATH",
+  "initialAttempt": "Aggregate CLI installation first failed with a generic Unexpected error after JDK/WABT/JADX; isolated Apktool/ADB retry succeeded. Initial cause not established.",
+  "downloadCleanupRepair": "A real sparse-archive HTTP fixture exposed Bun1.3.14 reader.releaseLock TypeError. Removing unnecessary release/cancel on fully consumed bodies allowed real extraction/cancellation test to pass. File closure preserves primary errors.",
+  "activation": {
+    "config": "C:/Users/victo/.config/opencode/opencode.jsonc",
+    "backup": "C:/Users/victo/.config/opencode/opencode.jsonc.before-rea-tools-1792360991371",
+    "added": {
+      "REA_ADB_PATH": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-adb-27ba9749335543009de83c48c0a13992\\platform-tools\\adb.exe",
+      "REA_WABT_BIN_DIRECTORY": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-wabt-307152ec845b435b8afa2010b9688e35\\wabt-1.0.42\\bin",
+      "REA_JADX_MCP_JAR": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-jadx-6f1bcb010b484288b2cab0d9519694d3\\jadx-headless-mcp.jar",
+      "REA_APKTOOL_COMMAND": "C:\\Users\\victo\\.cache\\opencode\\rea-tools\\i-apktool-d1d608bddecc4abdb134f09d69a60fb4\\apktool.cmd"
+    },
+    "beforeSha256": "a75c547cb275ecd26b33b01ff21989c4a3415638dbb5d8600da3c9ce75d47f22",
+    "afterSha256": "ff9501af06f502fd646bf59797933853f0463fa6212024489a20c3d9c3ea6a71",
+    "enabledUnchanged": true,
+    "commandUnchanged": true
+  },
+  "limitations": [
+    "ADB version probe only; no devices or ADB daemon contacted",
+    "Synthetic owned APK; no claim about all APK formats or real targets",
+    "Ghidra/ILSpy/IDA/Hopper/JEB are not provisioned by these five packages",
+    "Windows x64; native Windows tar.exe needed for archives",
+    "Managed REA first-use bootstrap on a fresh PC remains a separate distribution qualification"
+  ],
+  "review": {
+    "advisor": "gpt-6-astra/high",
+    "boundedAudits": "gpt-6-luna/high"
+  },
+  "checks": {
+    "optionalTools": {
+      "passed": 9,
+      "failed": 0,
+      "assertions": 46
+    },
+    "coreIntegration": {
+      "passed": 58,
+      "failed": 0,
+      "assertions": 379,
+      "log": "rea-tools-core-final.log"
+    },
+    "coreTypecheckExitCode": 0,
+    "opencodeTypecheckExitCode": 0,
+    "tuiTypecheckExitCode": 0
+  },
+  "reviewFindings": [
+    "REA recognition restricted to supported launcher positions; unrelated ordinary arguments do not match",
+    "Extractor close is joined before staging cleanup; cancellation after real extraction begins passes",
+    "File inventory is signal-aware; optional corrupt tools are isolated; explicit selections preserved",
+    "Actual registered environment passed WASM/JADX/Apktool operations without changing active app processes"
+  ]
+}

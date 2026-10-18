@@ -1,6 +1,7 @@
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { isReaCommand } from "@opencode-ai/core/mcp/rea-command"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Client, type ClientOptions } from "@modelcontextprotocol/sdk/client/index.js"
@@ -368,8 +369,17 @@ const layer = Layer.effect(
                   ...mcp.environment,
                 },
               }
+      const env = isReaCommand(local.command, local.args)
+        ? yield* Effect.gen(function* () {
+            const { environmentFor } = yield* Effect.promise(() => import("@opencode-ai/core/mcp/rea-tools"))
+            return yield* Effect.promise((signal) =>
+              environmentFor(local.command, local.args, local.env, undefined, undefined, signal),
+            )
+          })
+        : local.env
       const transport = new StdioClientTransport({
         ...local,
+        env,
         stderr: "pipe",
         cwd,
       })
