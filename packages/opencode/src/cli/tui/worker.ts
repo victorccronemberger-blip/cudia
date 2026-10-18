@@ -11,15 +11,16 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { AmbientInstructions } from "@opencode-ai/core/harness/ambient-instructions"
+import { Global } from "@opencode-ai/core/global"
+import { installWorkerDiagnostics } from "./worker-diagnostics"
+import path from "node:path"
+
+const warnings = installWorkerDiagnostics({
+  file: path.join(Global.Path.log, "worker-warnings.log"),
+  notify: (warning) => Rpc.emit("diagnostic", warning),
+})
 
 Heap.start()
-
-const onUnhandledRejection = (_error: unknown) => {}
-
-const onUncaughtException = (_error: Error) => {}
-
-process.on("unhandledRejection", onUnhandledRejection)
-process.on("uncaughtException", onUncaughtException)
 
 // Subscribe to global events and forward them via RPC
 GlobalBus.on("event", (event) => {
@@ -29,6 +30,9 @@ GlobalBus.on("event", (event) => {
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 
 export const rpc = {
+  diagnostics() {
+    return warnings.subscribe()
+  },
   instructions(automatic?: boolean) {
     if (automatic !== undefined) AmbientInstructions.configure(automatic)
     return AmbientInstructions.current()
@@ -75,10 +79,12 @@ export const rpc = {
     )
   },
   async shutdown() {
-    await InstanceRuntime.disposeAllInstances()
-    if (server) await server.stop(true)
-    process.off("unhandledRejection", onUnhandledRejection)
-    process.off("uncaughtException", onUncaughtException)
+    try {
+      await InstanceRuntime.disposeAllInstances()
+      if (server) await server.stop(true)
+    } finally {
+      warnings.stop()
+    }
   },
 }
 

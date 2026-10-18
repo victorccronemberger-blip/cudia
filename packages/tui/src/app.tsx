@@ -86,6 +86,8 @@ import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
+import { createWarningDiagnostics, type WarningDiagnostic } from "./util/warnings"
+import path from "node:path"
 
 registerOpencodeSpinner()
 
@@ -148,6 +150,7 @@ export type TuiInput = {
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
   events?: EventSource
+  diagnostics?: { subscribe: (handler: (warning: WarningDiagnostic) => void) => () => void }
   pluginHost: TuiPluginHost
 }
 
@@ -188,6 +191,26 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const exit = { epilogue: undefined as string | undefined, reason: undefined as unknown }
   const result = yield* Effect.scoped(
     Effect.gen(function* () {
+      const sink: { current?: (warning: WarningDiagnostic) => void } = {}
+      const warnings = createWarningDiagnostics({
+        file: path.join(global.log, "tui-warnings.log"),
+        notify: (warning) => sink.current?.(warning),
+      })
+      yield* Effect.acquireRelease(
+        Effect.sync(() => warnings.start()),
+        () => Effect.sync(() => warnings.stop()),
+      )
+      const diagnostics = {
+        subscribe(listener: (warning: WarningDiagnostic) => void) {
+          sink.current = listener
+          for (const warning of warnings.subscribe()) listener(warning)
+          const off = input.diagnostics?.subscribe(listener)
+          return () => {
+            sink.current = undefined
+            off?.()
+          }
+        },
+      }
       const renderer = yield* Effect.acquireRelease(
         Effect.tryPromise({
           try: () =>
@@ -318,6 +341,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                                     <App
                                                                       onSnapshot={input.onSnapshot}
                                                                       pluginHost={input.pluginHost}
+                                                                      diagnostics={diagnostics}
                                                                     />
                                                                   </LocationProvider>
                                                                 </EditorContextProvider>
@@ -364,7 +388,11 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   })
 })
 
-function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
+function App(props: {
+  onSnapshot?: () => Promise<string[]>
+  pluginHost: TuiPluginHost
+  diagnostics?: TuiInput["diagnostics"]
+}) {
   const startup = useTuiStartup()
   const tuiConfig = useTuiConfig()
   const route = useRoute()
@@ -377,6 +405,19 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const event = useEvent()
   const sdk = useSDK()
   const toast = useToast()
+  onMount(() => {
+    const off = props.diagnostics?.subscribe((warning) => {
+      toast.show({
+        title: warning.name,
+        message: warning.saved
+          ? `${warning.message}\nDiagnostic: ${warning.file}`
+          : `${warning.message}\n${warning.file ? `Could not save diagnostic to ${warning.file}. ` : ""}Available in memory only until this process exits.`,
+        variant: warning.level ?? "warning",
+        duration: 8000,
+      })
+    })
+    onCleanup(() => off?.())
+  })
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
   const sync = useSync()

@@ -554,8 +554,10 @@ describe("MCPV2 manager", () => {
   })
 
   it("bounds a slow paginated refresh and keeps disconnected snapshots inert", async () => {
-    const server = fixture({ listChangedOnCall: true, pagedRefresh: true, pageDelayMs: 60 })
-    const timeout = new ConfigMCP.Timeout({ startup: 1_000, request: 80 })
+    // Allow Windows scheduling room while each page remains faster than the
+    // shared deadline and the complete pagination remains slower than it.
+    const server = fixture({ listChangedOnCall: true, pagedRefresh: true, pageDelayMs: 600 })
+    const timeout = new ConfigMCP.Timeout({ startup: 5_000, request: 800 })
     try {
       await run(
         server.url,
@@ -576,10 +578,10 @@ describe("MCPV2 manager", () => {
           const elapsed = Date.now() - started
           expect(refresh._tag).toBe("Failure")
           if (refresh._tag === "Failure") expect(refresh.failure).toMatchObject({ kind: "timeout" })
-          expect(elapsed).toBeLessThan(250)
+          expect(elapsed).toBeLessThan(1_600)
           const listingsAtTimeout = server.posts.filter((method) => method === "tools/list").length
           expect(listingsAtTimeout).toBe(3)
-          yield* Effect.sleep(100)
+          yield* Effect.sleep(700)
           expect(server.posts.filter((method) => method === "tools/list")).toHaveLength(listingsAtTimeout)
 
           const stillDirty = yield* captured.settle(
