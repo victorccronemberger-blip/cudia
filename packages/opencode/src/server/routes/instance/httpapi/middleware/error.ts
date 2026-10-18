@@ -1,6 +1,7 @@
 import { NamedError } from "@opencode-ai/core/util/error"
 import { ConfigErrorV1 } from "@opencode-ai/core/v1/config/error"
 import { Cause, Effect } from "effect"
+import { isRecord } from "@/util/record"
 import { HttpRouter, HttpServerError, HttpServerRespondable, HttpServerResponse } from "effect/unstable/http"
 
 // Keep typed HttpApi failures on their declared error path; this boundary only replaces defect-only empty 500s.
@@ -24,6 +25,24 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
         ConfigErrorV1.RemoteAuthError.isInstance(error)
       ) {
         return Effect.succeed(HttpServerResponse.jsonUnsafe(error.toObject(), { status: 400 }))
+      }
+
+      if (
+        isRecord(error) &&
+        error._tag === "ProviderModelNotFoundError" &&
+        isRecord(error.cause) &&
+        error.cause._tag === "ProviderInitError" &&
+        typeof error.providerID === "string" &&
+        typeof error.modelID === "string"
+      ) {
+        return Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            new NamedError.Unknown({
+              message: `Provider unavailable: ${error.providerID}. Check its connection before using ${error.modelID}.`,
+            }).toObject(),
+            { status: 400 },
+          ),
+        )
       }
 
       const ref = `err_${crypto.randomUUID().slice(0, 8)}`

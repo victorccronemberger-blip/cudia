@@ -19,6 +19,29 @@ function expectUnknownErrorBody(body: unknown) {
 }
 
 describe("HttpApi error middleware", () => {
+  it.live("reports only the unavailable provider without exposing its credential failure", () =>
+    Effect.gen(function* () {
+      yield* HttpRouter.add(
+        "GET",
+        "/provider-unavailable",
+        Effect.die({
+          _tag: "ProviderModelNotFoundError",
+          providerID: "openai",
+          modelID: "test-model",
+          cause: { _tag: "ProviderInitError", cause: "private credential response" },
+        }),
+      ).pipe(Layer.provide(errorLayer), HttpRouter.serve, Layer.build)
+      const response = yield* HttpClientRequest.get("/provider-unavailable").pipe(HttpClient.execute)
+      const body = yield* response.json
+      expect(response.status).toBe(400)
+      expect(body).toEqual({
+        name: "UnknownError",
+        data: { message: "Provider unavailable: openai. Check its connection before using test-model." },
+      })
+      expect(JSON.stringify(body)).not.toContain("private credential response")
+    }),
+  )
+
   it.live("returns a safe body for unknown 500 defects", () =>
     Effect.gen(function* () {
       yield* HttpRouter.add("GET", "/boom", Effect.die(new Error("secret stack marker"))).pipe(
