@@ -1,6 +1,6 @@
 import { ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { Show } from "solid-js"
+import { createSignal, Show } from "solid-js"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "./dialog"
 import { useBindings } from "../keymap"
@@ -17,6 +17,7 @@ export function DialogAlert(props: DialogAlertProps) {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
   let scroll: ScrollBoxRenderable | undefined
+  const [contentWidth, setContentWidth] = createSignal<number | "100%">("100%")
 
   useBindings(() => ({
     bindings: [
@@ -63,8 +64,15 @@ export function DialogAlert(props: DialogAlertProps) {
             ref={(value: ScrollBoxRenderable) => (scroll = value)}
             // The modal's quarter-screen offset and seven chrome rows leave this viewport.
             height={Math.max(1, Math.floor(dimensions().height * 0.75) - 7)}
+            contentOptions={{
+              onSizeChange() {
+                // Percentage text widths include the scrollbar column in OpenTUI;
+                // measure against the actual content area so wrapping and scrolling agree.
+                if (this.width > 0) setContentWidth(this.width)
+              },
+            }}
           >
-            <text fg={theme.textMuted} wrapMode="word">
+            <text fg={theme.textMuted} wrapMode="word" width={contentWidth()}>
               {props.message}
             </text>
           </scrollbox>

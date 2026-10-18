@@ -1,6 +1,7 @@
 import { expect, mock, test } from "bun:test"
 import type { TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin/tui"
 import { createTestRenderer } from "@opentui/core/testing"
+import type { Renderable } from "@opentui/core"
 import { Effect } from "effect"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
@@ -25,9 +26,17 @@ const errors = [
     tail: "TAIL_MULTILINE",
   },
   {
-    message: `UNBROKEN_START_${"x".repeat(120)}_TAIL_UNBROKEN`,
+    message: `UNBROKEN_START_${"x".repeat(2400)}_TAIL_UNBROKEN`,
     head: "UNBROKEN_START_",
     tail: "_TAIL_UNBROKEN",
+  },
+  {
+    message:
+      "CUDIA_RETRY_ERROR_HEAD: synthetic rate-limit diagnostic. " +
+      "diagnostic detail for owned local test only. ".repeat(55) +
+      " CUDIA_RETRY_ERROR_TAIL_MARKER",
+    head: "CUDIA_RETRY_ERROR_HEAD",
+    tail: "CUDIA_RETRY_ERROR_TAIL_MARKER",
   },
 ]
 const longPath =
@@ -145,6 +154,15 @@ test("retry prompt stays one row and exposes the complete error without losing t
     await setup.renderOnce()
 
     const rows = () => setup.captureCharFrame().replaceAll("▀", "").split("\n")
+    function layoutSettled(node: Renderable): boolean {
+      if (node instanceof core.ScrollBoxRenderable && node.width > 0) {
+        return (
+          node.scrollHeight === node.content.height &&
+          node.getChildren().every((child) => child.width === node.viewport.width)
+        )
+      }
+      return node.getChildren().every(layoutSettled)
+    }
     const frame = rows()
     const retryRows = () => rows().filter((row) => row.includes("error details") && row.includes("interrupt"))
     expect(retryRows()).toHaveLength(1)
@@ -190,6 +208,10 @@ test("retry prompt stays one row and exposes the complete error without losing t
         expect(rows().join("\n")).toContain("Retry Error")
       }
 
+      await waitFor(
+        () => layoutSettled(setup.renderer.root),
+        () => setup.renderOnce(),
+      )
       setup.mockInput.pressKey("END")
       await setup.renderOnce()
       await waitFor(
