@@ -163,6 +163,18 @@ test("retry prompt stays one row and exposes the complete error without losing t
       }
       return node.getChildren().every(layoutSettled)
     }
+    function visibleErrorText(node: Renderable = setup.renderer.root): string {
+      if (node instanceof core.ScrollBoxRenderable && node.width > 0) {
+        const viewport = node.viewport
+        return setup
+          .captureCharFrame()
+          .split("\n")
+          .slice(viewport.y, viewport.y + viewport.height)
+          .map((row) => row.slice(viewport.x, viewport.x + viewport.width).trimEnd())
+          .join("")
+      }
+      return node.getChildren().map(visibleErrorText).join("")
+    }
     const frame = rows()
     const retryRows = () => rows().filter((row) => row.includes("error details") && row.includes("interrupt"))
     expect(retryRows()).toHaveLength(1)
@@ -215,10 +227,28 @@ test("retry prompt stays one row and exposes the complete error without losing t
       setup.mockInput.pressKey("END")
       await setup.renderOnce()
       await waitFor(
-        () => rows().join("\n").includes(error.tail),
+        () => visibleErrorText().includes(error.tail),
         () => setup.renderOnce(),
       )
-      expect(rows().join("\n")).toContain(error.tail)
+      expect(visibleErrorText()).toContain(error.tail)
+      for (const [width, height] of [
+        [120, 36],
+        [50, 12],
+      ]) {
+        setup.resize(width, height)
+        await setup.renderOnce()
+        await waitFor(
+          () => layoutSettled(setup.renderer.root),
+          () => setup.renderOnce(),
+        )
+        expect(layoutSettled(setup.renderer.root)).toBe(true)
+        setup.mockInput.pressKey("END")
+        await waitFor(
+          () => visibleErrorText().includes(error.tail),
+          () => setup.renderOnce(),
+        )
+        expect(visibleErrorText()).toContain(error.tail)
+      }
       setup.mockInput.pressKey("HOME")
       await setup.renderOnce()
       await waitFor(

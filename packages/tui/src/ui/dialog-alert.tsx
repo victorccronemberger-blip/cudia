@@ -1,6 +1,6 @@
 import { ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createSignal, Show } from "solid-js"
+import { createSignal, onCleanup, Show } from "solid-js"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "./dialog"
 import { useBindings } from "../keymap"
@@ -17,7 +17,9 @@ export function DialogAlert(props: DialogAlertProps) {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
   let scroll: ScrollBoxRenderable | undefined
+  let detachResize: (() => void) | undefined
   const [contentWidth, setContentWidth] = createSignal<number | "100%">("100%")
+  onCleanup(() => detachResize?.())
 
   useBindings(() => ({
     bindings: [
@@ -61,16 +63,23 @@ export function DialogAlert(props: DialogAlertProps) {
       <box paddingBottom={1}>
         <Show when={props.scrollable} fallback={<text fg={theme.textMuted}>{props.message}</text>}>
           <scrollbox
-            ref={(value: ScrollBoxRenderable) => (scroll = value)}
+            ref={(value: ScrollBoxRenderable) => {
+              detachResize?.()
+              scroll = value
+              const previous = value.content.onSizeChange
+              const resize = () => {
+                previous?.call(value.content)
+                if (value.content.width > 0) setContentWidth(value.content.width)
+              }
+              // Keep OpenTUI's onSizeChange callback, which updates the scrollbars.
+              value.content.onSizeChange = resize
+              detachResize = () => {
+                if (value.content.onSizeChange === resize) value.content.onSizeChange = previous
+              }
+              resize()
+            }}
             // The modal's quarter-screen offset and seven chrome rows leave this viewport.
             height={Math.max(1, Math.floor(dimensions().height * 0.75) - 7)}
-            contentOptions={{
-              onSizeChange() {
-                // Percentage text widths include the scrollbar column in OpenTUI;
-                // measure against the actual content area so wrapping and scrolling agree.
-                if (this.width > 0) setContentWidth(this.width)
-              },
-            }}
           >
             <text fg={theme.textMuted} wrapMode="word" width={contentWidth()}>
               {props.message}
