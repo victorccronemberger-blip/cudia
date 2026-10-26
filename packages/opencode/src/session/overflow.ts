@@ -15,7 +15,13 @@ export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outpu
     input.cfg.compaction?.reserved ??
     Math.min(COMPACTION_BUFFER, ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax))
   return input.model.limit.input
-    ? Math.max(0, input.model.limit.input - reserved)
+    ? Math.max(
+        0,
+        Math.min(
+          input.model.limit.input - reserved,
+          context - ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax),
+        ),
+      )
     : Math.max(0, context - ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax))
 }
 

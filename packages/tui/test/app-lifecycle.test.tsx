@@ -8,7 +8,7 @@ import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
 
 test("SIGHUP clears title and disposes scoped resources once", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false, exitSignals: [] })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const titles: string[] = []
@@ -25,6 +25,7 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
     started = resolve
   })
   let disposes = 0
+  const exitCode = process.exitCode
 
   try {
     const { run } = await import("../src/app")
@@ -54,6 +55,54 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
     expect(titles.at(-1)).toBe("")
     expect(disposes).toBe(1)
     expect(process.listeners("SIGHUP").every((listener) => listeners.has(listener))).toBe(true)
+  } finally {
+    process.exitCode = exitCode ?? 0
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    mock.restore()
+  }
+})
+
+test("an idle TUI survives SIGPIPE instead of disappearing", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false, exitSignals: [] })
+  const core = await import("@opentui/core")
+  mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  const events = createEventSource()
+  const calls = createFetch()
+  let api: TuiPluginApi | undefined
+  let started!: () => void
+  const ready = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  let disposes = 0
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        url: "http://test",
+        directory,
+        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        fetch: calls.fetch,
+        events: events.source,
+        args: {},
+        pluginHost: {
+          async start(input) {
+            api = input.api
+            started()
+          },
+          async dispose() {
+            disposes++
+          },
+        },
+      }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
+    )
+    await ready
+    process.emit("SIGPIPE")
+    await setup.renderOnce()
+    expect(setup.renderer.isDestroyed).toBe(false)
+    expect(disposes).toBe(0)
+    api?.keymap.dispatchCommand("app.exit")
+    await task
+    expect(disposes).toBe(1)
   } finally {
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()
     mock.restore()

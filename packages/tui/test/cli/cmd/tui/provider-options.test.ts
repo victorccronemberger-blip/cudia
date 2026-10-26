@@ -2,6 +2,15 @@ import { describe, expect, test } from "bun:test"
 import { normalizeCustomProviderID, providerOptions } from "../../../../src/component/dialog-provider"
 
 describe("providerOptions", () => {
+  test("Drael connects directly as a popular provider without asking for a custom ID", () => {
+    expect(providerOptions([{ id: "drael", name: "Drael" }])[0]).toMatchObject({
+      type: "provider",
+      providerID: "drael",
+      title: "Drael",
+      description: "(API key)",
+      category: "Popular",
+    })
+  })
   test("includes a synthetic Other option for custom providers", () => {
     expect(providerOptions([{ id: "openai", name: "OpenAI" }]).at(-1)).toMatchObject({
       title: "Other",

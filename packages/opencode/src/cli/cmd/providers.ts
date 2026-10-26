@@ -369,6 +369,7 @@ export const ProvidersLoginCommand = effectCmd({
     const hooks = yield* pluginSvc.list()
 
     const priority: Record<string, number> = {
+      drael: 0,
       opencode: 0,
       openai: 1,
       "github-copilot": 2,

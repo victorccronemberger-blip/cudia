@@ -9,6 +9,7 @@ import { EventV2 } from "./event"
 import { Policy } from "./policy"
 import { State } from "./state"
 import { Integration } from "./integration"
+import { limitContext } from "./model-context"
 
 export type ProviderRecord = {
   provider: ProviderV2.MutableInfo
@@ -91,6 +92,7 @@ const layer = Layer.effect(
       }
       return ModelV2.Info.make({
         ...model,
+        limit: limitContext(model.limit, model.providerID),
         api,
         request,
       })

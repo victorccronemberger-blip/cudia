@@ -42,6 +42,17 @@ const model = (api: Api, variants: ModelV2.Info["variants"] = []) =>
   })
 
 describe("SessionRunnerModel", () => {
+  it.effect("reserves a bounded response budget inside the 248k context window", () =>
+    Effect.gen(function* () {
+      const large = ModelV2.Info.make({
+        ...model({ type: "aisdk", package: "@ai-sdk/openai" }),
+        limit: { context: 248_000, output: 131_072 },
+      })
+      const resolved = yield* SessionRunnerModel.fromCatalogModel(large)
+      expect(resolved.route.defaults.limits).toEqual({ context: 248_000, output: 32_000 })
+    }),
+  )
+
   it.effect("maps catalog OpenAI AI SDK models into native Responses routes", () =>
     Effect.gen(function* () {
       const resolved = yield* SessionRunnerModel.fromCatalogModel(

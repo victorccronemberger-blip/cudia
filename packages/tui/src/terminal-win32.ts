@@ -3,6 +3,9 @@ import type { ReadStream } from "node:tty"
 
 const STD_INPUT_HANDLE = -10
 const ENABLE_PROCESSED_INPUT = 0x0001
+const STD_OUTPUT_HANDLE = -11
+const RESET_TERMINAL =
+  "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[?1049l\x1b[0m\x1b[?25h"
 
 const kernel = () =>
   dlopen("kernel32.dll", {
@@ -10,9 +13,26 @@ const kernel = () =>
     GetConsoleMode: { args: ["ptr", "ptr"], returns: "i32" },
     SetConsoleMode: { args: ["ptr", "u32"], returns: "i32" },
     FlushConsoleInputBuffer: { args: ["ptr"], returns: "i32" },
+    WriteConsoleW: { args: ["ptr", "ptr", "u32", "ptr", "ptr"], returns: "i32" },
   })
 
 let k32: ReturnType<typeof kernel> | undefined
+
+/** Synchronous recovery also works after the native renderer has already stopped. */
+export function win32RestoreTerminal() {
+  if (process.platform !== "win32" || !process.stdout.isTTY || !load()) return
+  const handle = k32!.symbols.GetStdHandle(STD_OUTPUT_HANDLE)
+  const mode = new Uint32Array(1)
+  if (!k32!.symbols.GetConsoleMode(handle, ptr(mode))) return
+  const text = Buffer.from(RESET_TERMINAL, "utf16le")
+  const written = new Uint32Array(1)
+  k32!.symbols.SetConsoleMode(handle, mode[0]! | 0x0004)
+  try {
+    k32!.symbols.WriteConsoleW(handle, ptr(text), text.length / 2, ptr(written), null)
+  } finally {
+    k32!.symbols.SetConsoleMode(handle, mode[0]!)
+  }
+}
 
 function load() {
   if (process.platform !== "win32") return false
@@ -80,6 +100,17 @@ export function win32InstallCtrlCGuard() {
 
   if (k32!.symbols.GetConsoleMode(handle, ptr(buf)) === 0) return
   const initial = buf[0]!
+  const output = k32!.symbols.GetStdHandle(STD_OUTPUT_HANDLE)
+  const outputMode = new Uint32Array(1)
+  const hasOutputMode = k32!.symbols.GetConsoleMode(output, ptr(outputMode)) !== 0
+  const restore = () => {
+    win32RestoreTerminal()
+    k32!.symbols.SetConsoleMode(handle, initial)
+    if (hasOutputMode) k32!.symbols.SetConsoleMode(output, outputMode[0]!)
+  }
+  // A previous process may have left mouse reporting active in this console.
+  win32RestoreTerminal()
+  process.once("exit", restore)
 
   const enforce = () => {
     if (k32!.symbols.GetConsoleMode(handle, ptr(buf)) === 0) return
@@ -122,7 +153,8 @@ export function win32InstallCtrlCGuard() {
       stdin.setRawMode = original
     }
 
-    k32!.symbols.SetConsoleMode(handle, initial)
+    restore()
+    process.off("exit", restore)
     unhook = undefined
   }
 

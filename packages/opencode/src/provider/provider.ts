@@ -28,6 +28,7 @@ import { optional } from "@opencode-ai/core/schema"
 import { ProviderTransform } from "./transform"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { limitContext } from "@opencode-ai/core/model-context"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
@@ -1800,6 +1801,7 @@ const layer = Layer.effect(
           const configProvider = cfg.provider?.[providerID]
 
           for (const [modelID, model] of Object.entries(provider.models)) {
+            model.limit = limitContext(model.limit, providerID)
             model.api.id = model.api.id ?? model.id ?? modelID
 
             if (

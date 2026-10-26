@@ -6,6 +6,7 @@ import { createEffect, createMemo, type Accessor } from "solid-js"
 import { selectProviderCatalog } from "./provider-catalog"
 
 export const popularProviders = [
+  "drael",
   "opencode",
   "opencode-go",
   "anthropic",

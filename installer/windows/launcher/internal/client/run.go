@@ -203,7 +203,9 @@ func Launcher(args []string) int {
 	}
 	return forward(filepath.Join(filepath.Dir(exe), "runtime", "engine.exe"), args, []string{"CUDIA_DISTRIBUTION_DIR=" + filepath.Join(filepath.Dir(exe), "defaults")})
 }
-func forward(program string, args, extraEnv []string) int {
+func forward(program string, args, extraEnv []string) (code int) {
+	restore := captureChildTerminal(program)
+	defer func() { restore(code) }()
 	cmd := exec.Command(program, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

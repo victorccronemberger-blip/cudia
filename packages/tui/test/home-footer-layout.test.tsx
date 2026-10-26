@@ -37,6 +37,7 @@ test("home footer stays on one row with the compiled version and a long Windows 
         if (url.pathname === "/mcp") return json({ fixture: { status: "connected" } })
       }, events)
       let started!: () => void
+      let quit: (() => void) | undefined
       const ready = new Promise<void>((resolve) => {
         started = resolve
       })
@@ -63,6 +64,7 @@ test("home footer stays on one row with the compiled version and a long Windows 
           args: {},
           pluginHost: {
             async start(input) {
+              quit = () => input.api.keymap.dispatchCommand("app.exit")
               const hostSlots = input.runtime.setupSlots(input.api)
               const api: TuiPluginApi = {
                 ...input.api,
@@ -127,7 +129,7 @@ test("home footer stays on one row with the compiled version and a long Windows 
           expect(footerRow).toContain(version)
         }
       } finally {
-        setup.renderer.destroy()
+        quit?.()
         await task
       }
     }

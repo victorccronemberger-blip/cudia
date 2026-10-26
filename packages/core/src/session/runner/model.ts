@@ -97,7 +97,7 @@ const withDefaults = (model: ModelV2.Info, route: AnyRoute) => {
     endpoint: model.api.url === undefined ? undefined : { baseURL: model.api.url },
     headers: model.request.headers,
     http: { body: httpBody },
-    limits: { context: model.limit.context, output: model.limit.output },
+    limits: { context: model.limit.context, output: Math.min(model.limit.output, 32_000) },
   })
 }
 

@@ -91,6 +91,30 @@ const it = testEffect(LayerNode.compile(LayerNode.group([Provider.node, Env.node
 const experimentalModels = testEffect(providerLayer({ enableExperimentalModels: true }))
 const credentials = testEffect(providerLayer())
 
+it.instance(
+  "caps configured provider context and input after model overrides",
+  Effect.gen(function* () {
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.make("context-test")].models["large"].limit).toEqual({
+      context: 248_000,
+      input: 248_000,
+      output: 131_072,
+    })
+  }),
+  {
+    config: {
+      enabled_providers: ["context-test"],
+      provider: {
+        "context-test": {
+          npm: "@ai-sdk/openai-compatible",
+          options: { apiKey: "test-key", baseURL: "https://provider.example/v1" },
+          models: { large: { limit: { context: 1_000_000, input: 983_616, output: 131_072 } } },
+        },
+      },
+    },
+  },
+)
+
 const bundledQwen = {
   name: "Bundled Qwen Cloud",
   npm: "@ai-sdk/openai-compatible",

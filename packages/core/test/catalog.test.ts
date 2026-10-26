@@ -30,6 +30,25 @@ const catalogLayer = AppNodeBuilder.build(
 const it = testEffect(catalogLayer)
 
 describe("CatalogV2", () => {
+  it.effect("caps projected models at 248k after catalog updates", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const providerID = ProviderV2.ID.make("test")
+      const modelID = ModelV2.ID.make("large")
+      yield* catalog.transform((editor) =>
+        editor.model.update(providerID, modelID, (model) => {
+          model.limit = { context: 1_000_000, input: 983_616, output: 131_072 }
+        }),
+      )
+      expect(required(yield* catalog.model.get(providerID, modelID)).limit).toEqual({
+        context: 248_000,
+        input: 248_000,
+        output: 131_072,
+      })
+      expect((yield* catalog.model.all())[0].limit.context).toBe(248_000)
+    }),
+  )
+
   it.effect("publishes an updated event after catalog changes", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service

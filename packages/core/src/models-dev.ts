@@ -11,6 +11,7 @@ import { InstallationChannel, InstallationVersion } from "./installation/version
 import { EventV2 } from "./event"
 import { makeGlobalNode } from "./effect/app-node"
 import { httpClient } from "./effect/app-node-platform"
+import { drael } from "./drael"
 
 export const CatalogModelStatus = Schema.Literals(["alpha", "beta", "deprecated"])
 export type CatalogModelStatus = typeof CatalogModelStatus.Type
@@ -240,7 +241,10 @@ const layer = Layer.effect(
         Effect.map((providers) =>
           explicitCatalog
             ? providers
-            : Object.fromEntries(Object.entries(providers).filter(([id]) => !id.startsWith("opencode"))),
+            : {
+                drael: structuredClone(drael),
+                ...Object.fromEntries(Object.entries(providers).filter(([id]) => !id.startsWith("opencode"))),
+              },
         ),
       )
 

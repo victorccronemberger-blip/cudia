@@ -83,11 +83,12 @@ import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
 import { createTuiAttention } from "./attention"
 import * as TuiAudio from "./audio"
-import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
+import { win32DisableProcessedInput, win32FlushInputBuffer, win32RestoreTerminal } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { createWarningDiagnostics, type WarningDiagnostic } from "./util/warnings"
 import path from "node:path"
+import { appendFileSync } from "node:fs"
 
 registerOpencodeSpinner()
 
@@ -189,8 +190,32 @@ function isVersionGreater(left: string, right: string) {
 export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const global = yield* Global.Service
   const exit = { epilogue: undefined as string | undefined, reason: undefined as unknown }
+  const lifecycleFile = path.join(global.log, "tui-lifecycle.jsonl")
+  const lifecycle = (event: string, detail?: string) => {
+    try {
+      appendFileSync(
+        lifecycleFile,
+        JSON.stringify({
+          time: new Date().toISOString(),
+          pid: process.pid,
+          version: InstallationVersion,
+          event,
+          detail,
+        }) + "\n",
+      )
+    } catch {}
+  }
+  lifecycle("start")
   const result = yield* Effect.scoped(
     Effect.gen(function* () {
+      const onProcessExit = (code: number) => {
+        lifecycle("process-exit", String(code))
+        win32RestoreTerminal()
+      }
+      yield* Effect.acquireRelease(
+        Effect.sync(() => process.once("exit", onProcessExit)),
+        () => Effect.sync(() => process.off("exit", onProcessExit)),
+      )
       const sink: { current?: (warning: WarningDiagnostic) => void } = {}
       const warnings = createWarningDiagnostics({
         file: path.join(global.log, "tui-warnings.log"),
@@ -219,6 +244,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
               targetFps: 60,
               gatherStats: false,
               exitOnCtrlC: false,
+              exitSignals: [],
               useKittyKeyboard: {},
               autoFocus: false,
               openConsoleOnError: false,
@@ -251,12 +277,56 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       )
       yield* Effect.addFinalizer(() => Effect.sync(TuiAudio.dispose))
       const shutdown = yield* Deferred.make<unknown>()
-      const onSighup = () => destroyRenderer(renderer)
+      const requested = { value: false }
+      const terminate = (signal: string) => {
+        requested.value = true
+        lifecycle("signal", signal)
+        exit.reason = new Error(`CUDIA received ${signal}. Details: ${lifecycleFile}`)
+        destroyRenderer(renderer)
+      }
+      const onSighup = () => terminate("SIGHUP")
+      const onSigterm = () => terminate("SIGTERM")
+      const onSigbreak = () => terminate("SIGBREAK")
+      const onSigpipe = () => lifecycle("signal-ignored", "SIGPIPE")
+      const onSigint = () => {
+        lifecycle("signal", "SIGINT")
+        // Use the same key bindings as stdin instead of letting the native
+        // renderer destroy itself when Windows briefly changes console modes.
+        renderer.keyInput.processParsedKey({
+          name: "c",
+          ctrl: true,
+          meta: false,
+          shift: false,
+          option: false,
+          sequence: "\x03",
+          raw: "\x03",
+          number: false,
+          eventType: "press",
+          source: "raw",
+        })
+      }
+      const signals = {
+        SIGHUP: onSighup,
+        SIGTERM: onSigterm,
+        SIGBREAK: onSigbreak,
+        SIGPIPE: onSigpipe,
+        SIGINT: onSigint,
+      }
       yield* Effect.acquireRelease(
-        Effect.sync(() => process.on("SIGHUP", onSighup)),
-        () => Effect.sync(() => process.off("SIGHUP", onSighup)),
+        Effect.sync(() => {
+          for (const [signal, handler] of Object.entries(signals)) process.on(signal, handler)
+        }),
+        () =>
+          Effect.sync(() => {
+            for (const [signal, handler] of Object.entries(signals)) process.off(signal, handler)
+          }),
       )
-      renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
+      renderer.once("destroy", () => {
+        lifecycle("renderer-destroy", requested.value ? "requested" : "unexpected")
+        if (!requested.value) exit.reason = new Error(`CUDIA renderer stopped unexpectedly. Details: ${lifecycleFile}`)
+        win32RestoreTerminal()
+        Deferred.doneUnsafe(shutdown, Effect.void)
+      })
       const pluginRuntime = createPluginRuntime()
 
       yield* Effect.tryPromise(async () => {
@@ -270,6 +340,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             <ExitProvider
               exit={(reason) => {
                 if (renderer.isDestroyed) return
+                requested.value = true
+                lifecycle("app-exit", reason === undefined ? "normal" : "error")
                 exit.reason = reason
                 destroyRenderer(renderer)
               }}
@@ -379,7 +451,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
     }),
   )
   yield* Effect.sync(() => {
+    win32RestoreTerminal()
     win32FlushInputBuffer()
+    lifecycle("complete", result.reason === undefined ? "normal" : "error")
     if (result.reason !== undefined) {
       process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
       process.exitCode = 1

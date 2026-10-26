@@ -7,6 +7,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { drael } from "@opencode-ai/core/drael"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { it } from "./lib/effect"
 import { readFile, rm, writeFile, utimes, mkdir } from "fs/promises"
@@ -145,20 +146,26 @@ describe("ModelsDev Service", () => {
         state,
         ModelsDev.Service.use((s) => s.get()),
       )
-      expect(result).toEqual(fixture)
+      expect(result).toEqual({ drael, ...fixture })
       const final = yield* Ref.get(state)
       expect(final.calls).toEqual([])
     }),
   )
 
-  it.live("get() returns empty catalog when disk empty, fetch disabled, and no bundled snapshot is injected", () =>
+  it.live("get() includes native Drael offline without a cached or bundled catalog", () =>
     Effect.gen(function* () {
       const state = yield* Ref.make(initialState)
       const result = yield* provided(
         state,
         ModelsDev.Service.use((s) => s.get()),
       )
-      expect(result).toEqual({})
+      expect(result).toEqual({ drael })
+      expect(result.drael).toMatchObject({
+        api: "https://drael.sh/v1",
+        npm: "@ai-sdk/openai-compatible",
+        env: ["DRAEL_KEY", "DRAEL_API_KEY"],
+        models: { "drael-v1": { tool_call: true, reasoning: true } },
+      })
       const final = yield* Ref.get(state)
       expect(final.calls).toEqual([])
     }),
@@ -204,7 +211,7 @@ describe("ModelsDev Service", () => {
           })
         }),
       )
-      for (const result of results) expect(result).toEqual(fixture)
+      for (const result of results) expect(result).toEqual({ drael, ...fixture })
     }),
   )
 
@@ -223,8 +230,8 @@ describe("ModelsDev Service", () => {
           return { a, b }
         }),
       )
-      expect(first.a).toEqual(fixture)
-      expect(first.b).toEqual(fixture)
+      expect(first.a).toEqual({ drael, ...fixture })
+      expect(first.b).toEqual({ drael, ...fixture })
     }),
   )
 
@@ -333,7 +340,7 @@ describe("ModelsDev Service", () => {
           return providers
         }),
       )
-      expect(Object.keys(result)).toEqual(["acme"])
+      expect(Object.keys(result)).toEqual(["drael", "acme"])
       expect((yield* Ref.get(state)).calls).toEqual([])
       Flag.OPENCODE_DISABLE_MODELS_FETCH = true
     }),
@@ -354,7 +361,8 @@ describe("ModelsDev Service", () => {
         ModelsDev.Service.use((service) => service.get()),
       )
       expect(result).toEqual(customCatalog)
-      expect((yield* Ref.get(state)).calls.map((call) => call.url)).toEqual([`${source}/api.json`])
+      // Initial population and the background refresh can both fetch a cold cache.
+      expect([...new Set((yield* Ref.get(state)).calls.map((call) => call.url))]).toEqual([`${source}/api.json`])
       Flag.OPENCODE_MODELS_URL = undefined
       Flag.OPENCODE_DISABLE_MODELS_FETCH = true
     }),
