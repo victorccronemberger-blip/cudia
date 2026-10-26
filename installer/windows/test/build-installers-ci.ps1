@@ -190,7 +190,7 @@ try {
     Copy-Item -LiteralPath $taskGenerated -Destination $taskSetup -ErrorAction Stop
     if ((Get-FileSha256 $taskSetup) -cne $taskBuild.installer.sha256 -or (Get-Item -LiteralPath $taskSetup).Length -ne [long]$taskBuild.installer.size) { throw 'Copied installer differs from build receipt.' }
 
-    $taskBuild.defenderScan = 'unavailable'
+    $taskBuild | Add-Member -MemberType NoteProperty -Name defenderScan -Value 'unavailable'
     $taskMpScan = Get-Command Start-MpScan -ErrorAction SilentlyContinue
     $taskDefenderService = Get-Service -Name WinDefend -ErrorAction SilentlyContinue
     if ($taskMpScan -and $taskDefenderService -and $taskDefenderService.Status -eq 'Running') {
