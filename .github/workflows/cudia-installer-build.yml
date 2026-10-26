@@ -2,7 +2,7 @@ name: CUDIA preview installer build
 
 on:
   push:
-    branches: [codex/distribution-qa]
+    branches: [installer-build]
     paths:
       - installer/windows/build-candidate.json
       - installer/windows/test/build-installers-ci.ps1
