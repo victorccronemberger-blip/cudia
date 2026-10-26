@@ -1,0 +1,41 @@
+name: CUDIA preview installer build
+
+on:
+  push:
+    branches: [codex/distribution-qa]
+    paths:
+      - installer/windows/build-candidate.json
+      - installer/windows/test/build-installers-ci.ps1
+      - .github/workflows/cudia-installer-build.yml
+
+permissions: {}
+
+concurrency:
+  group: cudia-installer-build-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-installers:
+    if: github.repository == 'victorccronemberger-blip/cudia'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [normal, baseline]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Build and upload verified installer
+        shell: powershell
+        env:
+          CUDIA_CI_GITHUB_TOKEN: ${{ github.token }}
+          CUDIA_CI_VARIANT: ${{ matrix.variant }}
+        run: |
+          & .\installer\windows\test\build-installers-ci.ps1 `
+            -CandidatePath (Join-Path $env:GITHUB_WORKSPACE 'installer\windows\build-candidate.json') `
+            -Variant $env:CUDIA_CI_VARIANT `
+            -ReportDirectory (Join-Path $env:RUNNER_TEMP 'cudia-installer-build-report')

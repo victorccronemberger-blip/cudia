@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { createHash, randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -42,6 +42,24 @@ function build(output, overrides = {}) {
     { cwd: root, encoding: "utf8", timeout: 30_000 },
   )
 }
+
+test("optional workflow assets are inventoried and other namespaces are rejected", { skip: !windows }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "cudia-optional-package-"))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const assets = join(dir, "assets")
+  await mkdir(join(assets, "addons", "understand-anything"), { recursive: true })
+  const bytes = Buffer.from("optional fixture payload")
+  await writeFile(join(assets, "addons", "understand-anything", "source.zip"), bytes)
+  const good = build(join(dir, "good.zip"), { OptionalAssetsPath: assets })
+  assert.equal(good.status, 0, good.stderr)
+  const inspect = spawnSync(powershell, ["-NoProfile", "-Command", `Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead($env:CUDIA_TEST_ARCHIVE); try {$r=New-Object IO.StreamReader($z.GetEntry('package.json').Open()); try {($r.ReadToEnd()|ConvertFrom-Json).files.'defaults/addons/understand-anything/source.zip'|ConvertTo-Json} finally {$r.Dispose()}} finally {$z.Dispose()}`], { encoding: "utf8", env: { ...process.env, CUDIA_TEST_ARCHIVE: join(dir, "good.zip") } })
+  assert.equal(inspect.status, 0, inspect.stderr)
+  assert.deepEqual(JSON.parse(inspect.stdout), { size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") })
+  await writeFile(join(assets, "unexpected.txt"), "outside the optional namespace")
+  const bad = build(join(dir, "bad.zip"), { OptionalAssetsPath: assets })
+  assert.notEqual(bad.status, 0)
+  assert.match(bad.stderr, /Unknown optional asset namespace/)
+})
 
 test(
   "Windows packager emits exactly described files and excludes development assets",

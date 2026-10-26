@@ -9,6 +9,7 @@ param(
     [ValidateSet('normal', 'baseline')][string]$Variant = 'normal',
     [string]$ClientBuildInfoPath,
     [string]$EngineBuildInfoPath,
+    [string]$OptionalAssetsPath,
     [switch]$RequireEngineProvenance,
     [Parameter(Mandatory = $true)][string]$OutputPath
 )
@@ -148,6 +149,22 @@ try {
         }
     }
     Add-PackageFile (Join-Path $taskDefaults 'themes\mytheme.json') 'defaults/themes/mytheme.json'
+    if ($OptionalAssetsPath) {
+        $taskOptionalRoot = [IO.Path]::GetFullPath($OptionalAssetsPath).TrimEnd('\')
+        $taskOptionalDirectory = Get-Item -LiteralPath $taskOptionalRoot -Force
+        if (-not $taskOptionalDirectory.PSIsContainer -or ($taskOptionalDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Optional assets must be a regular directory.'
+        }
+        $taskOptionalPrefix = $taskOptionalRoot + '\'
+        foreach ($taskOptionalFile in (Get-ChildItem -LiteralPath $taskOptionalRoot -Recurse -Force | Sort-Object FullName)) {
+            if ($taskOptionalFile.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Optional asset aliases are not accepted.' }
+            if ($taskOptionalFile.PSIsContainer) { continue }
+            if (-not $taskOptionalFile.FullName.StartsWith($taskOptionalPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid optional asset path.' }
+            $taskOptionalName = $taskOptionalFile.FullName.Substring($taskOptionalPrefix.Length).Replace('\', '/')
+            if (-not $taskOptionalName.StartsWith('addons/understand-anything/', [StringComparison]::Ordinal)) { throw 'Unknown optional asset namespace.' }
+            Add-PackageFile $taskOptionalFile.FullName ('defaults/' + $taskOptionalName)
+        }
+    }
     foreach ($taskBridgeFile in @('server.mjs', 'package.json', 'README.md')) {
         Add-PackageFile (Join-Path $taskDefaults ('mcp\claude-bridge\' + $taskBridgeFile)) ('defaults/mcp/claude-bridge/' + $taskBridgeFile)
     }

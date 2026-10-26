@@ -1,0 +1,28 @@
+{
+  "version": "2.9.7",
+  "commit": "e24fcf6d371bcfa529bc110bacb1bb43de1b8d33",
+  "nodeVersion": "22.23.4",
+  "pnpmVersion": "10.6.2",
+  "inputs": [
+    {
+      "file": "source.zip",
+      "url": "https://codeload.github.com/Egonex-AI/Understand-Anything/zip/e24fcf6d371bcfa529bc110bacb1bb43de1b8d33",
+      "sha256": "8854c880c8bd3e3daea94bfcd2c788e85138918b9d6310b9e7176e28718404de"
+    },
+    {
+      "file": "node.exe",
+      "url": "https://nodejs.org/dist/v22.23.4/win-x64/node.exe",
+      "sha256": "dccc52de28d8df2ee22d2062424f8c563070d95d8ad70c54c4bf01d590dec14f"
+    },
+    {
+      "file": "pnpm.tgz",
+      "url": "https://registry.npmjs.org/pnpm/-/pnpm-10.6.2.tgz",
+      "sha256": "20072a1f6edd17646ea9234bf32c42d563dad37b2973e97a2dde5c17774a824d"
+    },
+    {
+      "file": "NODE-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v22.23.4/LICENSE",
+      "sha256": "c738ae413cf561f174e34f6961f8ca458aae2369a73640dda6234c629b98bcc4"
+    }
+  ]
+}
