@@ -23,6 +23,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Goal } from "@/goal"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -46,6 +47,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
+  goal?: Goal.Interface
 }) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
@@ -55,6 +57,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
+  const goal = input.goal
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -127,6 +130,51 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               yield* input.processor.completeToolCall(options.toolCallId, output)
             }
             return output
+          }),
+        )
+      },
+    })
+  }
+
+  const activeGoal =
+    goal && input.agent.name !== "plan" ? yield* goal.get(input.session.id).pipe(Effect.orDie) : undefined
+  if (goal && activeGoal?.status === "active") {
+    tools.get_goal = tool({
+      description: "Read the objective, lifecycle and measured usage of this session's goal.",
+      inputSchema: jsonSchema({ type: "object", properties: {}, additionalProperties: false }),
+      execute(_args, options) {
+        return run.promise(
+          Effect.gen(function* () {
+            yield* context({}, options).ask({ permission: "get_goal", patterns: ["*"], always: ["*"], metadata: {} })
+            return { title: "Current goal", output: JSON.stringify(yield* goal.get(input.session.id)), metadata: {} }
+          }),
+        )
+      },
+    })
+    tools.update_goal = tool({
+      description:
+        "Report this goal completed after checking evidence, or blocked with the concrete missing input. Supply the evidence checked; a stopping point alone is not completion.",
+      inputSchema: jsonSchema<{ status: "completed" | "blocked"; evidence: string; summary?: string }>({
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["completed", "blocked"] },
+          evidence: { type: "string", minLength: 1 },
+          summary: { type: "string" },
+        },
+        required: ["status", "evidence"],
+        additionalProperties: false,
+      }),
+      execute(args, options) {
+        return run.promise(
+          Effect.gen(function* () {
+            yield* context(args, options).ask({
+              permission: "update_goal",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            })
+            const updated = yield* goal.update(input.session.id, Goal.token(activeGoal), args)
+            return { title: `Goal ${updated.status}`, output: Goal.formatStatus(updated), metadata: {} }
           }),
         )
       },

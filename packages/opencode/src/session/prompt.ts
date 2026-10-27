@@ -148,6 +148,9 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const goal = yield* Goal.Service
+    const admissions = yield* InstanceState.make(() =>
+      Effect.sync(() => new Map<SessionID, { count: number; ready: Latch.Latch }>()),
+    )
     const database = yield* Database.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
@@ -1065,14 +1068,29 @@ const layer = Layer.effect(
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
-      const update = input.parts
-        .filter((part): part is TextPartInput => part.type === "text" && !part.synthetic)
-        .map((part) => part.text)
-        .join("\n")
-        .trim()
-      if (update && !update.startsWith("[GOAL"))
-        yield* goal.observe(input.sessionID, update).pipe(Effect.catch(Effect.die))
-      const message = yield* createUserMessage(input)
+      const pending = yield* InstanceState.get(admissions)
+      const admission = pending.get(input.sessionID) ?? { count: 0, ready: yield* Latch.make() }
+      pending.set(input.sessionID, admission)
+      admission.count++
+      const message = yield* Effect.gen(function* () {
+        const update = input.parts
+          .filter((part): part is TextPartInput => part.type === "text" && !part.synthetic)
+          .map((part) => part.text)
+          .join("\n")
+          .trim()
+        if (input.parts.some((part) => !("synthetic" in part && part.synthetic)))
+          yield* goal.observe(input.sessionID, update).pipe(Effect.catch(Effect.die))
+        return yield* createUserMessage(input)
+      }).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            admission.count--
+            if (admission.count !== 0) return
+            pending.delete(input.sessionID)
+            yield* admission.ready.open
+          }),
+        ),
+      )
       yield* sessions.touch(input.sessionID)
 
       const permissions: PermissionV1.Rule[] = []
@@ -1106,6 +1124,9 @@ const layer = Layer.effect(
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
+          const pending = yield* InstanceState.get(admissions)
+          const admission = pending.get(sessionID)
+          if (admission) yield* admission.ready.await
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
@@ -1116,6 +1137,13 @@ const layer = Layer.effect(
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+
+          const lastUserMessage = msgs.findLast((message) => message.info.id === lastUser.id)!
+          if (
+            lastUser.agent !== "plan" &&
+            !(yield* goal.begin(sessionID, lastUser.id, Goal.wakeToken(lastUserMessage)).pipe(Effect.orDie))
+          )
+            break
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
@@ -1146,6 +1174,36 @@ const layer = Layer.effect(
               })
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
+            if (lastUser.agent !== "plan" && lastAssistantMsg && !lastAssistant?.error) {
+              const automatic = lastUserMessage.parts.some(
+                (part) => part.type === "text" && part.metadata?.goalContinuation === true,
+              )
+              const messageID = MessageID.ascending()
+              const next = yield* goal.continuation(sessionID, lastAssistantMsg, automatic).pipe(Effect.orDie)
+              if (next) {
+                // Inputs admitted later sort after this continuation.
+                if (pending.has(sessionID)) continue
+                const selected = yield* sessions.get(sessionID).pipe(Effect.orDie)
+                yield* createUserMessage({
+                  sessionID,
+                  messageID,
+                  agent: selected.agent ?? lastUser.agent,
+                  model: selected.model
+                    ? { providerID: selected.model.providerID, modelID: selected.model.id }
+                    : lastUser.model,
+                  variant: selected.model?.variant === "default" ? undefined : selected.model?.variant,
+                  parts: [
+                    {
+                      type: "text",
+                      text: "Continue the active goal from the current evidence. Check what remains before reporting completion.",
+                      synthetic: true,
+                      metadata: { goalWake: next, goalContinuation: true },
+                    },
+                  ],
+                }).pipe(Effect.orDie)
+                continue
+              }
+            }
             break
           }
 
@@ -1239,6 +1297,22 @@ const layer = Layer.effect(
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
           const outcome: "break" | "continue" = yield* Effect.gen(function* () {
+            const activeGoal = lastUser.agent !== "plan" ? yield* goal.get(sessionID).pipe(Effect.orDie) : undefined
+            if (activeGoal?.status === "active") {
+              const anchored = msgs.some((message) =>
+                message.parts.some((part) => part.type === "text" && part.metadata?.goalObjective === activeGoal.id),
+              )
+              const latestUser = msgs.findLast((message) => message.info.role === "user")!
+              latestUser.parts.push({
+                id: PartID.ascending(),
+                messageID: latestUser.info.id,
+                sessionID,
+                type: "text",
+                text: Goal.context(activeGoal, !anchored),
+                synthetic: true,
+                metadata: { goalContext: activeGoal.id },
+              })
+            }
             const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
             const promptOps = yield* ops()
@@ -1251,6 +1325,7 @@ const layer = Layer.effect(
               bypassAgentCheck,
               messages: msgs,
               promptOps,
+              goal,
             }).pipe(
               Effect.provideService(Plugin.Service, plugin),
               Effect.provideService(Permission.Service, permission),
@@ -1392,8 +1467,24 @@ const layer = Layer.effect(
           }).pipe(
             Effect.ensuring(instruction.clear(handle.message.id)),
             Effect.onInterrupt(() => finalizeInterruptedAssistant),
+            Effect.ensuring(
+              Effect.gen(function* () {
+                const completedMessage = yield* sessions
+                  .findMessage(sessionID, (message) => message.info.id === handle.message.id)
+                  .pipe(Effect.orDie)
+                if (Option.isSome(completedMessage))
+                  yield* goal.account(sessionID, completedMessage.value).pipe(Effect.orDie)
+              }),
+            ),
           )
-          if (outcome === "break") break
+          if (
+            outcome === "break" &&
+            (handle.message.error ||
+              structured !== undefined ||
+              !handle.message.finish ||
+              ["tool-calls", "unknown"].includes(handle.message.finish))
+          )
+            break
           continue
         }
 

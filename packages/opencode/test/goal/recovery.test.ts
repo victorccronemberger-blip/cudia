@@ -67,7 +67,7 @@ suite.instance("missing goal state remains absent without changing status or res
         () => Effect.die("stop must not run"),
       )
     }
-    expect(replies).toEqual(["No active goal for this session.", "No goal is available to resume."])
+    expect(replies).toEqual(["No active goal for this session.", "No unfinished goal is available to resume."])
     expect(yield* Effect.promise(() => Bun.file(storedPath(sessionID)).exists())).toBe(false)
   }),
 )
