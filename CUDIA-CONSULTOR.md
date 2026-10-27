@@ -50,3 +50,26 @@ mantêm o teto local de 248.000.
 Esse ajuste muda o orçamento local e o momento da compactação. A aceitação e a
 qualidade efetiva dessa janela dependem do servidor do provedor; uma resposta
 curta bem-sucedida não comprova o processamento de 240.000 tokens.
+
+## Modelo de compactação
+
+O compactador pode usar um modelo e um nível de raciocínio independentes do
+executor. Para usar Terra em medium, adicione à configuração global:
+
+```json
+{
+  "agent": {
+    "compaction": {
+      "model": "openai/gpt-6.1-terra",
+      "variant": "medium",
+      "options": { "reasoningEffort": "medium" }
+    }
+  }
+}
+```
+
+A variante explícita do compactador tem precedência. Um modelo de compactação
+fixado sem variante própria usa as opções desse modelo, sem herdar a variante do
+executor. Quando não há substituição do modelo nem da variante do compactador,
+a variante da sessão continua sendo usada. Essa escolha não altera o modelo
+principal nem a mensagem original da sessão.
