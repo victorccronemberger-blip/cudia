@@ -15,6 +15,7 @@ import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { Plugin } from "@/plugin"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Goal } from "@/goal"
 import { Effect, Layer, Schema } from "effect"
 import { testEffect } from "../lib/effect"
 
@@ -163,5 +164,130 @@ it.effect("preserves running tool start time across metadata updates", () =>
     if (state.state.status === "running") {
       expect(state.state.time.start).toBe(100)
     }
+  }),
+)
+
+it.effect("exposes create_goal to a non-plan assistant and binds it to the current user message", () =>
+  Effect.gen(function* () {
+    const parentID = MessageID.ascending()
+    const calls: unknown[] = []
+    const asked: string[] = []
+    const accounted: string[] = []
+    const created: Goal.State = {
+      id: "goal-created",
+      sessionID,
+      objective: "Create the requested artifact",
+      status: "active",
+      iteration: 1,
+      startedAt: 1,
+      updatedAt: 1,
+      maxIterations: 4,
+      tokenBudget: 18000,
+      tokensUsed: 0,
+      runtime: 2,
+      revision: 0,
+      completionCriteria: [],
+      plan: [],
+      observations: [],
+      failures: [],
+      recentHashes: [],
+      replanned: false,
+      parentID,
+    }
+    let current: Goal.State | undefined
+    const goal = {
+      get: () => Effect.succeed(current),
+      creationRevision: () => 0,
+      create: (nextSessionID: SessionID, nextParentID: MessageID, input: unknown, revision: number) =>
+        Effect.sync(() => {
+          calls.push([nextSessionID, nextParentID, input, revision])
+          current = created
+          return created
+        }),
+      account: (_nextSessionID: SessionID, message: SessionV1.WithParts) =>
+        Effect.sync(() => {
+          accounted.push(message.info.id)
+        }),
+    } as unknown as Goal.Interface
+    const permission = Permission.Service.of({
+      ...fakePermission,
+      ask: (input) =>
+        Effect.sync(() => {
+          asked.push(input.permission)
+        }),
+    })
+    const assistant = {
+      id: messageID,
+      sessionID,
+      role: "assistant",
+      parentID,
+      agent: "build",
+      mode: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: ModelV2.ID.make("test-model"),
+      providerID: ProviderV2.ID.make("test"),
+      time: { created: 1 },
+    } satisfies SessionV1.Assistant
+    const priorMessage = (created: number, messageParentID = parentID): SessionV1.WithParts => ({
+      info: { ...assistant, id: MessageID.ascending(), parentID: messageParentID, time: { created } },
+      parts: [],
+    })
+    const earlier = priorMessage(2)
+    const later = priorMessage(4)
+    const unrelated = priorMessage(1, MessageID.ascending())
+    const tools = yield* SessionTools.resolve({
+      agent,
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor: {
+        message: assistant,
+        updateToolCall: () => Effect.succeed(undefined),
+        completeToolCall: () => Effect.void,
+      },
+      bypassAgentCheck: false,
+      messages: [later, unrelated, { info: assistant, parts: [] }, earlier],
+      promptOps: {} as never,
+      goal,
+    }).pipe(Effect.provide(Layer.succeed(Permission.Service, permission)))
+
+    expect(tools.create_goal).toBeDefined()
+    const execute = tools.create_goal?.execute
+    if (!execute) throw new Error("create_goal tool is missing execute")
+    const output = yield* Effect.promise(() =>
+      execute(
+        { objective: "Create the requested artifact", max_iterations: 4, token_budget: 18000 },
+        { toolCallId: callID, abortSignal: new AbortController().signal, messages: [] },
+      ),
+    )
+
+    expect(calls).toEqual([
+      [sessionID, parentID, { objective: "Create the requested artifact", maxIterations: 4, tokenBudget: 18000 }, 0],
+    ])
+    expect(asked).toEqual(["create_goal"])
+    expect(accounted).toEqual(
+      [earlier, later]
+        .sort((left, right) => left.info.id.localeCompare(right.info.id))
+        .map((message) => message.info.id),
+    )
+    expect(JSON.stringify(output)).toContain("Goal: Create the requested artifact")
+    expect(JSON.stringify(output)).toContain("Tokens: 0/18000")
+
+    const planTools = yield* SessionTools.resolve({
+      agent: { ...agent, name: "plan" },
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor: {
+        message: assistant,
+        updateToolCall: () => Effect.succeed(undefined),
+        completeToolCall: () => Effect.void,
+      },
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+      goal,
+    })
+    expect(planTools.create_goal).toBeUndefined()
   }),
 )

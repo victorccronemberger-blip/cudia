@@ -1,6 +1,18 @@
 # Metas de sessão no CUDIA
 
-Use no chat do CUDIA:
+Você pode pedir em linguagem natural no chat do CUDIA, por exemplo:
+
+```text
+Pode fazer a Meta para atingir esse objetivo e continuar até verificar o resultado.
+```
+
+A LLM recebe a ferramenta nativa `create_goal`, que registra o objetivo na
+própria conversa. Ela não abre outra sessão nem chama um segundo executor.
+O pedido precisa indicar que você quer uma meta; uma tarefa comum não a ativa
+automaticamente. Orçamentos são opcionais e só devem ser definidos quando
+você os solicitar. Uma meta pendente é preservada, inclusive se estiver pausada.
+
+Também pode iniciar e controlar diretamente:
 
 ```text
 /goal Corrigir os testes do checkout e verificar que passam sem alterar a API pública
@@ -21,8 +33,8 @@ quando a resposta termina sem concluir a meta. As instruções novas do usuário
 têm prioridade. As próximas chamadas seguem o modelo e a variante selecionados
 na sessão. Não há planejador nem verificador obrigatório em outra conversa.
 
-Enquanto a meta está ativa, o modelo recebe um lembrete curto no contexto de
-mensagens e duas ferramentas: `get_goal`, para ler o estado, e `update_goal`,
+Após a criação, o modelo recebe um lembrete curto no contexto de mensagens
+e as ferramentas `get_goal`, para ler o estado, e `update_goal`,
 para registrar conclusão ou bloqueio com evidência. Nenhuma orientação de meta
 é adicionada ao system prompt. O objetivo completo é restaurado no lembrete
 quando sua âncora já não está no histórico consumido. Os relatórios e logs não
@@ -51,6 +63,11 @@ uma vez por resposta persistida. O limite é conferido entre chamadas; uma
 chamada em andamento pode ultrapassá-lo. Não é um teto financeiro nem uma
 medição de uso que o provedor deixou de informar. Atingir um limite produz
 `budget_limited`, não conclusão ou bloqueio técnico.
+
+As chamadas `create_goal`, `get_goal` e `update_goal` não contam como trabalho
+no teste de progresso. O consumo informado na resposta que cria a meta e nas
+respostas anteriores da mesma entrada do usuário é incluído; conversas e
+entradas anteriores não são contadas retroativamente.
 
 Uma continuação automática sem chamada de ferramenta de trabalho suspende novas
 continuações e conserva a meta ativa. Consultar apenas `get_goal` não prolonga

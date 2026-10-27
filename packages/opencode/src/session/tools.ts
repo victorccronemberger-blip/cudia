@@ -58,6 +58,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
   const goal = input.goal
+  const goalCreationRevision = goal && input.agent.name !== "plan" ? goal.creationRevision(input.session.id) : undefined
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -138,6 +139,61 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
   const activeGoal =
     goal && input.agent.name !== "plan" ? yield* goal.get(input.session.id).pipe(Effect.orDie) : undefined
+  if (goal && input.agent.name !== "plan") {
+    tools.create_goal = tool({
+      description:
+        "Create and pursue a durable goal in this session when the user asks for a goal. Add optional turn or token budgets only when the user specified them.",
+      inputSchema: jsonSchema<{
+        objective: string
+        max_iterations?: number
+        token_budget?: number
+      }>({
+        type: "object",
+        properties: {
+          objective: { type: "string", minLength: 1 },
+          max_iterations: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          token_budget: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+        },
+        required: ["objective"],
+        additionalProperties: false,
+      }),
+      execute(args, options) {
+        return run.promise(
+          Effect.gen(function* () {
+            yield* context(args, options).ask({
+              permission: "create_goal",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            })
+            yield* Effect.sync(() => options.abortSignal?.throwIfAborted())
+            const created = yield* goal.create(
+              input.session.id,
+              input.processor.message.parentID,
+              {
+                objective: args.objective,
+                ...(args.max_iterations === undefined ? {} : { maxIterations: args.max_iterations }),
+                ...(args.token_budget === undefined ? {} : { tokenBudget: args.token_budget }),
+              },
+              goalCreationRevision!,
+            )
+            for (const message of input.messages
+              .filter(
+                (message) =>
+                  message.info.role === "assistant" &&
+                  message.info.parentID === input.processor.message.parentID &&
+                  message.info.id !== input.processor.message.id,
+              )
+              .sort((left, right) => left.info.id.localeCompare(right.info.id))) {
+              yield* goal.account(input.session.id, message)
+            }
+            const current = yield* goal.get(input.session.id).pipe(Effect.orDie)
+            return { title: "Goal created", output: Goal.formatStatus(current ?? created), metadata: {} }
+          }),
+        )
+      },
+    })
+  }
   if (goal && activeGoal?.status === "active") {
     tools.get_goal = tool({
       description: "Read the objective, lifecycle and measured usage of this session's goal.",
