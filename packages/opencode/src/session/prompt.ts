@@ -42,6 +42,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { Goal } from "@/goal"
+import { Consultation } from "@/consultation"
 import { isGoalControl, operationalMessages } from "@/goal/control"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
@@ -148,6 +149,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const goal = yield* Goal.Service
+    const consultation = yield* Consultation.Service
     const admissions = yield* InstanceState.make(() =>
       Effect.sync(() => new Map<SessionID, { count: number; ready: Latch.Latch }>()),
     )
@@ -272,10 +274,18 @@ const layer = Layer.effect(
       sessionID: SessionID
       session: Session.Info
       msgs: SessionV1.WithParts[]
+      automatic?: { caller: Agent.Info; claim: Consultation.Claim }
     }) {
       const { task, model, lastUser, sessionID, session, msgs } = input
       const ctx = yield* InstanceState.context
       const promptOps = yield* ops()
+      // Evidence is plain text: automatic packets must never expand @file mentions.
+      const taskPromptOps: TaskPromptOps = input.automatic
+        ? { ...promptOps, resolvePromptParts: (text) => Effect.succeed([{ type: "text", text }]) }
+        : promptOps
+      const automaticMetadata = input.automatic
+        ? { automaticConsultation: { id: input.automatic.claim.id, reason: input.automatic.claim.reason } }
+        : {}
       const { task: taskTool } = yield* registry.named()
       const taskModel = task.model ? yield* getModel(task.model.providerID, task.model.modelID, sessionID) : model
       const assistantMessage: SessionV1.Assistant = yield* sessions.updateMessage({
@@ -283,8 +293,8 @@ const layer = Layer.effect(
         role: "assistant",
         parentID: lastUser.id,
         sessionID,
-        mode: task.agent,
-        agent: task.agent,
+        mode: input.automatic?.caller.name ?? task.agent,
+        agent: input.automatic?.caller.name ?? task.agent,
         variant: lastUser.model.variant,
         path: { cwd: ctx.directory, root: ctx.worktree },
         cost: 0,
@@ -309,6 +319,7 @@ const layer = Layer.effect(
             command: task.command,
           },
           time: { start: Date.now() },
+          metadata: automaticMetadata,
         },
       })
       const taskArgs = {
@@ -324,7 +335,7 @@ const layer = Layer.effect(
       )
 
       const taskAgent = yield* agents.get(task.agent)
-      if (!taskAgent) {
+      if (!taskAgent && !input.automatic) {
         const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
         const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
         const error = new NamedError.Unknown({ message: `Agent not found: "${task.agent}".${hint}` })
@@ -336,19 +347,20 @@ const layer = Layer.effect(
       const taskAbort = new AbortController()
       const result = yield* taskTool
         .execute(taskArgs, {
-          agent: task.agent,
+          agent: input.automatic?.caller.name ?? task.agent,
           messageID: assistantMessage.id,
           sessionID,
           abort: taskAbort.signal,
           callID: part.callID,
-          extra: { bypassAgentCheck: true, promptOps },
+          extra: { bypassAgentCheck: !input.automatic, promptOps: taskPromptOps, awaitCompletion: !!input.automatic },
           messages: msgs,
           metadata: (val: { title?: string; metadata?: Record<string, any> }) =>
             Effect.gen(function* () {
+              if (part.state.status !== "running") return
               part = yield* sessions.updatePart({
                 ...part,
                 type: "tool",
-                state: { ...part.state, ...val },
+                state: { ...part.state, ...val, metadata: { ...automaticMetadata, ...val.metadata } },
               } satisfies SessionV1.ToolPart)
             }),
           ask: (req: any) =>
@@ -356,12 +368,16 @@ const layer = Layer.effect(
               .ask({
                 ...req,
                 sessionID,
-                ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
+                ruleset: Permission.merge(
+                  input.automatic?.caller.permission ?? taskAgent!.permission,
+                  session.permission ?? [],
+                ),
               })
               .pipe(Effect.orDie),
         })
         .pipe(
           Effect.catchCause((cause) => {
+            if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
             const defect = Cause.squash(cause)
             error = defect instanceof Error ? defect : new Error(String(defect))
             return Effect.logError("subtask execution failed", {
@@ -416,7 +432,7 @@ const layer = Layer.effect(
             status: "completed",
             input: part.state.input,
             title: result.title,
-            metadata: result.metadata,
+            metadata: { ...automaticMetadata, ...result.metadata },
             output: result.output,
             attachments,
             time: { ...part.state.time, end: Date.now() },
@@ -440,7 +456,7 @@ const layer = Layer.effect(
         } satisfies SessionV1.ToolPart)
       }
 
-      if (!task.command) return
+      if (!task.command) return !!result
 
       const summaryUserMsg: SessionV1.User = {
         id: MessageID.ascending(),
@@ -459,6 +475,7 @@ const layer = Layer.effect(
         text: "Summarize the task tool output above and continue with your task.",
         synthetic: true,
       } satisfies SessionV1.TextPart)
+      return !!result
     })
 
     const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput, ready?: Latch.Latch) {
@@ -1121,6 +1138,7 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        let consultationSteps = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1253,8 +1271,61 @@ const layer = Layer.effect(
             yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
+          const activeConsultationGoal = yield* goal.get(sessionID).pipe(Effect.orDie)
+          const consultationInput: Consultation.Input = {
+            sessionID,
+            parentSessionID: session.parentID,
+            providerID: model.providerID,
+            agentName: agent.name,
+            messageID: lastUser.id,
+            continuation: lastUserMessage.parts.some(
+              (part) => part.type === "text" && part.metadata?.goalContinuation === true,
+            ),
+            goalID: activeConsultationGoal?.status === "active" ? activeConsultationGoal.id : undefined,
+            request:
+              lastUserMessage.parts
+                .filter((part): part is SessionV1.TextPart => part.type === "text" && !part.synthetic)
+                .map((part) => part.text)
+                .join("\n") ||
+              activeConsultationGoal?.objective ||
+              "",
+            messages: msgs,
+          }
+          const claim = yield* consultation
+            .claim(consultationInput)
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("automatic consultation unavailable", { error: String(error) }).pipe(
+                  Effect.as(undefined),
+                ),
+              ),
+            )
+          if (claim) {
+            const succeeded = yield* handleSubtask({
+              task: {
+                id: PartID.ascending(),
+                messageID: lastUser.id,
+                sessionID,
+                type: "subtask",
+                agent: claim.agent,
+                description:
+                  claim.reason === "recovery" ? "Revisão do consultor após erros" : "Consulta antes da execução",
+                prompt: claim.prompt,
+              },
+              model,
+              lastUser,
+              sessionID,
+              session,
+              msgs,
+              automatic: { caller: agent, claim },
+            }).pipe(Effect.onInterrupt(() => consultation.finish(claim, "interrupted").pipe(Effect.ignore)))
+            yield* consultation.finish(claim, succeeded ? "completed" : "failed").pipe(Effect.orDie)
+            consultationSteps++
+            // Reload the persisted task result before the executor's next request.
+            continue
+          }
           const maxSteps = agent.steps ?? Infinity
-          const isLastStep = step >= maxSteps
+          const isLastStep = step - consultationSteps >= maxSteps
           msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
             Effect.provideService(RuntimeFlags.Service, flags),
             Effect.provideService(FSUtil.Service, fsys),
@@ -1326,6 +1397,16 @@ const layer = Layer.effect(
               messages: msgs,
               promptOps,
               goal,
+              beforeTool: (toolID, args) =>
+                consultation
+                  .beforeTool(consultationInput, toolID, args)
+                  .pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning("automatic consultation tool check unavailable", { error: String(error) }).pipe(
+                        Effect.as(false),
+                      ),
+                    ),
+                  ),
             }).pipe(
               Effect.provideService(Plugin.Service, plugin),
               Effect.provideService(Permission.Service, permission),
@@ -1863,6 +1944,7 @@ export const node = LayerNode.make({
     RuntimeFlags.node,
     Database.node,
     Goal.node,
+    Consultation.node,
   ],
 })
 

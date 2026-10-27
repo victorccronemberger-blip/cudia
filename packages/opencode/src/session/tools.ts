@@ -48,6 +48,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
   goal?: Goal.Interface
+  beforeTool?: (toolID: string, args: unknown) => Effect.Effect<boolean>
 }) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
@@ -607,6 +608,23 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     tools[key] = item
   }
 
+  if (input.beforeTool) {
+    for (const [id, item] of Object.entries(tools)) {
+      const execute = item.execute
+      if (!execute) continue
+      item.execute = async (args, options) => {
+        if (await run.promise(input.beforeTool!(id, args))) {
+          return {
+            title: "Aguardando consultor",
+            output:
+              "A ação solicitada ainda não foi executada. O CUDIA consultará o consultor antes de continuar; avalie o parecer antes de repetir a ação.",
+            metadata: { deferredByConsultation: true },
+          }
+        }
+        return execute(args, options)
+      }
+    }
+  }
   return tools
 })
 

@@ -162,6 +162,45 @@ suite.instance("a create_goal-only turn does not count as work for automatic con
   }),
 )
 
+suite.instance("a deferred completed tool does not count as work for automatic continuation", () =>
+  Effect.gen(function* () {
+    const goal = yield* Goal.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create()
+    const parentID = MessageID.ascending()
+    yield* goal.create(session.id, parentID, { objective: "continue actual work" }, goal.creationRevision(session.id))
+    const assistantID = MessageID.ascending()
+    const deferred = assistant(session.id, parentID, [
+      {
+        id: PartID.ascending(),
+        messageID: assistantID,
+        sessionID: session.id,
+        type: "tool",
+        callID: "deferred-read",
+        tool: "read",
+        state: {
+          status: "completed",
+          input: { filePath: "source.ts" },
+          output: "Aguardando consultor",
+          title: "Aguardando consultor",
+          metadata: { deferredByConsultation: true },
+          time: { start: Date.now(), end: Date.now() },
+        },
+      },
+    ])
+    deferred.info.id = assistantID
+
+    yield* goal.account(session.id, deferred)
+
+    expect((yield* goal.get(session.id))?.workParentID).toBeUndefined()
+    expect(yield* goal.continuation(session.id, deferred, true)).toBeUndefined()
+    expect(yield* goal.get(session.id)).toMatchObject({
+      status: "active",
+      stopReason: "Waiting: automatic turn made no work tool call. Resume or send new input.",
+    })
+  }),
+)
+
 suite.instance("completion can be reported immediately with a token from the created state", () =>
   Effect.gen(function* () {
     const goal = yield* Goal.Service

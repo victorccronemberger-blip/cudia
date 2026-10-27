@@ -850,6 +850,80 @@ describe("tool.task", () => {
     }),
   )
 
+  it.instance("waits for completion when an awaited foreground task is promoted", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      const returned = yield* Deferred.make<void>()
+      const parentNotified = yield* Deferred.make<void>()
+      let runs = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            return Deferred.succeed(parentNotified, undefined).pipe(
+              Effect.as(reply(input, "unexpected parent notification")),
+            )
+          }
+          return Effect.gen(function* () {
+            runs += 1
+            yield* Deferred.succeed(ready, undefined)
+            yield* Deferred.await(done)
+            return reply(input, "background done")
+          })
+        },
+      }
+
+      const fiber = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps, awaitCompletion: true },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(
+          Effect.tap(() => Deferred.succeed(returned, undefined)),
+          Effect.forkChild,
+        )
+
+      yield* Deferred.await(ready)
+      const job = (yield* jobs.list())[0]
+      expect(job).toBeDefined()
+      if (!job) throw new Error("task job not found")
+      expect(job.metadata?.parentSessionId).toBe(chat.id)
+      yield* jobs.promote(job.id)
+
+      yield* Effect.yieldNow
+      expect(yield* Deferred.isDone(returned)).toBe(false)
+      expect(yield* Deferred.isDone(parentNotified)).toBe(false)
+      expect(runs).toBe(1)
+
+      yield* Deferred.succeed(done, undefined)
+      const result = yield* Fiber.join(fiber)
+      expect(result.metadata.background).not.toBe(true)
+      expect(result.output).toContain(`state="completed"`)
+      expect(result.output).toContain("background done")
+      expect(yield* Deferred.isDone(parentNotified)).toBe(false)
+      expect(runs).toBe(1)
+    }),
+  )
+
   background.instance("execute launches background tasks without waiting for completion", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service

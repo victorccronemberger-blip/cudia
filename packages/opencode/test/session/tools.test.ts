@@ -167,6 +167,94 @@ it.effect("preserves running tool start time across metadata updates", () =>
   }),
 )
 
+it.effect("defers a tool before execution when a consultation is requested", () =>
+  Effect.gen(function* () {
+    const state: SessionV1.ToolPart = {
+      id: partID,
+      sessionID,
+      messageID,
+      type: "tool",
+      tool: "timing",
+      callID,
+      state: {
+        status: "running",
+        input: {},
+        time: { start: 100 },
+      },
+    }
+    const updates: unknown[] = []
+    const pluginCalls: string[] = []
+    const beforeCalls: Array<[string, unknown]> = []
+    const plugin = Plugin.Service.of({
+      ...fakePlugin,
+      trigger: (name, _input, output) =>
+        Effect.sync(() => {
+          pluginCalls.push(name)
+          return output
+        }),
+    } satisfies Plugin.Interface)
+    const processor = {
+      message: {
+        id: messageID,
+        sessionID,
+        role: "assistant",
+        parentID: MessageID.ascending(),
+        agent: "build",
+        mode: "build",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ModelV2.ID.make("test-model"),
+        providerID: ProviderV2.ID.make("test"),
+        time: { created: 1 },
+      } satisfies SessionV1.Assistant,
+      updateToolCall: (_toolCallID, update) =>
+        Effect.sync(() => {
+          const next = update(state)
+          state.state = next.state
+          updates.push(next.state)
+          return state
+        }),
+      completeToolCall: () => Effect.void,
+    } satisfies Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
+
+    const tools = yield* SessionTools.resolve({
+      agent,
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor,
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+      beforeTool: (id, args) =>
+        Effect.sync(() => {
+          beforeCalls.push([id, args])
+          return true
+        }),
+    }).pipe(Effect.provide(Layer.succeed(Plugin.Service, plugin)))
+    const execute = tools.timing.execute
+    if (!execute) throw new Error("timing tool is missing execute")
+    const args = { requested: true }
+    const output = yield* Effect.promise(() =>
+      execute(args, {
+        toolCallId: callID,
+        abortSignal: new AbortController().signal,
+        messages: [],
+      }),
+    )
+
+    expect(beforeCalls).toEqual([["timing", args]])
+    expect(output).toMatchObject({
+      title: "Aguardando consultor",
+      metadata: { deferredByConsultation: true },
+      output: expect.stringContaining("ainda não foi executada"),
+    })
+    expect(updates).toEqual([])
+    expect(pluginCalls).toEqual([])
+    expect(state.state.status).toBe("running")
+  }),
+)
+
 it.effect("exposes create_goal to a non-plan assistant and binds it to the current user message", () =>
   Effect.gen(function* () {
     const parentID = MessageID.ascending()

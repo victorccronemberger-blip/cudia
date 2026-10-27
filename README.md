@@ -55,6 +55,7 @@ ChatGPT foi conferido na Preview 12; não foi repetido nesta entrega.
 A tasklist está em
 [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md). Os comandos abaixo iniciam ou instalam um
 checkout de desenvolvimento.
+O [consultor automático do Drael](CUDIA-CONSULTOR.md) é configurável fora do system prompt.
 O serviço independente de versões e as instruções de implantação ficam em
 [deploy/updates](deploy/updates/README.md).
 O [pacote Windows e cliente nativo](installer/windows/README.md) já têm

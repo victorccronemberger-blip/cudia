@@ -99,6 +99,7 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
+      const awaitCompletion = ctx.extra?.awaitCompletion === true
       const runInBackground = params.background === true
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
         return yield* Effect.fail(
@@ -290,13 +291,15 @@ export const TaskTool = Tool.define(
         type: id,
         title: params.description,
         metadata,
-        onPromote: Effect.all([
-          ctx.metadata({
-            title: params.description,
-            metadata: { ...metadata, background: true, jobId: nextSession.id },
-          }),
-          notify(nextSession.id),
-        ]),
+        onPromote: awaitCompletion
+          ? undefined
+          : Effect.all([
+              ctx.metadata({
+                title: params.description,
+                metadata: { ...metadata, background: true, jobId: nextSession.id },
+              }),
+              notify(nextSession.id),
+            ]),
         run: runTask().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
       })
 
@@ -335,11 +338,11 @@ export const TaskTool = Tool.define(
         }),
         () =>
           Effect.gen(function* () {
-            const result = yield* Effect.raceFirst(
-              background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info)),
-              background.waitForPromotion(nextSession.id),
-            )
-            if (result?.metadata?.background === true) return backgroundResult()
+            const completed = background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info))
+            const result = yield* awaitCompletion
+              ? completed
+              : Effect.raceFirst(completed, background.waitForPromotion(nextSession.id))
+            if (!awaitCompletion && result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
             if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
             return {

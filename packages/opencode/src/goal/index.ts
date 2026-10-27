@@ -323,7 +323,8 @@ const layer = Layer.effect(
             (part) =>
               part.type === "tool" &&
               !["create_goal", "get_goal", "update_goal"].includes(part.tool) &&
-              part.state.status === "completed",
+              part.state.status === "completed" &&
+              part.state.metadata?.deferredByConsultation !== true,
           )
         )
           current.workParentID = info.parentID
