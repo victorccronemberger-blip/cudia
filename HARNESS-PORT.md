@@ -82,9 +82,12 @@ anterior continua disponível com a variável em `0`. Isso não adia a inicializ
 dos servidores habilitados. A integração MCP na sessão V2 permanece pendente no
 upstream; a busca de skills foi implementada nos dois motores.
 
-O `/goal` mantém um planejador e um verificador independente. O executor recebe
-atualizações compactas, com nova âncora após retomada ou compactação; instruções
-do usuário preservam seu texto completo. A Arena é um fluxo separado, acionado
+O `/goal` usa o executor e o histórico da própria sessão, com objetivo persistido
+fora da janela de contexto e continuação nas fronteiras do runner. Não cria
+planejador nem verificador por rodada. `get_goal` e `update_goal` aparecem apenas
+com uma meta ativa; limites são opcionais e definidos pelo usuário. A retomada
+é explícita depois de pausa ou reinício. Consulte [GOAL.md](GOAL.md).
+A Arena é um fluxo separado, acionado
 por pedido explícito: quatro candidatos independentes recebem o mesmo briefing,
 sem herdar o histórico inteiro, e o coordenador verifica o vencedor. As permissões
 dos candidatos impedem alterações concorrentes no workspace.

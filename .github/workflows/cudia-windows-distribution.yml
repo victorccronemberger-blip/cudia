@@ -20,6 +20,10 @@ jobs:
   fresh-install:
     if: github.repository == 'victorccronemberger-blip/cudia'
     runs-on: windows-2025
+    # Draft release assets require push access; the downloader removes this
+    # token from the environment before starting any installer or runtime.
+    permissions:
+      contents: write
     timeout-minutes: 12
     strategy:
       fail-fast: false
