@@ -158,38 +158,52 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         additionalProperties: false,
       }),
       execute(args, options) {
+        const abort = Effect.callback<void, DOMException>((resume) => {
+          const signal = options.abortSignal
+          const cancelled = () => resume(Effect.fail(new DOMException("Aborted", "AbortError")))
+          if (signal?.aborted) {
+            cancelled()
+            return
+          }
+          if (!signal) return
+          signal.addEventListener("abort", cancelled, { once: true })
+          return Effect.sync(() => signal.removeEventListener("abort", cancelled))
+        })
         return run.promise(
-          Effect.gen(function* () {
-            yield* context(args, options).ask({
-              permission: "create_goal",
-              patterns: ["*"],
-              always: ["*"],
-              metadata: {},
-            })
-            yield* Effect.sync(() => options.abortSignal?.throwIfAborted())
-            const created = yield* goal.create(
-              input.session.id,
-              input.processor.message.parentID,
-              {
-                objective: args.objective,
-                ...(args.max_iterations === undefined ? {} : { maxIterations: args.max_iterations }),
-                ...(args.token_budget === undefined ? {} : { tokenBudget: args.token_budget }),
-              },
-              goalCreationRevision!,
-            )
-            for (const message of input.messages
-              .filter(
-                (message) =>
-                  message.info.role === "assistant" &&
-                  message.info.parentID === input.processor.message.parentID &&
-                  message.info.id !== input.processor.message.id,
+          Effect.raceFirst(
+            Effect.gen(function* () {
+              yield* context(args, options).ask({
+                permission: "create_goal",
+                patterns: ["*"],
+                always: ["*"],
+                metadata: {},
+              })
+              yield* Effect.sync(() => options.abortSignal?.throwIfAborted())
+              const created = yield* goal.create(
+                input.session.id,
+                input.processor.message.parentID,
+                {
+                  objective: args.objective,
+                  ...(args.max_iterations === undefined ? {} : { maxIterations: args.max_iterations }),
+                  ...(args.token_budget === undefined ? {} : { tokenBudget: args.token_budget }),
+                },
+                goalCreationRevision!,
               )
-              .sort((left, right) => left.info.id.localeCompare(right.info.id))) {
-              yield* goal.account(input.session.id, message)
-            }
-            const current = yield* goal.get(input.session.id).pipe(Effect.orDie)
-            return { title: "Goal created", output: Goal.formatStatus(current ?? created), metadata: {} }
-          }),
+              for (const message of input.messages
+                .filter(
+                  (message) =>
+                    message.info.role === "assistant" &&
+                    message.info.parentID === input.processor.message.parentID &&
+                    message.info.id !== input.processor.message.id,
+                )
+                .sort((left, right) => left.info.id.localeCompare(right.info.id))) {
+                yield* goal.account(input.session.id, message)
+              }
+              const current = yield* goal.get(input.session.id).pipe(Effect.orDie)
+              return { title: "Goal created", output: Goal.formatStatus(current ?? created), metadata: {} }
+            }),
+            abort,
+          ),
         )
       },
     })

@@ -16,7 +16,7 @@ import { Truncate } from "@/tool/truncate"
 import { Plugin } from "@/plugin"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Goal } from "@/goal"
-import { Effect, Layer, Schema } from "effect"
+import { Deferred, Effect, Fiber, Layer, Schema, Semaphore } from "effect"
 import { testEffect } from "../lib/effect"
 
 const callID = "call-test"
@@ -289,5 +289,116 @@ it.effect("exposes create_goal to a non-plan assistant and binds it to the curre
       goal,
     })
     expect(planTools.create_goal).toBeUndefined()
+  }),
+)
+
+it.effect("cancels create_goal while it is queued and never mutates after abort", () =>
+  Effect.gen(function* () {
+    const parentID = MessageID.ascending()
+    const semaphore = yield* Semaphore.make(1)
+    const holding = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const queued = yield* Deferred.make<void>()
+    const holder = yield* semaphore
+      .withPermit(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(holding, undefined)
+          yield* Deferred.await(release)
+        }),
+      )
+      .pipe(Effect.forkChild)
+    yield* Deferred.await(holding)
+
+    let attempts = 0
+    let mutations = 0
+    const created: Goal.State = {
+      id: "goal-cancelled-call",
+      sessionID,
+      objective: "Do not create after cancellation",
+      status: "active",
+      iteration: 1,
+      startedAt: 1,
+      updatedAt: 1,
+      completionCriteria: [],
+      plan: [],
+      observations: [],
+      failures: [],
+      recentHashes: [],
+      replanned: false,
+      parentID,
+    }
+    const goal = {
+      get: () => Effect.succeed(undefined),
+      creationRevision: () => 0,
+      create: () =>
+        Effect.gen(function* () {
+          attempts++
+          yield* Deferred.succeed(queued, undefined)
+          return yield* semaphore.withPermit(
+            Effect.sync(() => {
+              mutations++
+              return created
+            }),
+          )
+        }),
+      account: () => Effect.void,
+    } as unknown as Goal.Interface
+    const assistant = {
+      id: messageID,
+      sessionID,
+      role: "assistant",
+      parentID,
+      agent: "build",
+      mode: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: ModelV2.ID.make("test-model"),
+      providerID: ProviderV2.ID.make("test"),
+      time: { created: 1 },
+    } satisfies SessionV1.Assistant
+    const tools = yield* SessionTools.resolve({
+      agent,
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor: {
+        message: assistant,
+        updateToolCall: () => Effect.succeed(undefined),
+        completeToolCall: () => Effect.void,
+      },
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+      goal,
+    })
+    const execute = tools.create_goal?.execute
+    if (!execute) throw new Error("create_goal tool is missing execute")
+    const args = { objective: "Do not create after cancellation" }
+    const settle = (promise: Promise<unknown>) =>
+      promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+
+    const alreadyAborted = new AbortController()
+    alreadyAborted.abort()
+    const early = yield* Effect.promise(() =>
+      settle(execute(args, { toolCallId: callID, abortSignal: alreadyAborted.signal, messages: [] })),
+    )
+    expect(early.ok).toBe(false)
+    expect(attempts).toBe(0)
+
+    const controller = new AbortController()
+    const pending = settle(execute(args, { toolCallId: callID, abortSignal: controller.signal, messages: [] }))
+    yield* Deferred.await(queued)
+    controller.abort()
+    const cancelled = yield* Effect.promise(() => pending)
+    expect(cancelled.ok).toBe(false)
+    if (!cancelled.ok) expect(cancelled.error).toMatchObject({ name: "AbortError" })
+    expect(mutations).toBe(0)
+
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(holder)
+    expect(mutations).toBe(0)
   }),
 )
