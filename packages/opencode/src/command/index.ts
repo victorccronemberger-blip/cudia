@@ -89,10 +89,10 @@ const layer = Layer.effect(
       }
       commands[Default.GOAL] = {
         name: Default.GOAL,
-        description: "run an autonomous goal until verified completion or a blocker",
+        description: "set a persistent session goal, or inspect/pause/resume/clear it",
         source: "command",
         template: "",
-        hints: ["--max-iterations"],
+        hints: ["status", "pause", "resume", "clear", "replace", "--max-iterations", "--token-budget"],
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {
