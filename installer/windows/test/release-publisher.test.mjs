@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { Readable } from "node:stream"
 import test from "node:test"
 import { loadPublicKeys, validateEnvelope } from "../../../deploy/updates/lib/manifest.js"
-import { fetchGithubAssetStream, preflightRelease, publishRelease, stageRelease, validateServicePublication } from "../release.mjs"
+import { fetchGithubAssetStream, githubAdapter, preflightRelease, publishRelease, stageRelease, validateServicePublication } from "../release.mjs"
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex")
 
@@ -147,6 +147,46 @@ function adapters(fixture, options = {}) {
   return { adapters: { github, service, activationTimeoutMs: options.activationTimeoutMs, activationPollMs: options.activationPollMs, now: options.now, sleep: options.sleep }, events, uploaded, get active() { return active } }
 }
 
+function githubRecord(fixtureData, id = 91, overrides = {}) {
+  return {
+    id,
+    tag_name: fixtureData.plan.tag,
+    target_commitish: fixtureData.plan.sourceCommit,
+    name: fixtureData.plan.title,
+    body: "Preview release notes",
+    prerelease: true,
+    draft: true,
+    upload_url: `https://uploads.github.com/repos/${fixtureData.plan.repository}/releases/${id}/assets{?name,label}`,
+    ...overrides,
+  }
+}
+
+function githubRequest(handler) {
+  const calls = []
+  const request = async (input, options = {}) => {
+    const url = new URL(input)
+    const call = { method: options.method ?? "GET", path: url.pathname, query: url.searchParams, body: options.body }
+    calls.push(call)
+    return handler(call)
+  }
+  return { request, calls }
+}
+
+function jsonResponse(value, status = 200, headers = {}) {
+  return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", ...headers } })
+}
+
+async function journalReleaseId(fixtureData, releaseId) {
+  const identity = {
+    channel: fixtureData.plan.channel,
+    version: fixtureData.plan.version,
+    sequence: fixtureData.plan.sequence,
+    sourceCommit: fixtureData.plan.sourceCommit,
+    tag: fixtureData.plan.tag,
+  }
+  await writeFile(fixtureData.plan.journalFile, JSON.stringify({ schema: 1, identity: JSON.stringify(identity), state: "staging-assets", releaseId }))
+}
+
 test("publisher verifies assets before activation and records the reservation without discarding ledger history", async (t) => {
   const fixtureData = await fixture(t)
   const fake = adapters(fixtureData)
@@ -179,6 +219,227 @@ test("stage accepts pending qualification, uploads only to a draft, and never si
   assert.equal(fake.events.includes("activate"), false)
   await assert.rejects(publishRelease(fixtureData.planPath, fake.adapters), /qualification_invalid/)
   assert.equal(fake.events.includes("assert-trust"), false)
+})
+
+test("stage and publish pass the recorded release ID back to GitHub draft recovery", async (t) => {
+  const stagedFixture = await fixture(t)
+  await journalReleaseId(stagedFixture, 91)
+  const stagedFake = adapters(stagedFixture)
+  const stagedFind = stagedFake.adapters.github.findOrCreateDraft
+  let stagedReleaseId
+  stagedFake.adapters.github.findOrCreateDraft = async (input) => {
+    stagedReleaseId = input.releaseId
+    return stagedFind(input)
+  }
+  await stageRelease(stagedFixture.planPath, stagedFake.adapters.github)
+  assert.equal(stagedReleaseId, 91)
+
+  const publishFixture = await fixture(t)
+  await journalReleaseId(publishFixture, 91)
+  const publishFake = adapters(publishFixture)
+  const publishFind = publishFake.adapters.github.findOrCreateDraft
+  let publishReleaseId
+  publishFake.adapters.github.findOrCreateDraft = async (input) => {
+    publishReleaseId = input.releaseId
+    return publishFind(input)
+  }
+  await publishRelease(publishFixture.planPath, publishFake.adapters)
+  assert.equal(publishReleaseId, 91)
+})
+
+test("draft recovery discovers a hidden draft through bounded release pages after tag lookup 404", async (t) => {
+  const fixtureData = await fixture(t)
+  const record = githubRecord(fixtureData, 92)
+  const fake = githubRequest((call) => {
+    if (call.path.includes("/releases/tags/")) return jsonResponse({ message: "Not Found" }, 404)
+    if (call.path.endsWith("/releases") && call.query.get("page") === "1") {
+      return jsonResponse([], 200, { link: `<https://api.github.com${call.path}?per_page=100&page=2>; rel="next"` })
+    }
+    if (call.path.endsWith("/releases") && call.query.get("page") === "2") return jsonResponse([record])
+    throw new Error(`unexpected GitHub request: ${call.method} ${call.path}`)
+  })
+  const github = githubAdapter(async () => "test-token", fake.request)
+
+  const found = await github.findOrCreateDraft({
+    repository: fixtureData.plan.repository,
+    tag: fixtureData.plan.tag,
+    title: fixtureData.plan.title,
+    notes: "Preview release notes",
+    sourceCommit: fixtureData.plan.sourceCommit,
+    channel: fixtureData.plan.channel,
+  })
+
+  assert.equal(found.id, 92)
+  assert.equal(fake.calls.some((call) => call.method === "POST"), false)
+})
+
+test("a staged journal ID resumes its exact draft without tag lookup or POST", async (t) => {
+  const fixtureData = await fixture(t)
+  const record = githubRecord(fixtureData, 91)
+  const fake = githubRequest((call) => {
+    if (call.path.endsWith("/releases/91")) return jsonResponse(record)
+    throw new Error(`unexpected GitHub request: ${call.method} ${call.path}`)
+  })
+  const github = githubAdapter(async () => "test-token", fake.request)
+
+  const found = await github.findOrCreateDraft({
+    repository: fixtureData.plan.repository,
+    tag: fixtureData.plan.tag,
+    title: fixtureData.plan.title,
+    notes: "Preview release notes",
+    sourceCommit: fixtureData.plan.sourceCommit,
+    channel: fixtureData.plan.channel,
+    releaseId: 91,
+  })
+
+  assert.equal(found.id, 91)
+  assert.equal(fake.calls.length, 1)
+  assert.equal(fake.calls[0]?.path.endsWith("/releases/91"), true)
+})
+
+test("a stale journal release ID falls back to exact tag discovery without creating another draft", async (t) => {
+  const fixtureData = await fixture(t)
+  const record = githubRecord(fixtureData, 93)
+  const fake = githubRequest((call) => {
+    if (call.path.endsWith("/releases/17")) return jsonResponse({ message: "Not Found" }, 404)
+    if (call.path.includes("/releases/tags/")) return jsonResponse({ message: "Not Found" }, 404)
+    if (call.path.endsWith("/releases")) return jsonResponse([record])
+    throw new Error(`unexpected GitHub request: ${call.method} ${call.path}`)
+  })
+  const github = githubAdapter(async () => "test-token", fake.request)
+
+  const found = await github.findOrCreateDraft({
+    repository: fixtureData.plan.repository,
+    tag: fixtureData.plan.tag,
+    title: fixtureData.plan.title,
+    notes: "Preview release notes",
+    sourceCommit: fixtureData.plan.sourceCommit,
+    channel: fixtureData.plan.channel,
+    releaseId: 17,
+  })
+
+  assert.equal(found.id, 93)
+  assert.equal(fake.calls[0]?.path.endsWith("/releases/17"), true)
+  assert.equal(fake.calls.some((call) => call.method === "POST"), false)
+})
+
+test("draft discovery fails closed on ambiguous matching releases", async (t) => {
+  const fixtureData = await fixture(t)
+  const fake = githubRequest((call) => {
+    if (call.path.includes("/releases/tags/")) return jsonResponse({ message: "Not Found" }, 404)
+    if (call.path.endsWith("/releases")) return jsonResponse([githubRecord(fixtureData, 94), githubRecord(fixtureData, 95)])
+    throw new Error(`unexpected GitHub request: ${call.method} ${call.path}`)
+  })
+  const github = githubAdapter(async () => "test-token", fake.request)
+
+  await assert.rejects(github.findOrCreateDraft({
+    repository: fixtureData.plan.repository,
+    tag: fixtureData.plan.tag,
+    title: fixtureData.plan.title,
+    notes: "Preview release notes",
+    sourceCommit: fixtureData.plan.sourceCommit,
+    channel: fixtureData.plan.channel,
+  }), /github_release_ambiguous/)
+  assert.equal(fake.calls.some((call) => call.method === "POST"), false)
+})
+
+test("a journaled release ID with conflicting metadata fails closed", async (t) => {
+  const fixtureData = await fixture(t)
+  const fake = githubRequest((call) => {
+    if (call.path.endsWith("/releases/96")) return jsonResponse(githubRecord(fixtureData, 96, { body: "conflicting notes" }))
+    throw new Error(`unexpected GitHub request: ${call.method} ${call.path}`)
+  })
+  const github = githubAdapter(async () => "test-token", fake.request)
+
+  await assert.rejects(github.findOrCreateDraft({
+    repository: fixtureData.plan.repository,
+    tag: fixtureData.plan.tag,
+    title: fixtureData.plan.title,
+    notes: "Preview release notes",
+    sourceCommit: fixtureData.plan.sourceCommit,
+    channel: fixtureData.plan.channel,
+    releaseId: 96,
+  }), /release_identity_conflict/)
+  assert.equal(fake.calls.length, 1)
+})
+
+test("a journaled release endpoint must return the exact requested release ID", async (t) => {
+  const fixtureData = await fixture(t)
+  const fake = githubRequest((call) => {
+    if (call.path.endsWith("/releases/96")) return jsonResponse(githubRecord(fixtureData, 97))
+    throw new Error(`unexpected GitHub request: ${call.method} ${call.path}`)
+  })
+  const github = githubAdapter(async () => "test-token", fake.request)
+
+  await assert.rejects(
+    github.findOrCreateDraft({
+      repository: fixtureData.plan.repository,
+      tag: fixtureData.plan.tag,
+      title: fixtureData.plan.title,
+      notes: "Preview release notes",
+      sourceCommit: fixtureData.plan.sourceCommit,
+      channel: fixtureData.plan.channel,
+      releaseId: 96,
+    }),
+    /release_identity_conflict/,
+  )
+  assert.equal(fake.calls.length, 1)
+})
+
+test("incomplete bounded release discovery prevents draft creation", async (t) => {
+  const fixtureData = await fixture(t)
+  const fake = githubRequest((call) => {
+    if (call.path.includes("/releases/tags/")) return jsonResponse({ message: "Not Found" }, 404)
+    if (call.path.endsWith("/releases")) {
+      return jsonResponse([], 200, { link: `<https://api.github.com${call.path}?per_page=100&page=${Number(call.query.get("page")) + 1}>; rel="next"` })
+    }
+    throw new Error(`unexpected GitHub request: ${call.method} ${call.path}`)
+  })
+  const github = githubAdapter(async () => "test-token", fake.request)
+
+  await assert.rejects(github.findOrCreateDraft({
+    repository: fixtureData.plan.repository,
+    tag: fixtureData.plan.tag,
+    title: fixtureData.plan.title,
+    notes: "Preview release notes",
+    sourceCommit: fixtureData.plan.sourceCommit,
+    channel: fixtureData.plan.channel,
+  }), /github_release_discovery_incomplete/)
+  assert.equal(fake.calls.filter((call) => call.path.endsWith("/releases")).length, 10)
+  assert.equal(fake.calls.some((call) => call.method === "POST"), false)
+})
+
+test("a create race is recovered by rediscovery instead of a second POST", async (t) => {
+  const fixtureData = await fixture(t)
+  const record = githubRecord(fixtureData, 97)
+  let posts = 0
+  let listings = 0
+  const fake = githubRequest((call) => {
+    if (call.path.includes("/releases/tags/")) return jsonResponse({ message: "Not Found" }, 404)
+    if (call.method === "POST") {
+      posts++
+      return jsonResponse({ message: "already_exists" }, 422)
+    }
+    if (call.path.endsWith("/releases")) {
+      listings++
+      return jsonResponse(listings === 1 ? [] : [record])
+    }
+    throw new Error(`unexpected GitHub request: ${call.method} ${call.path}`)
+  })
+  const github = githubAdapter(async () => "test-token", fake.request)
+
+  const found = await github.findOrCreateDraft({
+    repository: fixtureData.plan.repository,
+    tag: fixtureData.plan.tag,
+    title: fixtureData.plan.title,
+    notes: "Preview release notes",
+    sourceCommit: fixtureData.plan.sourceCommit,
+    channel: fixtureData.plan.channel,
+  })
+
+  assert.equal(found.id, 97)
+  assert.equal(posts, 1)
+  assert.equal(listings, 2)
 })
 
 test("stage refuses to add a missing asset to an already published release", async (t) => {

@@ -10,6 +10,7 @@ import { loadPublicKeys, validateEnvelope } from "../../deploy/updates/lib/manif
 const REPOSITORY = "victorccronemberger-blip/cudia"
 const GITHUB_ASSET_HOSTS = new Set(["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com"])
 const GITHUB_UPLOAD_HOST = "uploads.github.com"
+const GITHUB_RELEASE_DISCOVERY_MAX_PAGES = 10
 const CHECKOUT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/
@@ -39,6 +40,7 @@ export async function stageRelease(planPath, github) {
       notes: await readFile(plan.notesFile, "utf8"),
       sourceCommit: plan.sourceCommit,
       channel: plan.channel,
+      releaseId: journal.releaseId,
     })
     if (!record || !Number.isSafeInteger(record.id) || record.id < 1) throw new Error("draft_release_invalid")
     const staged = []
@@ -92,7 +94,7 @@ async function publishPrepared(plan, adapters) {
   const trustedKeys = loadPublicKeys({ trustPath: plan.publicKeysFile })
   const envelope = signManifest(payload, plan.keyId, await readFile(plan.privateKeyFile), trustedKeys)
   await adapters.service.assertTrust({ branch: plan.service.branch, expectedParent: plan.service.expectedParent, channel: plan.channel, envelope })
-  const record = await adapters.github.findOrCreateDraft({ repository: REPOSITORY, tag: plan.tag, title: plan.title, notes: await readFile(plan.notesFile, "utf8"), sourceCommit: plan.sourceCommit, channel: plan.channel })
+  const record = await adapters.github.findOrCreateDraft({ repository: REPOSITORY, tag: plan.tag, title: plan.title, notes: await readFile(plan.notesFile, "utf8"), sourceCommit: plan.sourceCommit, channel: plan.channel, releaseId: journal.releaseId })
   await saveJournal(journalPath, { ...journal, state: "draft", releaseId: record.id, tag: plan.tag })
 
   for (const artifact of release.artifacts) {
@@ -305,6 +307,7 @@ async function readJournal(path, identity) {
   try {
     const journal = JSON.parse(await readFile(path, "utf8"))
     if (journal.identity !== JSON.stringify(identity)) throw new Error("journal_identity_conflict")
+    if (journal.releaseId !== undefined && (!Number.isSafeInteger(journal.releaseId) || journal.releaseId < 1)) throw new Error("journal_release_id_invalid")
     return journal
   } catch (error) {
     if (error.code !== "ENOENT") throw error
@@ -443,25 +446,64 @@ async function gitCredential() {
   return token
 }
 
-function githubAdapter(getToken) {
-  const api = async (method, path, body, headers = {}) => {
+export function githubAdapter(getToken, request = fetch) {
+  const apiResponse = async (method, path, body, headers = {}) => {
     const token = await getToken()
-    const response = await fetch(`https://api.github.com${path}`, { method, headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", ...(body ? { "Content-Type": "application/json" } : {}), ...headers }, body, redirect: "manual", signal: AbortSignal.timeout(30000) })
+    return request(`https://api.github.com${path}`, { method, headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", ...(body ? { "Content-Type": "application/json" } : {}), ...headers }, body, redirect: "manual", signal: AbortSignal.timeout(30000) })
+  }
+  const api = async (method, path, body, headers = {}) => {
+    const response = await apiResponse(method, path, body, headers)
     if (!response.ok) throw new Error(`github_api_${response.status}`)
     return response.status === 204 ? undefined : responseJson(response)
   }
-  return {
-    async findOrCreateDraft({ repository, tag, title, notes, sourceCommit, channel }) {
-      const token = await getToken()
-      const existing = await fetch(`https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }, redirect: "manual", signal: AbortSignal.timeout(30000) })
-      if (existing.ok) {
-        const release = await responseJson(existing)
-        if (release.tag_name !== tag || release.target_commitish !== sourceCommit || release.name !== title || release.body !== notes || release.prerelease !== (channel === "preview")) throw new Error("release_identity_conflict")
-        if (!release.draft) return release
-        return release
+  const validateIdentity = (release, { tag, title, notes, sourceCommit, channel }) => {
+    if (!release || !Number.isSafeInteger(release.id) || release.id < 1 || release.tag_name !== tag || release.target_commitish !== sourceCommit || release.name !== title || release.body !== notes || release.prerelease !== (channel === "preview") || typeof release.draft !== "boolean") throw new Error("release_identity_conflict")
+    return release
+  }
+  const discoverByTag = async (repository, identity) => {
+    const matches = []
+    for (let page = 1; page <= GITHUB_RELEASE_DISCOVERY_MAX_PAGES; page++) {
+      const response = await apiResponse("GET", `/repos/${repository}/releases?per_page=100&page=${page}`)
+      if (!response.ok) throw new Error(`github_api_${response.status}`)
+      const releases = await responseJson(response)
+      if (!Array.isArray(releases)) throw new Error("github_release_discovery_invalid")
+      matches.push(...releases.filter((release) => release?.tag_name === identity.tag))
+      const hasNext = /<[^>]+>\s*;\s*rel="next"/.test(response.headers.get("link") ?? "")
+      if (!hasNext) {
+        if (matches.length > 1) throw new Error("github_release_ambiguous")
+        return matches.length === 1 ? validateIdentity(matches[0], identity) : undefined
       }
-      if (existing.status !== 404) throw new Error(`github_api_${existing.status}`)
-      return api("POST", `/repos/${repository}/releases`, JSON.stringify({ tag_name: tag, target_commitish: sourceCommit, name: title, body: notes, draft: true, prerelease: channel === "preview" }))
+    }
+    throw new Error("github_release_discovery_incomplete")
+  }
+  const validateOrFind = async (path, identity, expectedId) => {
+    const response = await apiResponse("GET", path)
+    if (response.status === 404) return undefined
+    if (!response.ok) throw new Error(`github_api_${response.status}`)
+    const release = validateIdentity(await responseJson(response), identity)
+    if (expectedId !== undefined && release.id !== expectedId) throw new Error("release_identity_conflict")
+    return release
+  }
+  return {
+    async findOrCreateDraft({ repository, tag, title, notes, sourceCommit, channel, releaseId }) {
+      const identity = { tag, title, notes, sourceCommit, channel }
+      if (releaseId !== undefined) {
+        if (!Number.isSafeInteger(releaseId) || releaseId < 1) throw new Error("release_identity_conflict")
+        const journaled = await validateOrFind(`/repos/${repository}/releases/${releaseId}`, identity, releaseId)
+        if (journaled) return journaled
+      }
+      const tagged = await validateOrFind(`/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, identity)
+      if (tagged) return tagged
+      const discovered = await discoverByTag(repository, identity)
+      if (discovered) return discovered
+      try {
+        const created = await api("POST", `/repos/${repository}/releases`, JSON.stringify({ tag_name: tag, target_commitish: sourceCommit, name: title, body: notes, draft: true, prerelease: channel === "preview" }))
+        return validateIdentity(created, identity)
+      } catch (error) {
+        const raced = await discoverByTag(repository, identity)
+        if (raced) return raced
+        throw error
+      }
     },
     async findAsset(releaseId, name) {
       const response = await api("GET", `/repos/${REPOSITORY}/releases/${releaseId}/assets?per_page=100`)
@@ -472,23 +514,23 @@ function githubAdapter(getToken) {
       const url = new URL(release.upload_url.replace(/\{.*$/, ""))
       if (url.protocol !== "https:" || url.hostname !== GITHUB_UPLOAD_HOST || url.port || url.username || url.password || !url.pathname.startsWith(`/repos/${REPOSITORY}/releases/`)) throw new Error("github_upload_url_rejected")
       url.searchParams.set("name", name)
-      const response = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream", "Content-Length": String(size) }, body: Readable.toWeb(createReadStream(filePath)), duplex: "half", redirect: "manual", signal: AbortSignal.timeout(20 * 60 * 1000) })
+      const response = await request(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream", "Content-Length": String(size) }, body: Readable.toWeb(createReadStream(filePath)), duplex: "half", redirect: "manual", signal: AbortSignal.timeout(20 * 60 * 1000) })
       if (!response.ok) throw new Error(`github_upload_${response.status}`)
       await response.body?.cancel()
     },
     async downloadAsset(releaseId, assetId) {
       const token = await getToken()
-      const response = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases/assets/${assetId}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/octet-stream" }, redirect: "manual", signal: AbortSignal.timeout(20 * 60 * 1000) })
+      const response = await request(`https://api.github.com/repos/${REPOSITORY}/releases/assets/${assetId}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/octet-stream" }, redirect: "manual", signal: AbortSignal.timeout(20 * 60 * 1000) })
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("location")
         if (!location) throw new Error("github_asset_redirect_invalid")
-        return fetchGithubAssetStream(new URL(location, response.url))
+        return fetchGithubAssetStream(new URL(location, response.url), request)
       }
       if (!response.ok || !response.body) throw new Error(`github_asset_download_${response.status}`)
       return Readable.fromWeb(response.body)
     },
     async downloadPublic(url) {
-      return fetchGithubAssetStream(new URL(url))
+      return fetchGithubAssetStream(new URL(url), request)
     },
     async publish(releaseId) { await api("PATCH", `/repos/${REPOSITORY}/releases/${releaseId}`, JSON.stringify({ draft: false })) },
   }
