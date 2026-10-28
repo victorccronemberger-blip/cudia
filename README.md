@@ -137,10 +137,10 @@ Use `/connect`, escolha **QwenCloud Token Plan** e informe a chave do plano
 (`sk-sp-`). Também pode definir `QWENCLOUD_TOKEN_PLAN_API_KEY` no ambiente.
 Em `/models`, procure QwenCloud e escolha, por exemplo, `qwencloud/qwen3.8-flash`.
 
-O catálogo contém os 12 modelos de texto do Token Plan Personal, incluindo `auto`,
-Qwen, GLM e DeepSeek. Qwen 3.8 usa esforço `medium` por padrão; as variantes `low`
+O catálogo contém os 13 modelos de texto do Token Plan Personal, incluindo `auto`,
+Qwen, GLM e DeepSeek, com a revisão `deepseek-v4.1-flash-1017`. Qwen 3.8 usa esforço `medium` por padrão; as variantes `low`
 e `xhigh` permitem ajustar custo e profundidade. O roteamento de `auto` é decidido
-pelo serviço; seu orçamento local usa contexto de 1M e saída de até 65.536 tokens.
+pelo serviço; seu orçamento local usa contexto de 248.000 e saída de até 65.536 tokens.
 
 Essa chave não é a chave DashScope dos provedores `qwen`/`alibaba`, nem a chave
 QwenCloud de pagamento por uso (`sk-ws-`). Os modelos usam as ferramentas locais,
