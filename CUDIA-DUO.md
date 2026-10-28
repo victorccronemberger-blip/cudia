@@ -2,7 +2,8 @@
 
 `/duo` inicia uma execução colaborativa explícita dentro da conversa atual. Os
 dois participantes recebem o mesmo objetivo e trabalham em sessões-filhas
-separadas, cada uma com seu próprio modelo e diretório. O histórico da conversa
+separadas, cada uma com seu próprio modelo. Os dois começam em paralelo, inclusive
+fora de um repositório Git. O histórico da conversa
 principal e os históricos das sessões-filhas permanecem separados; a execução
 não transforma cada turno normal em uma chamada a dois modelos nem altera o
 comportamento padrão dos provedores.
@@ -52,8 +53,13 @@ participante.
 ## Execução e diretórios
 
 Cada participante recebe o objetivo compartilhado e pode trabalhar em sua
-própria sessão-filho. A revisão recebe o objetivo e um resumo limitado do
-resultado do par; os históricos completos não são copiados entre as sessões.
+própria sessão-filho. A cada turno concluído, compartilha um resumo curto de texto
+público e resultados de ferramentas. O outro recebe a atualização antes da sua
+próxima chamada ao modelo, mesmo enquanto ainda está trabalhando. Raciocínio
+interno e históricos completos não são copiados entre as sessões. Cada chamada
+recebe somente a atualização mais recente, com até 4.000 caracteres de conteúdo
+(ou o limite menor definido em `peerChars`), sem acumular cópias de atualizações
+antigas no histórico.
 Os IDs das sessões-filhas ficam visíveis em `/duo status`, e retomadas reutilizam
 essas sessões.
 
@@ -64,14 +70,18 @@ são copiados, e o Duo não instala dependências nem executa scripts de prepara
 As worktrees permanecem no disco depois da execução ou do cancelamento.
 
 Sem Git, sem um commit inicial ou quando a preparação excede 64 MiB, o Duo
-continua sequencialmente na pasta compartilhada e informa essa condição no
+continua em paralelo na pasta compartilhada e informa essa condição no
 resultado. Nesse modo, as alterações feitas por um participante ficam visíveis
-para o outro. Em modo paralelo, as worktrees permanecem separadas da pasta
-original. Quando o objetivo pede alterações, o primeiro participante (Drael por
+para o outro. As operações estruturadas `write`, `edit` e `apply_patch` coordenam
+acesso concorrente aos mesmos arquivos dentro do processo; comandos de shell e
+editores externos conservam seu próprio comportamento. Com Git, as worktrees
+permanecem separadas da pasta original. Quando o objetivo pede alterações, o primeiro participante (Drael por
 padrão) coordena a resposta e integra na pasta original as mudanças solicitadas,
 usando os resultados e artefatos dos participantes como evidência.
 
-Depois do trabalho, cada participante pode revisar o resultado do par. O
+Assim que termina seu próprio trabalho, cada participante pode revisar o que o
+par já produziu, incluindo progresso parcial. Essa revisão também é compartilhada
+com o par que ainda está trabalhando, sem esperar ambos encerrarem o trabalho. O
 primeiro participante, Drael por padrão, coordena a resposta e integra o
 trabalho pedido na pasta original. Se a tarefa ou o transporte do coordenador
 falhar e o trabalho do outro participante tiver sido concluído, esse participante

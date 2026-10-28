@@ -1506,6 +1506,13 @@ const layer = Layer.effect(
             )
             if (prepared === undefined) return "break" as const
             const [skills, env, instructions, mcpInstructions, modelMsgs] = prepared
+            const collaborator = yield* duo
+              .context(sessionID)
+              .pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("Duo progress unavailable", { error: String(error) }).pipe(Effect.as(undefined)),
+                ),
+              )
             const system = [
               ...env,
               ...instructions,
@@ -1524,6 +1531,7 @@ const layer = Layer.effect(
               system,
               messages: [
                 ...modelMsgs,
+                ...(collaborator ? [{ role: "user" as const, content: collaborator }] : []),
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
               tools,
@@ -1584,8 +1592,16 @@ const layer = Layer.effect(
                 const completedMessage = yield* sessions
                   .findMessage(sessionID, (message) => message.info.id === handle.message.id)
                   .pipe(Effect.orDie)
-                if (Option.isSome(completedMessage))
+                if (Option.isSome(completedMessage)) {
+                  yield* duo
+                    .report(sessionID, completedMessage.value)
+                    .pipe(
+                      Effect.catch((error) =>
+                        Effect.logWarning("Duo progress could not be shared", { error: String(error) }),
+                      ),
+                    )
                   yield* goal.account(sessionID, completedMessage.value).pipe(Effect.orDie)
+                }
               }),
             ),
           )
@@ -1696,11 +1712,11 @@ const layer = Layer.effect(
               : saved.status
           return yield* respond(
             [
-              `Duo: ${status}. Execução: ${saved.id}. Modo: ${saved.schedule}.`,
+              `Duo: ${status}. Execução: ${saved.id}. Modo: ${saved.schedule}; ${saved.members[0].directory === saved.members[1].directory ? "pasta compartilhada" : "worktrees separadas"}.`,
               `Objetivo: ${saved.objective}`,
               ...saved.members.map(
                 (member) =>
-                  `${member.name}: ${member.model}${member.variant ? ` (${member.variant})` : ""}; sessão ${member.taskID ?? "ainda não criada"}; trabalho ${member.work?.status ?? "pendente"}; revisão ${member.review?.status ?? "pendente"}; pasta ${member.directory}`,
+                  `${member.name}: ${member.model}${member.variant ? ` (${member.variant})` : ""}; sessão ${member.taskID ?? "ainda não criada"}; trabalho ${member.work?.status ?? (member.taskID ? "executando" : "iniciando")}; revisão ${member.review?.status ?? "pendente"}; ${member.progress ? `última atividade ${member.progress.phase}, atualização ${member.progress.revision}; ` : ""}pasta ${member.directory}`,
               ),
             ].join("\n"),
           )
@@ -1758,7 +1774,7 @@ const layer = Layer.effect(
           const ctx = yield* InstanceState.context
           const prepared = continuing
             ? {
-                schedule: saved!.schedule,
+                schedule: "parallel" as const,
                 directories: [saved!.members[0].directory, saved!.members[1].directory] as [string, string],
                 baseDirectory: ctx.directory,
                 reason: undefined,
@@ -1770,7 +1786,7 @@ const layer = Layer.effect(
             sessionID: input.sessionID,
             type: "text",
             synthetic: true,
-            text: `Duo: ${prepared.schedule === "parallel" ? "execuções paralelas em worktrees separadas" : "execuções em sequência na pasta compartilhada"}.${prepared.reason ? ` ${prepared.reason}` : ""}\nPasta original para integração: ${ctx.directory}\nParticipante 1: ${prepared.directories[0]}\nParticipante 2: ${prepared.directories[1]}`,
+            text: `Duo: execuções paralelas ${prepared.directories[0] === prepared.directories[1] ? "na pasta compartilhada" : "em worktrees separadas"}, com progresso compartilhado durante o trabalho.${prepared.reason ? ` ${prepared.reason}` : ""}\nPasta original para integração: ${ctx.directory}\nParticipante 1: ${settings.participants[0].name} (${settings.participants[0].model}) — ${prepared.directories[0]}\nParticipante 2: ${settings.participants[1].name} (${settings.participants[1].model}) — ${prepared.directories[1]}`,
             metadata: { duoRun: true },
           })
           const invoke: Duo.Invoker = (request) =>
@@ -1899,7 +1915,7 @@ const layer = Layer.effect(
             sessionID: input.sessionID,
             type: "text",
             synthetic: true,
-            text: `Os dois participantes receberam o mesmo objetivo. Resultados: ${finished.members.map((member) => `${member.name}: trabalho ${member.work?.status ?? "não concluído"}, revisão ${member.review?.status ?? "não concluída"}, sessão ${member.taskID ?? "não criada"}, pasta ${member.directory}`).join("; ")}.\nUse os resultados e artefatos como evidências e construa uma resposta conjunta para o objetivo do operador. Se o objetivo pedir alterações, integre a solução útil na pasta original ${ctx.directory} e execute as verificações relevantes. Alterações nas worktrees ainda não são alterações na pasta original. Para objetivos de análise, responda com a análise solicitada. Se houver divergências ou verificações ausentes, informe-as.`,
+            text: `Os dois participantes receberam o mesmo objetivo. Resultados: ${finished.members.map((member) => `${member.name}: trabalho ${member.work?.status ?? "não concluído"}, revisão ${member.review?.status ?? "não concluída"}, sessão ${member.taskID ?? "não criada"}, pasta ${member.directory}`).join("; ")}.\nUse os resultados e artefatos como evidências e construa uma resposta conjunta para o objetivo do operador. Se o objetivo pedir alterações, integre a solução útil na pasta original ${ctx.directory} e execute as verificações relevantes. ${finished.members[0].directory === finished.members[1].directory ? "Os participantes já trabalharam diretamente na pasta original; confira e aproveite as alterações existentes." : "Alterações nas worktrees ainda não são alterações na pasta original."} Para objetivos de análise, responda com a análise solicitada. Se houver divergências ou verificações ausentes, informe-as.`,
             metadata: { duoRun: true },
           })
           return yield* lastAssistant(input.sessionID)

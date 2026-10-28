@@ -62,19 +62,26 @@ describe("DuoWorkspace.prepare", () => {
     }
   })
 
-  test("uses sequential scheduling outside Git", async () => {
+  test("starts both participants in parallel in the shared directory outside Git", async () => {
     await using tmp = await tmpdir()
     const result = await Effect.runPromise(prepare({ directory: tmp.path, runID: ids[1] }))
-    expect(result.schedule).toBe("sequential")
+    expect(result.schedule).toBe("parallel")
     expect(result.directories).toEqual([tmp.path, tmp.path])
     expect(result.reason).toContain("not inside a Git repository")
+    expect(
+      await fs
+        .stat(path.join(Global.Path.data, "duo-workspaces", ids[1]))
+        .then(() => true)
+        .catch(() => false),
+    ).toBe(false)
   })
 
   test("falls back before creating worktrees when the snapshot exceeds its budget", async () => {
     await using tmp = await tmpdir({ git: true })
     await fs.writeFile(path.join(tmp.path, "large.bin"), "x".repeat(4096))
     const result = await Effect.runPromise(prepare({ directory: tmp.path, runID: ids[1], maxSnapshotBytes: 128 }))
-    expect(result.schedule).toBe("sequential")
+    expect(result.schedule).toBe("parallel")
+    expect(result.directories).toEqual([tmp.path, tmp.path])
     expect(result.reason).toContain("snapshot limit")
     expect(
       await fs

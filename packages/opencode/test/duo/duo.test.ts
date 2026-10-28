@@ -96,7 +96,7 @@ describe("duo service", () => {
                 return {
                   taskID: id,
                   status: "completed" as const,
-                  output: request.index === 0 ? "0123456789ABCDEFGHIJ" : "second result",
+                  output: "0123456789ABCDEFGHIJ",
                 }
               }
               return { status: "completed" as const, output: `reviewed:${request.prompt}` }
@@ -152,7 +152,7 @@ describe("duo service", () => {
       const sessionID = SessionID.create()
       const entered = yield* Deferred.make<void>()
       const never = yield* Deferred.make<void>()
-      let firstID: SessionID | undefined
+      const allocated: Array<SessionID | undefined> = []
       const fiber = yield* duo
         .start(
           {
@@ -166,7 +166,7 @@ describe("duo service", () => {
           (request) =>
             Effect.gen(function* () {
               const id = SessionID.create()
-              firstID = id
+              allocated[request.index] = id
               yield* request.onAllocated(id)
               yield* Deferred.succeed(entered, undefined)
               yield* Deferred.await(never)
@@ -179,7 +179,7 @@ describe("duo service", () => {
       yield* Fiber.interrupt(fiber)
       const saved = yield* duo.get(sessionID)
       expect(saved?.status).toBe("interrupted")
-      expect(saved?.members[0]?.taskID).toBe(firstID)
+      expect(saved?.members[0]?.taskID).toBe(allocated[0])
       expect(duo.owns(sessionID)).toBe(false)
 
       const resumed: Duo.Invocation[] = []
@@ -187,7 +187,7 @@ describe("duo service", () => {
         resumed.push(request)
         return Effect.succeed({ status: "completed" as const, output: "continued" })
       })
-      expect(resumed[0]?.taskID).toBe(firstID)
+      expect(resumed[0]?.taskID).toBe(allocated[0])
       expect(done.status).toBe("completed")
       expect(done.members[0]?.work?.output).toBe("continued")
       expect(done.members[1]?.work?.output).toBe("continued")
@@ -220,7 +220,61 @@ describe("duo service", () => {
       expect(seen).toHaveLength(2)
       expect(seen[0]?.taskID).toBe(existing.members[0].taskID)
       expect(resumed.status).toBe("completed")
+      expect(resumed.schedule).toBe("parallel")
       expect(duo.owns(sessionID)).toBe(false)
+    }),
+  )
+
+  suite.instance("shares a completed peer result and starts its review while the other member is still working", () =>
+    Effect.gen(function* () {
+      const duo = yield* Duo.Service
+      const sessionID = SessionID.create()
+      const draelID = SessionID.create()
+      const lunaID = SessionID.create()
+      const draelStarted = yield* Deferred.make<void>()
+      const reviewStarted = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const fiber = yield* duo
+        .start(
+          {
+            sessionID,
+            objective: "Improve this together while both are working.",
+            members,
+            schedule: "parallel",
+            review: true,
+            peerChars: 1_000,
+          },
+          (request) =>
+            Effect.gen(function* () {
+              yield* request.onAllocated(request.index === 0 ? draelID : lunaID)
+              if (request.index === 0 && request.phase === "work") {
+                yield* Deferred.succeed(draelStarted, undefined)
+                yield* Deferred.await(release)
+                return { status: "completed" as const, output: "Drael used the useful peer result" }
+              }
+              if (request.index === 1 && request.phase === "work") {
+                yield* Deferred.await(draelStarted)
+                return { status: "completed" as const, output: "LUNA-EARLY-RESULT" }
+              }
+              if (request.index === 1 && request.phase === "review") {
+                expect(request.prompt).toContain("The peer is still working")
+                yield* Deferred.succeed(reviewStarted, undefined)
+                yield* Deferred.await(release)
+              }
+              return { status: "completed" as const, output: "Reviewed available evidence" }
+            }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(reviewStarted)
+      const whileWorking = yield* duo.get(sessionID)
+      expect(whileWorking?.members[0].work).toBeUndefined()
+      expect(whileWorking?.members[1].work?.status).toBe("completed")
+      expect(yield* duo.context(draelID)).toContain("LUNA-EARLY-RESULT")
+      expect(yield* duo.context(SessionID.create())).toBeUndefined()
+      yield* Deferred.succeed(release, undefined)
+      const finished = yield* Fiber.join(fiber)
+      expect(finished.members.every((member) => member.review?.status === "completed")).toBe(true)
+      expect(yield* duo.context(draelID)).toBeUndefined()
     }),
   )
 })

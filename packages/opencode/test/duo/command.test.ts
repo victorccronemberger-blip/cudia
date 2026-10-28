@@ -62,6 +62,21 @@ let workGate:
       releaseB: Deferred.Deferred<void>
     }
   | undefined
+let livePeerGate:
+  | {
+      aWorkEntered: Deferred.Deferred<void>
+      bWorkEntered: Deferred.Deferred<void>
+      releaseBWork: Deferred.Deferred<void>
+      bReviewNextCall: Deferred.Deferred<void>
+      releaseBReview: Deferred.Deferred<void>
+      aNextWorkEntered: Deferred.Deferred<void>
+      releaseANextWork: Deferred.Deferred<void>
+      fixturePath: string
+      fixtureText: string
+      aWorkCalls: number
+      bReviewCalls: number
+    }
+  | undefined
 const suite = testEffect(
   LayerNode.compile(LayerNode.group([SessionPrompt.node, Session.node, SessionProjector.node, Duo.node]), [
     [Global.node, Global.layerWith({ config })],
@@ -71,6 +86,61 @@ const suite = testEffect(
       Layer.mock(LLM.Service)({
         stream: (input) => {
           requests.push(input)
+          if (livePeerGate && input.agent.name === "general") {
+            const isReview = input.messages.some((message) =>
+              JSON.stringify(message.content).includes("Duo peer review by"),
+            )
+            if (input.model.providerID === "test-a" && !isReview) {
+              livePeerGate.aWorkCalls++
+              if (livePeerGate.aWorkCalls === 1)
+                return Stream.unwrap(
+                  Effect.gen(function* () {
+                    yield* Deferred.succeed(livePeerGate!.aWorkEntered, undefined)
+                    yield* Deferred.await(livePeerGate!.bReviewNextCall)
+                    return toolResponse(
+                      "DRAEL_TOOL_TURN_MARKER",
+                      livePeerGate!.fixturePath,
+                      livePeerGate!.fixtureText,
+                      "drael-read",
+                    )
+                  }),
+                )
+              if (livePeerGate.aWorkCalls === 2)
+                return Stream.unwrap(
+                  Effect.gen(function* () {
+                    yield* Deferred.succeed(livePeerGate!.aNextWorkEntered, undefined)
+                    yield* Deferred.await(livePeerGate!.releaseANextWork)
+                    return response("DRAEL_WORK_FINAL_MARKER")
+                  }),
+                )
+            }
+            if (input.model.providerID === "test-b" && !isReview)
+              return Stream.unwrap(
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(livePeerGate!.bWorkEntered, undefined)
+                  yield* Deferred.await(livePeerGate!.releaseBWork)
+                  return response("GPT_WORK_PUBLIC_MARKER")
+                }),
+              )
+            if (input.model.providerID === "test-b" && isReview) {
+              livePeerGate.bReviewCalls++
+              if (livePeerGate.bReviewCalls === 1)
+                return toolResponse(
+                  "GPT_REVIEW_PUBLIC_MARKER",
+                  livePeerGate.fixturePath,
+                  livePeerGate.fixtureText,
+                  "gpt-review-read",
+                )
+              if (livePeerGate.bReviewCalls === 2)
+                return Stream.unwrap(
+                  Effect.gen(function* () {
+                    yield* Deferred.succeed(livePeerGate!.bReviewNextCall, undefined)
+                    yield* Deferred.await(livePeerGate!.releaseBReview)
+                    return response("GPT_REVIEW_FINAL_MARKER")
+                  }),
+                )
+            }
+          }
           if (failProviderA && input.agent.name === "general" && input.model.providerID === "test-a")
             return Stream.die(new Error("simulated provider failure"))
           const isDuoWork =
@@ -147,14 +217,37 @@ const instanceConfig = {
   provider: { "test-a": provider("Test A", "one"), "test-b": provider("Test B", "two") },
 }
 
-function response() {
+function response(text = "Reviewed implementation and verified the requested result.") {
   const usage = new Usage({ inputTokens: 1, outputTokens: 1, totalTokens: 2 })
   return Stream.make(
     LLMEvent.textStart({ id: "answer" }),
-    LLMEvent.textDelta({ id: "answer", text: "Reviewed implementation and verified the requested result." }),
+    LLMEvent.textDelta({ id: "answer", text }),
     LLMEvent.textEnd({ id: "answer" }),
     LLMEvent.stepFinish({ index: 0, reason: "stop", usage }),
     LLMEvent.finish({ reason: "stop", usage }),
+  )
+}
+
+function toolResponse(text: string, fixturePath: string, fixtureText: string, callID: string) {
+  const usage = new Usage({ inputTokens: 1, outputTokens: 1, totalTokens: 2 })
+  return Stream.make(
+    LLMEvent.textStart({ id: "answer" }),
+    LLMEvent.textDelta({ id: "answer", text }),
+    LLMEvent.textEnd({ id: "answer" }),
+    LLMEvent.toolCall({
+      id: callID,
+      name: "read",
+      input: { filePath: fixturePath },
+      providerExecuted: true,
+    }),
+    LLMEvent.toolResult({
+      id: callID,
+      name: "read",
+      result: { type: "text", value: { title: "Read fixture", output: fixtureText, metadata: {} } },
+      providerExecuted: true,
+    }),
+    LLMEvent.stepFinish({ index: 0, reason: "tool-calls", usage }),
+    LLMEvent.finish({ reason: "tool-calls", usage }),
   )
 }
 
@@ -250,6 +343,103 @@ suite.instance(
       expect(calls.every((request) => request.sessionID === chat.id || request.agent.name === "general")).toBe(true)
     }),
   { git: true, config: instanceConfig },
+  { timeout: 30000 },
+)
+
+suite.instance(
+  "/duo shares live review progress with a still-running peer in a non-Git workspace",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const duo = yield* Duo.Service
+      const instance = yield* TestInstance
+      const chat = yield* sessions.create({ title: "Duo live peer progress without Git" })
+      const fixturePath = path.join(instance.directory, "duo-live-fixture.txt")
+      const fixtureText = "READ_FIXTURE_CONTENT_5C89"
+      yield* Effect.promise(() => fs.writeFile(fixturePath, fixtureText))
+      const gates = {
+        aWorkEntered: yield* Deferred.make<void>(),
+        bWorkEntered: yield* Deferred.make<void>(),
+        releaseBWork: yield* Deferred.make<void>(),
+        bReviewNextCall: yield* Deferred.make<void>(),
+        releaseBReview: yield* Deferred.make<void>(),
+        aNextWorkEntered: yield* Deferred.make<void>(),
+        releaseANextWork: yield* Deferred.make<void>(),
+        fixturePath,
+        fixtureText,
+        aWorkCalls: 0,
+        bReviewCalls: 0,
+      }
+      livePeerGate = gates
+      yield* Effect.addFinalizer(() => {
+        livePeerGate = undefined
+        return Effect.all(
+          [
+            Deferred.succeed(gates.releaseBWork, undefined),
+            Deferred.succeed(gates.releaseBReview, undefined),
+            Deferred.succeed(gates.releaseANextWork, undefined),
+          ],
+          { discard: true },
+        )
+      })
+
+      const start = requests.length
+      const command = yield* prompt
+        .command({
+          sessionID: chat.id,
+          command: "duo",
+          arguments: "Compare both implementations and use the peer's live findings.",
+        })
+        .pipe(Effect.forkChild)
+
+      yield* awaitWithTimeout(
+        Effect.all([Deferred.await(gates.aWorkEntered), Deferred.await(gates.bWorkEntered)]),
+        "both non-Git Duo work streams did not start",
+        "20 seconds",
+      )
+      yield* Deferred.succeed(gates.releaseBWork, undefined)
+      yield* awaitWithTimeout(
+        Deferred.await(gates.bReviewNextCall),
+        "GPT did not publish its review-turn progress",
+        "20 seconds",
+      )
+      yield* awaitWithTimeout(
+        Deferred.await(gates.aNextWorkEntered),
+        "Drael did not start its next provider turn",
+        "20 seconds",
+      )
+
+      const running = yield* duo.get(chat.id)
+      expect(running?.schedule).toBe("parallel")
+      expect(running?.members[0].directory).toBe(instance.directory)
+      expect(running?.members[1].directory).toBe(instance.directory)
+      expect(running?.members[0].work).toBeUndefined()
+
+      const calls = requests.slice(start)
+      const draelFollowup = calls.find(
+        (request) =>
+          request.sessionID === running?.members[0].taskID &&
+          request.model.providerID === "test-a" &&
+          JSON.stringify(request.messages).includes("GPT_REVIEW_PUBLIC_MARKER"),
+      )
+      expect(draelFollowup).toBeDefined()
+      const followupMessages = JSON.stringify(draelFollowup?.messages)
+      expect(followupMessages).toContain("Phase: review. Status: working.")
+      expect(followupMessages).toContain(path.basename(instance.directory))
+      expect(followupMessages).toContain(fixtureText)
+      expect(followupMessages.match(/GPT_REVIEW_PUBLIC_MARKER/g)).toHaveLength(1)
+
+      yield* Deferred.succeed(gates.releaseBReview, undefined)
+      yield* Deferred.succeed(gates.releaseANextWork, undefined)
+      yield* awaitWithTimeout(Fiber.join(command), "non-Git Duo did not finish", "30 seconds")
+
+      const finished = yield* duo.get(chat.id)
+      expect(finished?.status).toBe("completed")
+      expect(finished?.members.every((member) => member.work?.status === "completed")).toBe(true)
+      expect(finished?.members.every((member) => member.review?.status === "completed")).toBe(true)
+    }),
+  { git: false, config: instanceConfig },
   { timeout: 30000 },
 )
 

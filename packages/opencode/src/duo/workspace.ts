@@ -25,7 +25,7 @@ export function prepare(input: {
   }).pipe(
     Effect.catch((error) =>
       Effect.succeed({
-        schedule: "sequential" as const,
+        schedule: "parallel" as const,
         directories: [path.resolve(input.directory), path.resolve(input.directory)] as [string, string],
         baseDirectory: path.resolve(input.directory),
         reason: error instanceof Error ? error.message : String(error),
@@ -42,7 +42,7 @@ async function prepareWorkspace(input: {
   const original = path.resolve(input.directory)
   const invocationDirectory = await fs.realpath(original)
   const fallback = (reason: string, baseDirectory = invocationDirectory): Prepared => ({
-    schedule: "sequential",
+    schedule: "parallel",
     directories: [invocationDirectory, invocationDirectory],
     baseDirectory,
     reason,
