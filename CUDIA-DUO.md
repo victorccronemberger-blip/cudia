@@ -10,16 +10,23 @@ comportamento padrão dos provedores.
 
 ## Comandos
 
-- `/duo <objetivo>` inicia uma execução para este objetivo.
+- `/duo <objetivo>` abre a seleção dos participantes; a execução começa depois
+  que você confirma.
+- `/duo` abre a seleção dos dois participantes, sem iniciar uma execução.
 - `/duo status` mostra o estado, o ID da execução, os IDs das sessões-filhas,
   seus modelos e diretórios, e o estado do trabalho e da revisão de cada uma.
-  `/duo` sem argumentos também mostra esse estado.
 - `/duo resume` retoma explicitamente uma execução interrompida ou incompleta,
   preservando sessões, resultados e diretórios existentes.
 - `/duo continue <orientação>` inicia uma nova rodada para o objetivo salvo,
   acrescentando a orientação e pedindo novamente trabalho aos dois participantes.
 - `/duo cancel` interrompe uma execução ativa. As sessões, resultados e
   diretórios são preservados para inspeção e eventual retomada.
+
+Na seleção, escolha o modelo, a variante e o agente de cada participante. O
+primeiro participante é o coordenador: ele integra o trabalho na pasta original
+e prepara a resposta final. A tela indica esse papel. Confirme a seleção antes de
+iniciar; voltar ou cancelar a seleção não inicia o Duo. Retomadas e continuações
+usam o par salvo na execução, sem trocar participantes.
 
 Palavras reservadas podem ser usadas como objetivo literal com `--`; por
 exemplo, `/duo -- status` inicia o objetivo `status`.
@@ -47,8 +54,31 @@ participantes:
 `review` é opcional e vem ativado por padrão. Com a revisão ativada, cada
 participante revisa o resultado do outro uma vez. `peerChars` limita a
 quantidade de caracteres do resultado do par incluída em cada revisão e tem
-padrão de 12.000. Modelos, variantes e agentes podem ser ajustados por
-participante.
+padrão de 12.000. O arquivo global continua definindo os padrões usados pelo
+comando `/duo`; uma seleção feita na tela substitui esses padrões somente para
+a execução confirmada. Ela não altera `duo.json`.
+
+## Prompt de agente para o GPT
+
+Para dar ao participante GPT um prompt especializado, crie um agente Markdown
+global em `%USERPROFILE%\.config\opencode\agents\gpt-programador.md` ou um
+agente do projeto em `.opencode/agents/gpt-programador.md`. Por exemplo:
+
+```md
+---
+description: Agente de programação para o participante GPT
+mode: all
+---
+
+[Insira aqui o prompt de sistema específico que você quer usar com o GPT.]
+```
+
+Substitua o texto entre colchetes pelo seu próprio prompt. `mode: all` permite
+selecionar o agente tanto como agente principal quanto como subagente. Na tela
+do Duo, selecione `gpt-programador` para o participante GPT; se não selecionar
+esse agente, o padrão continua sendo `general`. O modelo e a variante escolhidos
+para o participante no Duo têm precedência sobre `model` e `variant` opcionais
+no frontmatter do agente.
 
 ## Execução e diretórios
 

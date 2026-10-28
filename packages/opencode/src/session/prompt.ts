@@ -1728,15 +1728,16 @@ const layer = Layer.effect(
             "Execução Duo interrompida. As sessões e os resultados foram preservados; use /duo resume para continuar.",
           )
         }
-        const continuing =
-          argument === "resume" ||
-          argument === "continue" ||
-          argument.startsWith("continue ") ||
-          argument.startsWith("continue\n")
-        const steering = argument.startsWith("continue")
-          ? raw.slice(raw.indexOf("continue") + "continue".length).trim()
-          : undefined
+        const continuing = argument === "resume" || /^continue(?:\s|$)/.test(argument)
+        const steering =
+          continuing && argument.startsWith("continue")
+            ? raw.slice(raw.indexOf("continue") + "continue".length).trim()
+            : undefined
         if (continuing && !saved) return yield* respond("Não existe um Duo nesta conversa. Use /duo <objetivo>.")
+        if (continuing && input.duo)
+          return yield* respond(
+            "A retomada mantém os modelos e agentes salvos. Para escolher outra dupla, inicie /duo com um novo objetivo.",
+          )
         if (continuing && saved?.status === "completed" && !steering)
           return yield* respond("A rodada já terminou. Use /duo continue <nova orientação> ou /duo status.")
         if (!continuing && saved?.status === "running")
@@ -1750,13 +1751,29 @@ const layer = Layer.effect(
           const instances = instanceService.value
           const settings = continuing
             ? { participants: saved!.members, review: saved!.reviewEnabled, peerChars: saved!.peerChars }
-            : yield* duo.settings()
+            : { ...(yield* duo.settings()), ...(input.duo ? { participants: input.duo.participants } : {}) }
           const coordinator = settings.participants[0]
+          let coordinatorAgent = continuing ? (saved!.coordinatorAgent ?? input.agent) : input.agent
+          if (input.duo) {
+            for (const participant of settings.participants) {
+              const selected = Provider.parseModel(participant.model)
+              const model = yield* provider.getModel(selected.providerID, selected.modelID)
+              if (participant.variant !== undefined && !model.variants?.[participant.variant])
+                return yield* Effect.fail(
+                  new Error(`Variante inválida "${participant.variant}" para ${participant.model}.`),
+                )
+              const candidate = yield* agents.get(participant.agent ?? "general")
+              if (!candidate)
+                return yield* Effect.fail(new Error(`Agente Duo não encontrado: ${participant.agent ?? "general"}.`))
+              if (participant === coordinator && participant.agent && candidate.mode !== "subagent")
+                coordinatorAgent = candidate.name
+            }
+          }
           const coordinatorModel = Provider.parseModel(coordinator.model)
           const user = yield* createUserMessage({
             sessionID: input.sessionID,
             messageID: input.messageID,
-            agent: input.agent,
+            agent: coordinatorAgent,
             model: coordinatorModel,
             variant: coordinator.variant,
             parts: [
@@ -1883,6 +1900,7 @@ const layer = Layer.effect(
                   schedule: prepared.schedule,
                   review: settings.review,
                   peerChars: settings.peerChars,
+                  coordinatorAgent: lastUser.agent,
                 },
                 invoke,
               )
@@ -2146,6 +2164,7 @@ export const CommandInput = Schema.Struct({
   arguments: Schema.String,
   command: Schema.String,
   variant: Schema.optional(Schema.String),
+  duo: Schema.optional(Duo.SelectionSchema),
   // Inlined (no identifier annotation) to keep the original SDK output — the
   // PromptInput call site below references FilePartInput by ref via the
   // Schema export in message-v2.ts.

@@ -24,6 +24,8 @@ import type {
   ConfigProvidersResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
+  DuoSettingsErrors,
+  DuoSettingsResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute,
   EventTuiPromptAppend,
@@ -2210,6 +2212,38 @@ export class Command extends HeyApiClient {
   }
 }
 
+export class Duo extends HeyApiClient {
+  /**
+   * Get Duo settings
+   *
+   * Read the configured Duo participants and review settings without starting model work.
+   */
+  public settings<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<DuoSettingsResponses, DuoSettingsErrors, ThrowOnError>({
+      url: "/duo/settings",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Lsp extends HeyApiClient {
   /**
    * Get LSP status
@@ -4295,6 +4329,22 @@ export class Session2 extends HeyApiClient {
       arguments?: string
       command?: string
       variant?: string
+      duo?: {
+        participants: [
+          {
+            name: string
+            model: string
+            variant?: string | null
+            agent?: string | null
+          },
+          {
+            name: string
+            model: string
+            variant?: string | null
+            agent?: string | null
+          },
+        ]
+      }
       parts?: Array<{
         id?: string
         type: "file"
@@ -4320,6 +4370,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "arguments" },
             { in: "body", key: "command" },
             { in: "body", key: "variant" },
+            { in: "body", key: "duo" },
             { in: "body", key: "parts" },
           ],
         },
@@ -7422,6 +7473,11 @@ export class OpencodeClient extends HeyApiClient {
   private _command?: Command
   get command(): Command {
     return (this._command ??= new Command({ client: this.client }))
+  }
+
+  private _duo?: Duo
+  get duo(): Duo {
+    return (this._duo ??= new Duo({ client: this.client }))
   }
 
   private _lsp?: Lsp

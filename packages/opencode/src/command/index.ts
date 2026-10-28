@@ -97,7 +97,7 @@ const layer = Layer.effect(
       }
       commands[Default.DUO] = {
         name: Default.DUO,
-        description: "Drael + GPT no mesmo objetivo, com trabalho e revisão compartilhados",
+        description: "Escolher dois modelos para colaborar no mesmo objetivo, com progresso e revisão compartilhados",
         source: "command",
         template: "",
         hints: ["status", "continue", "resume", "cancel"],

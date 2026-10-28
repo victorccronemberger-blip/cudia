@@ -56,6 +56,29 @@ const handlerContext = Context.empty() as Context.Context<unknown>
 const directoryHeader = (dir: string) => HttpClientRequest.setHeader("x-opencode-directory", dir)
 
 describe("instance HttpApi", () => {
+  it.live("reads Duo defaults without creating a session", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const before = yield* HttpClientRequest.get(SessionPaths.list).pipe(directoryHeader(dir), HttpClient.execute)
+      const beforeSessions = yield* before.json
+      const response = yield* HttpClientRequest.get(InstancePaths.duoSettings).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+      expect(response.status).toBe(200)
+      expect(yield* response.json).toMatchObject({
+        participants: [
+          { name: expect.any(String), model: expect.any(String) },
+          { name: expect.any(String), model: expect.any(String) },
+        ],
+        review: expect.any(Boolean),
+        peerChars: expect.any(Number),
+      })
+      const after = yield* HttpClientRequest.get(SessionPaths.list).pipe(directoryHeader(dir), HttpClient.execute)
+      expect(yield* after.json).toEqual(beforeSessions)
+    }),
+  )
+
   it.live("serves the OpenAPI document", () =>
     Effect.gen(function* () {
       const response = yield* HttpClient.get("/doc")

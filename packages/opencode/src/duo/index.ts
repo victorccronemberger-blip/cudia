@@ -8,7 +8,7 @@ import { Storage } from "@/storage/storage"
 import { SessionID } from "@/session/schema"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 
-const ParticipantSchema = Schema.Struct({
+export const ParticipantSchema = Schema.Struct({
   name: Schema.String,
   model: Schema.String,
   variant: Schema.optional(Schema.String),
@@ -20,6 +20,16 @@ const SettingsSchema = Schema.Struct({
   review: Schema.optional(Schema.Boolean),
   peerChars: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))),
 })
+
+export const SelectionSchema = Schema.Struct({
+  participants: Schema.Tuple([ParticipantSchema, ParticipantSchema]),
+})
+
+export const ResolvedSettingsSchema = Schema.Struct({
+  participants: Schema.Tuple([ParticipantSchema, ParticipantSchema]),
+  review: Schema.Boolean,
+  peerChars: Schema.Number,
+}).annotate({ identifier: "DuoSettings" })
 
 export type Participant = Schema.Schema.Type<typeof ParticipantSchema>
 export type Settings = {
@@ -65,6 +75,7 @@ const StateSchema = Schema.Struct({
   reviewEnabled: Schema.Boolean,
   peerChars: Schema.Number,
   steering: Schema.optional(Schema.String),
+  coordinatorAgent: Schema.optional(Schema.String),
   updatedAt: Schema.Number,
   revision: Schema.optional(Schema.Number),
 })
@@ -89,6 +100,7 @@ export type State = {
   reviewEnabled: boolean
   peerChars: number
   steering?: string
+  coordinatorAgent?: string
   updatedAt: number
   revision?: number
 }
@@ -129,6 +141,7 @@ export interface Interface {
       schedule: "parallel" | "sequential"
       review: boolean
       peerChars: number
+      coordinatorAgent?: string
     },
     invoke: (request: Invocation) => Effect.Effect<InvocationResult, unknown>,
   ) => Effect.Effect<State, unknown>
@@ -453,6 +466,7 @@ const layer = Layer.effect(
               schedule: "parallel",
               reviewEnabled: input.review,
               peerChars: input.peerChars,
+              coordinatorAgent: input.coordinatorAgent,
               updatedAt: Date.now(),
             }
             yield* transitions.withPermit(storage.write(key(input.sessionID), state))

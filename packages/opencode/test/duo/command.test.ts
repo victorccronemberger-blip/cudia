@@ -215,6 +215,12 @@ const provider = (name: string, model: string) => ({
 const instanceConfig = {
   permission: { "*": "allow" as const },
   provider: { "test-a": provider("Test A", "one"), "test-b": provider("Test B", "two") },
+  agent: {
+    "gpt-programador": {
+      mode: "all" as const,
+      prompt: "GPT_PROGRAMADOR_SYSTEM_PROMPT_MARKER",
+    },
+  },
 }
 
 function response(text = "Reviewed implementation and verified the requested result.") {
@@ -343,6 +349,174 @@ suite.instance(
       expect(calls.every((request) => request.sessionID === chat.id || request.agent.name === "general")).toBe(true)
     }),
   { git: true, config: instanceConfig },
+  { timeout: 30000 },
+)
+
+suite.instance(
+  "/duo selection overrides the configured pair and uses the selected agent prompt for work and coordination",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const duo = yield* Duo.Service
+      const chat = yield* sessions.create({ title: "Duo selected participants" })
+
+      const originalSettings = yield* Effect.promise(() => Bun.file(path.join(config, "duo.json")).json())
+      const start = requests.length
+      yield* awaitWithTimeout(
+        prompt.command({
+          sessionID: chat.id,
+          command: "duo",
+          arguments: "Use the selected pair and integrate their result.",
+          duo: {
+            participants: [
+              { name: "GPT", model: "test-b/two", variant: "high", agent: "gpt-programador" },
+              { name: "Drael", model: "test-a/one", variant: "high", agent: "general" },
+            ],
+          },
+        }),
+        "Duo selected participants did not complete",
+        "30 seconds",
+      )
+
+      const run = yield* duo.get(chat.id)
+      expect(run?.status).toBe("completed")
+      expect(run?.members.map((member) => [member.name, member.model, member.variant, member.agent])).toEqual([
+        ["GPT", "test-b/two", "high", "gpt-programador"],
+        ["Drael", "test-a/one", "high", "general"],
+      ])
+      expect(yield* Effect.promise(() => Bun.file(path.join(config, "duo.json")).json())).toEqual(originalSettings)
+
+      const calls = requests.slice(start)
+      const gptWork = calls.filter(
+        (request) =>
+          request.sessionID === run?.members[0].taskID &&
+          request.messages.some((message) =>
+            JSON.stringify(message.content).includes("Duo: work toward this shared objective"),
+          ),
+      )
+      expect(gptWork.length).toBeGreaterThan(0)
+      expect(gptWork.every((request) => request.agent.name === "gpt-programador")).toBe(true)
+      expect(gptWork.every((request) => request.agent.prompt?.includes("GPT_PROGRAMADOR_SYSTEM_PROMPT_MARKER"))).toBe(
+        true,
+      )
+      expect(gptWork.every((request) => request.model.providerID === "test-b" && request.model.id === "two")).toBe(true)
+      expect(gptWork.every((request) => request.user.model.variant === "high")).toBe(true)
+
+      const coordinator = calls.findLast((request) => request.sessionID === chat.id)
+      expect(coordinator?.agent.name).toBe("gpt-programador")
+      expect(String(coordinator?.model.providerID)).toBe("test-b")
+      expect(coordinator?.agent.prompt).toContain("GPT_PROGRAMADOR_SYSTEM_PROMPT_MARKER")
+    }),
+  { git: false, config: instanceConfig },
+  { timeout: 30000 },
+)
+
+suite.instance(
+  "/duo rejects an invalid selected variant or agent before creating child sessions or calling a model",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const duo = yield* Duo.Service
+      const cases: { label: string; participants: [Duo.Participant, Duo.Participant] }[] = [
+        {
+          label: "variant",
+          participants: [
+            { name: "Drael", model: "test-a/one", variant: "missing", agent: "general" },
+            { name: "GPT", model: "test-b/two", variant: "high", agent: "general" },
+          ],
+        },
+        {
+          label: "agent",
+          participants: [
+            { name: "Drael", model: "test-a/one", variant: "high", agent: "missing-agent" },
+            { name: "GPT", model: "test-b/two", variant: "high", agent: "general" },
+          ],
+        },
+      ]
+
+      for (const item of cases) {
+        const chat = yield* sessions.create({ title: `Duo invalid ${item.label}` })
+        const start = requests.length
+        const result = yield* prompt.command({
+          sessionID: chat.id,
+          command: "duo",
+          arguments: "This invalid selection must not start.",
+          duo: { participants: item.participants },
+        })
+        expect(result.parts.find((part) => part.type === "text")?.text).toMatch(/inválida|não encontrado/)
+        expect(requests.slice(start)).toHaveLength(0)
+        expect(yield* sessions.children(chat.id)).toHaveLength(0)
+        expect(yield* duo.get(chat.id)).toBeUndefined()
+      }
+    }),
+  { git: false, config: instanceConfig },
+)
+
+suite.instance(
+  "/duo resume ignores an explicit participant override and keeps the saved pair",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const duo = yield* Duo.Service
+      const chat = yield* sessions.create({ title: "Duo resume pair preservation" })
+      const gates = {
+        aEntered: yield* Deferred.make<void>(),
+        bEntered: yield* Deferred.make<void>(),
+        releaseA: yield* Deferred.make<void>(),
+        releaseB: yield* Deferred.make<void>(),
+      }
+      workGate = gates
+      yield* Effect.addFinalizer(() => {
+        workGate = undefined
+        return Effect.all([Deferred.succeed(gates.releaseA, undefined), Deferred.succeed(gates.releaseB, undefined)], {
+          discard: true,
+        })
+      })
+
+      const start = requests.length
+      const command = yield* prompt
+        .command({ sessionID: chat.id, command: "duo", arguments: "Keep this saved pair." })
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(
+        Effect.all([Deferred.await(gates.aEntered), Deferred.await(gates.bEntered)]),
+        "both Duo work streams did not start",
+        "20 seconds",
+      )
+
+      const saved = yield* duo.get(chat.id)
+      const beforeOverrideCalls = requests.length
+      yield* prompt.command({
+        sessionID: chat.id,
+        command: "duo",
+        arguments: "resume",
+        duo: {
+          participants: [
+            { name: "GPT", model: "test-b/two", variant: "high", agent: "general" },
+            { name: "Drael", model: "test-a/one", variant: "high", agent: "general" },
+          ],
+        },
+      })
+
+      const afterOverride = yield* duo.get(chat.id)
+      expect(afterOverride?.members.map((member) => [member.model, member.taskID])).toEqual(
+        saved?.members.map((member) => [member.model, member.taskID]),
+      )
+      expect(requests).toHaveLength(beforeOverrideCalls)
+
+      yield* Deferred.succeed(gates.releaseA, undefined)
+      yield* Deferred.succeed(gates.releaseB, undefined)
+      yield* awaitWithTimeout(
+        Fiber.join(command),
+        "Duo did not complete after releasing both participants",
+        "30 seconds",
+      )
+      expect(requests.length).toBeGreaterThan(start)
+      expect((yield* duo.get(chat.id))?.members.map((member) => member.model)).toEqual(["test-a/one", "test-b/two"])
+    }),
+  { git: false, config: instanceConfig },
   { timeout: 30000 },
 )
 

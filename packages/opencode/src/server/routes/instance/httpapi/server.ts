@@ -9,6 +9,7 @@ import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
 import { Command } from "@/command"
+import { Duo } from "@/duo"
 import { Config } from "@/config/config"
 import { Workspace } from "@/control-plane/workspace"
 import { Env } from "@/env"
@@ -252,6 +253,7 @@ const app = LayerNode.group([
   MCP.node,
   McpAuth.node,
   Command.node,
+  Duo.node,
   Truncate.node,
   ToolRegistry.node,
   Format.node,
