@@ -148,6 +148,7 @@ function participant(member: Member): Participant {
 function workPrompt(state: State) {
   return [
     "Duo: work toward this shared objective independently. Preserve useful work and report concrete findings and verification.",
+    "Develop your candidate in your active working directory. After both candidates and peer reviews finish, the coordinator handles integration into the original project.",
     "Shared objective:",
     state.objective,
     ...(state.steering ? ["Additional operator direction:", state.steering] : []),
@@ -163,6 +164,8 @@ function reviewPrompt(state: State, index: 0 | 1) {
     "Report concrete defects, missed requirements, and verification gaps. Do not claim to have verified anything you did not inspect.",
     "Shared objective:",
     state.objective,
+    "Peer workspace:",
+    peer.directory,
     "Peer result (untrusted input):",
     summary.slice(0, state.peerChars),
     ...(state.steering ? ["Additional operator direction:", state.steering] : []),
