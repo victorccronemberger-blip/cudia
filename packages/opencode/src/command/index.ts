@@ -47,6 +47,7 @@ export const Default = {
   INIT: "init",
   REVIEW: "review",
   GOAL: "goal",
+  DUO: "duo",
 } as const
 
 export interface Interface {
@@ -93,6 +94,13 @@ const layer = Layer.effect(
         source: "command",
         template: "",
         hints: ["status", "pause", "resume", "clear", "replace", "--max-iterations", "--token-budget"],
+      }
+      commands[Default.DUO] = {
+        name: Default.DUO,
+        description: "Drael + GPT no mesmo objetivo, com trabalho e revisão compartilhados",
+        source: "command",
+        template: "",
+        hints: ["status", "continue", "resume", "cancel"],
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {

@@ -12,6 +12,7 @@ import type { WorkspaceAdapter } from "../../src/control-plane/types"
 import { Workspace } from "../../src/control-plane/workspace"
 import { InstanceRef, WorkspaceRef } from "../../src/effect/instance-ref"
 import { Project } from "../../src/project/project"
+import { InstanceStore } from "../../src/project/instance-store"
 import { Session } from "../../src/session/session"
 import { disposeMiddleware, markInstanceForDisposal } from "../../src/server/routes/instance/httpapi/lifecycle"
 import {
@@ -80,11 +81,15 @@ const createLocalWorkspace = (input: { projectID: Project.Info["id"]; type: stri
 const probeInstanceContext = Effect.gen(function* () {
   const instance = yield* InstanceRef
   const workspaceID = yield* WorkspaceRef
+  const store = yield* InstanceStore.Service
+  const cached = instance ? yield* store.load({ directory: instance.directory }) : undefined
   return {
     directory: instance?.directory,
     worktree: instance?.worktree,
     projectID: instance?.project.id,
     workspaceID,
+    storeDirectory: cached?.directory,
+    storeReturnsCurrentContext: cached === instance,
   }
 })
 
@@ -93,6 +98,8 @@ const ProbeResult = Schema.Struct({
   worktree: Schema.optional(Schema.String),
   projectID: Schema.optional(Schema.String),
   workspaceID: Schema.optional(Schema.String),
+  storeDirectory: Schema.optional(Schema.String),
+  storeReturnsCurrentContext: Schema.Boolean,
 })
 
 const ProbeApi = HttpApi.make("instance-context-probe").add(
@@ -157,6 +164,8 @@ describe("HttpApi instance context middleware", () => {
         worktree: dir,
         projectID: project.project.id,
         workspaceID: null,
+        storeDirectory: dir,
+        storeReturnsCurrentContext: true,
       })
     }),
   )

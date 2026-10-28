@@ -56,6 +56,8 @@ A tasklist está em
 [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md). Os comandos abaixo iniciam ou instalam um
 checkout de desenvolvimento.
 O [consultor automático do Drael](CUDIA-CONSULTOR.md) é configurável fora do system prompt.
+O comando explícito [Duo](CUDIA-DUO.md) permite executar um objetivo com Drael
+e outro modelo configurável.
 O serviço independente de versões e as instruções de implantação ficam em
 [deploy/updates](deploy/updates/README.md).
 O [pacote Windows e cliente nativo](installer/windows/README.md) já têm
