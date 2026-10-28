@@ -833,6 +833,83 @@ describe("session.compaction.prune", () => {
 })
 
 describe("session.compaction.process", () => {
+  for (const variant of [undefined, "high"] as const) {
+    itCompaction.instance(`uses the stored manual model and ${variant ?? "default"} variant`, () => {
+      const stub = llm()
+      const main = createModel({ context: 100_000, output: 32_000, id: "parent-model" })
+      const selected = {
+        ...createModel({ context: 100_000, output: 32_000, id: "selected-model" }),
+        variants: { high: {} },
+      }
+      const providerInfo = ProviderTest.info({ models: { [main.id]: main, [selected.id]: selected } }, main)
+      const provider = ProviderTest.fake({
+        model: main,
+        info: providerInfo,
+        getModel: (providerID, modelID): Effect.Effect<Provider.Model, Provider.ModelNotFoundError> => {
+          const model = providerInfo.models[modelID]
+          if (providerID === providerInfo.id && model) return Effect.succeed(model)
+          return Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID }))
+        },
+      })
+      let captured: { variant: string | undefined; modelID: string } | undefined
+      stub.push(
+        reply("summary", (input) => (captured = { variant: input.user.model.variant, modelID: input.model.id })),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const compact = yield* SessionCompaction.Service
+        const session = yield* ssn.create({})
+        const mainModel = { providerID: ref.providerID, modelID: ModelV2.ID.make("parent-model") }
+        const selection = {
+          providerID: ref.providerID,
+          modelID: ModelV2.ID.make("selected-model"),
+          ...(variant ? { variant } : {}),
+        }
+        yield* compact.create({
+          sessionID: session.id,
+          agent: "build",
+          model: mainModel,
+          auto: false,
+          compactionModel: selection,
+        })
+        const messages = yield* ssn.messages({ sessionID: session.id })
+        expect(messages[0].info.role === "user" && messages[0].info.model).toEqual(mainModel)
+        expect(messages[0].parts[0]).toMatchObject({ type: "compaction", compactionModel: selection })
+        yield* compact.process({ parentID: messages[0].info.id, messages, sessionID: session.id, auto: false })
+        expect(captured).toEqual({ variant, modelID: "selected-model" })
+        const saved = yield* ssn.messages({ sessionID: session.id })
+        expect(saved.filter((item) => item.info.role === "user")).toHaveLength(1)
+      }).pipe(
+        withCompaction({
+          llm: stub.llmLayer,
+          provider,
+          config: cfg(undefined, { compaction: { model: "test/parent-model", variant: "medium" } }),
+        }),
+      )
+    })
+  }
+
+  itCompaction.instance("rejects unknown manual models and variants before writing messages", () => {
+    const model = { ...createModel({ context: 100_000, output: 32_000 }), variants: { high: {} } }
+    const provider = ProviderTest.fake({
+      model,
+      getModel: (providerID, modelID): Effect.Effect<Provider.Model, Provider.ModelNotFoundError> =>
+        providerID === model.providerID && modelID === model.id
+          ? Effect.succeed(model)
+          : Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID })),
+    })
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const compact = yield* SessionCompaction.Service
+      const session = yield* ssn.create({})
+      const unknown = yield* Effect.flip(compact.validateModel({ ...ref, modelID: ModelV2.ID.make("missing") }))
+      const badVariant = yield* Effect.flip(compact.validateModel({ ...ref, variant: "missing" }))
+      expect(unknown.message).toContain("Unknown compaction model")
+      expect(badVariant.message).toContain("Unknown variant")
+      expect(yield* ssn.messages({ sessionID: session.id })).toHaveLength(0)
+    }).pipe(withCompaction({ provider }))
+  })
+
   itCompaction.instance("uses the pinned compaction agent variant without mutating the parent", () => {
     const stub = llm()
     const parentModel = createModel({ context: 100_000, output: 32_000, id: "parent-model" })

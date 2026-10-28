@@ -376,6 +376,13 @@ A meta e os critérios da evolução estão em [CUDIA-ROADMAP.md](CUDIA-ROADMAP.
 
 ## Compactação e pesquisa na internet
 
+Na TUI, `/compact` (ou `/summarize`) abre um seletor do modelo que fará aquela
+compactação. Se o modelo oferece variantes de raciocínio, a próxima tela permite
+escolher a variante ou `Default`. Esc cancela antes de enviar a solicitação.
+A última escolha manual fica lembrada no seletor; o modelo da conversa e a
+configuração da compactação automática continuam independentes. A seleção
+é persistida com a solicitação, inclusive quando aguarda processamento.
+
 A compactação automática já faz parte do motor. O checkpoint compartilhado por
 V1 e V2 agora pede objetivo, decisões, escopo/permissões, trabalho concluído e
 pendente, evidências, arquivos e IDs de tarefas. Operações de resultado incerto

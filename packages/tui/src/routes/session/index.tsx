@@ -77,6 +77,7 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
+import { DialogCompact } from "../../component/dialog-compact"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
@@ -255,6 +256,7 @@ export function Session() {
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
+  const [compacting, setCompacting] = createSignal(false)
   const [conceal, setConceal] = createSignal(true)
   const thinking = useThinkingMode()
   const thinkingMode = thinking.mode
@@ -567,8 +569,11 @@ export function Session() {
         aliases: ["summarize"],
       },
       run: () => {
-        const selectedModel = local.model.current()
-        if (!selectedModel) {
+        if (compacting()) {
+          toast.show({ variant: "info", message: "Session compaction is already running", duration: 3000 })
+          return
+        }
+        if (!local.model.current()) {
           toast.show({
             variant: "warning",
             message: "Connect a provider to summarize this session",
@@ -576,12 +581,32 @@ export function Session() {
           })
           return
         }
-        void sdk.client.session.summarize({
-          sessionID: route.sessionID,
-          modelID: selectedModel.modelID,
-          providerID: selectedModel.providerID,
-        })
-        dialog.clear()
+        const sessionID = route.sessionID
+        dialog.replace(() => (
+          <DialogCompact
+            onConfirm={(compactionModel) => {
+              const selectedModel = local.model.current()
+              if (!selectedModel || compacting()) return
+              setCompacting(true)
+              void sdk.client.session
+                .summarize({ sessionID, ...selectedModel, compactionModel, auto: false })
+                .then((result) => {
+                  if (result.error) throw result.error
+                })
+                .then(
+                  () => setCompacting(false),
+                  (error: unknown) => {
+                    setCompacting(false)
+                    toast.show({
+                      variant: "error",
+                      message: errorMessage(error),
+                      duration: 5000,
+                    })
+                  },
+                )
+            }}
+          />
+        ))
       },
     },
     {
