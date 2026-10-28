@@ -376,12 +376,17 @@ A meta e os critérios da evolução estão em [CUDIA-ROADMAP.md](CUDIA-ROADMAP.
 
 ## Compactação e pesquisa na internet
 
-Na TUI, `/compact` (ou `/summarize`) abre um seletor do modelo que fará aquela
+Na TUI, `/compact` (ou `/summarize`) abre um seletor do modelo de
 compactação. Se o modelo oferece variantes de raciocínio, a próxima tela permite
 escolher a variante ou `Default`. Esc cancela antes de enviar a solicitação.
-A última escolha manual fica lembrada no seletor; o modelo da conversa e a
-configuração da compactação automática continuam independentes. A seleção
-é persistida com a solicitação, inclusive quando aguarda processamento.
+A escolha confirmada é salva antes da chamada em `compaction-model.json`, no
+diretório global de configuração. Ela também vale para a compactação automática
+e para os participantes do Duo, sem trocar os modelos principais. A preferência
+é relida em cada compactação e compartilhada entre projetos e janelas; salvá-la
+não reinicia as sessões abertas. Uma seleção inválida produz erro explícito.
+Chamadas da API com `compactionModel` ainda podem escolher um modelo apenas
+para aquela solicitação. Sem preferência compartilhada nem seleção explícita,
+vale o modelo configurado no agente `compaction`.
 
 A compactação automática já faz parte do motor. O checkpoint compartilhado por
 V1 e V2 agora pede objetivo, decisões, escopo/permissões, trabalho concluído e

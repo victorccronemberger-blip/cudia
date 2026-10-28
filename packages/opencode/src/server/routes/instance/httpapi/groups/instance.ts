@@ -5,6 +5,7 @@ import { LSP } from "@/lsp/lsp"
 import { Vcs } from "@/project/vcs"
 import { Skill } from "@/skill"
 import { Duo } from "@/duo"
+import { CompactionSettings } from "@/session/compaction-settings"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
@@ -46,6 +47,10 @@ export class ApiDuoSettingsError extends Schema.ErrorClass<ApiDuoSettingsError>(
   { httpApiStatus: 400 },
 ) {}
 
+export class ApiCompactionSettingsError extends Schema.ErrorClass<ApiCompactionSettingsError>(
+  "CompactionSettingsError",
+)({ name: Schema.Literal("CompactionSettingsError"), message: Schema.String }, { httpApiStatus: 400 }) {}
+
 export const InstancePaths = {
   dispose: "/instance/dispose",
   path: "/path",
@@ -56,6 +61,7 @@ export const InstancePaths = {
   vcsApply: "/vcs/apply",
   command: "/command",
   duoSettings: "/duo/settings",
+  compactionSettings: "/compaction/settings",
   agent: "/agent",
   skill: "/skill",
   lsp: "/lsp",
@@ -162,6 +168,29 @@ export const InstanceApi = HttpApi.make("instance")
             identifier: "duo.settings",
             summary: "Get Duo settings",
             description: "Read the configured Duo participants and review settings without starting model work.",
+          }),
+        ),
+        HttpApiEndpoint.get("compactionSettings", InstancePaths.compactionSettings, {
+          query: WorkspaceRoutingQuery,
+          success: CompactionSettings.Settings,
+          error: ApiCompactionSettingsError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "compaction.settings",
+            summary: "Get compaction settings",
+            description: "Read the shared compaction model preference.",
+          }),
+        ),
+        HttpApiEndpoint.put("updateCompactionSettings", InstancePaths.compactionSettings, {
+          query: WorkspaceRoutingQuery,
+          payload: CompactionSettings.Model,
+          success: CompactionSettings.Settings,
+          error: ApiCompactionSettingsError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "compaction.updateSettings",
+            summary: "Update compaction settings",
+            description: "Save the shared compaction model preference.",
           }),
         ),
         HttpApiEndpoint.get("agent", InstancePaths.agent, {

@@ -20,7 +20,7 @@ test("compact command selects a compaction model without changing the active cha
   await mkdir(state, { recursive: true })
   await Bun.write(
     path.join(state, "kv.json"),
-    JSON.stringify({ compaction_model: { providerID: "test", modelID: "remembered" } }),
+    JSON.stringify({ compaction_model: { providerID: "test", modelID: "plain" } }),
   )
   const setup = await createTestRenderer({ width: 120, height: 40, useThread: false })
   const core = await import("@opentui/core")
@@ -72,6 +72,9 @@ test("compact command selects a compaction model without changing the active cha
     },
   ]
   const calls: { path: string; body: Record<string, unknown> }[] = []
+  const requests: { method: string; path: string; body?: Record<string, unknown> }[] = []
+  let savedPreference = { providerID: "test", modelID: "remembered", variant: "balanced" }
+  let failSaveNext = false
   let failNext = false
   const base = createFetch((url) => {
     if (url.pathname === "/path")
@@ -94,8 +97,24 @@ test("compact command selects a compaction model without changing the active cha
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init)
     const url = new URL(request.url)
+    if (url.pathname === "/compaction/settings" && request.method === "GET") {
+      requests.push({ method: request.method, path: url.pathname })
+      return json({ model: savedPreference })
+    }
+    if (url.pathname === "/compaction/settings" && request.method === "PUT") {
+      const body = (await request.json()) as Record<string, unknown>
+      requests.push({ method: request.method, path: url.pathname, body })
+      if (failSaveNext) {
+        failSaveNext = false
+        return json({ message: "preference unavailable" }, { status: 500 })
+      }
+      savedPreference = body as typeof savedPreference
+      return json({ model: savedPreference })
+    }
     if (request.method === "POST" && url.pathname.endsWith("/summarize")) {
-      calls.push({ path: url.pathname, body: await request.json() })
+      const body = (await request.json()) as Record<string, unknown>
+      calls.push({ path: url.pathname, body })
+      requests.push({ method: request.method, path: url.pathname, body })
       if (failNext) {
         failNext = false
         return json({ message: "summary unavailable" }, { status: 500 })
@@ -215,10 +234,12 @@ test("compact command selects a compaction model without changing the active cha
     await open()
     expect(frame()).toContain("Remembered Model")
     expect(frame()).toContain("Test provider description")
+    expect(frame()).toContain("● Remembered Model")
     setup.mockInput.pressEscape()
     await wait(() => !frame().includes("Compact session · select model"))
     expect(prompt!.current).toEqual(modelStageDraft)
     expect(calls).toHaveLength(0)
+    expect(requests.filter((item) => item.method === "PUT" || item.method === "POST")).toHaveLength(0)
 
     prompt!.set({ input: "[Image 1] draft survives effort picker cancel", parts })
     const effortStageDraft = structuredClone(unwrap(prompt!.current))
@@ -231,6 +252,7 @@ test("compact command selects a compaction model without changing the active cha
     await wait(() => !frame().includes("Compact session · select effort"))
     expect(prompt!.current).toEqual(effortStageDraft)
     expect(calls).toHaveLength(0)
+    expect(requests.filter((item) => item.method === "PUT" || item.method === "POST")).toHaveLength(0)
 
     await open()
     await submit()
@@ -238,6 +260,23 @@ test("compact command selects a compaction model without changing the active cha
     failNext = true
     await select(2)
     await wait(() => calls.length === 1)
+    expect(requests.slice(-2)).toEqual([
+      {
+        method: "PUT",
+        path: "/compaction/settings",
+        body: { providerID: "test", modelID: "remembered", variant: "deep" },
+      },
+      {
+        method: "POST",
+        path: "/session/ses_compact/summarize",
+        body: {
+          modelID: "main",
+          providerID: "test",
+          compactionModel: { providerID: "test", modelID: "remembered", variant: "deep" },
+          auto: false,
+        },
+      },
+    ])
     expect(calls[0]).toEqual({
       path: "/session/ses_compact/summarize",
       body: {
@@ -251,20 +290,41 @@ test("compact command selects a compaction model without changing the active cha
     expect(local.agent.current()?.name).toBe(originalAgent)
     await wait(() => frame().includes("summary unavailable"))
 
-    kv.set("compaction_model", { providerID: "gone", modelID: "gone" })
     await open()
     await submit()
+    await wait(() => frame().includes("Compact session · select effort"))
+    setup.mockInput.pressEscape()
+    await wait(() => !frame().includes("Compact session · select effort"))
+    expect(calls).toHaveLength(1)
+
+    await open()
+    await submit()
+    await wait(() => frame().includes("Compact session · select effort"))
+    await select(2)
     await wait(() => calls.length === 2)
-    expect(calls[1]).toEqual({
-      path: "/session/ses_compact/summarize",
-      body: {
-        modelID: "main",
-        providerID: "test",
-        compactionModel: { providerID: "test", modelID: "configured" },
-        auto: false,
-      },
-    })
-    expect(calls).toHaveLength(2)
+    expect(calls[1].body.compactionModel).toEqual({ providerID: "test", modelID: "remembered", variant: "deep" })
+    expect(savedPreference).toEqual({ providerID: "test", modelID: "remembered", variant: "deep" })
+
+    failSaveNext = true
+    await open()
+    await submit()
+    await wait(() => frame().includes("Compact session · select effort"))
+    const beforeSaveFailure = calls.length
+    await select(2)
+    await wait(() => frame().includes("preference unavailable"))
+    expect(calls).toHaveLength(beforeSaveFailure)
+    expect(savedPreference).toEqual({ providerID: "test", modelID: "remembered", variant: "deep" })
+
+    await open()
+    await submit()
+    await wait(() => frame().includes("Compact session · select effort"))
+    await select(2)
+    await wait(() => calls.length === 3)
+    expect(calls[2].body.compactionModel).toEqual({ providerID: "test", modelID: "remembered", variant: "deep" })
+    expect(requests.filter((item) => item.method === "PUT")).toHaveLength(4)
+    expect(requests.filter((item) => item.method === "POST")).toHaveLength(3)
+    expect(local.model.current()).toEqual(originalModel)
+    expect(local.agent.current()?.name).toBe(originalAgent)
   } finally {
     api?.ui.dialog.clear()
     unregister?.()

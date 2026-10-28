@@ -2,6 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { Session } from "./session"
+import { CompactionSettings } from "./compaction-settings"
 import { SessionID, MessageID, PartID } from "./schema"
 import { Provider } from "@/provider/provider"
 import { MessageV2 } from "./message-v2"
@@ -209,16 +210,14 @@ const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
 
     const validateModel = Effect.fn("SessionCompaction.validateModel")(function* (selection: CompactionModel) {
-      const model = yield* provider
-        .getModel(selection.providerID, selection.modelID)
-        .pipe(
-          Effect.mapError(
-            () =>
-              new InvalidCompactionModel({
-                message: `Unknown compaction model: ${selection.providerID}/${selection.modelID}`,
-              }),
-          ),
-        )
+      const model = yield* provider.getModel(selection.providerID, selection.modelID).pipe(
+        Effect.mapError(
+          () =>
+            new InvalidCompactionModel({
+              message: `Unknown compaction model: ${selection.providerID}/${selection.modelID}`,
+            }),
+        ),
+      )
       if (selection.variant !== undefined && !Object.hasOwn(model.variants ?? {}, selection.variant)) {
         return yield* new InvalidCompactionModel({
           message: `Unknown variant '${selection.variant}' for compaction model ${selection.providerID}/${selection.modelID}`,
@@ -388,10 +387,15 @@ const layer = Layer.effect(
       }
 
       const agent = yield* agents.get("compaction")
-      const selection = compactionPart?.compactionModel ?? agent.model ?? userMessage.model
+      const preference = compactionPart?.compactionModel
+        ? undefined
+        : yield* Effect.promise(() => CompactionSettings.read())
+      const explicit = compactionPart?.compactionModel ?? preference
+      if (explicit) yield* validateModel(explicit).pipe(Effect.orDie)
+      const selection = explicit ?? agent.model ?? userMessage.model
       const model = yield* provider.getModel(selection.providerID, selection.modelID).pipe(Effect.orDie)
-      const variant = compactionPart?.compactionModel
-        ? compactionPart.compactionModel.variant
+      const variant = explicit
+        ? explicit.variant
         : (agent.variant ?? (agent.model ? undefined : userMessage.model.variant))
       const processUser = {
         ...userMessage,
@@ -464,7 +468,7 @@ const layer = Layer.effect(
         purpose: "compaction",
         compactionMessageID: msg.id,
         user: processUser,
-        agent,
+        agent: explicit ? { ...agent, options: {} } : agent,
         sessionID: input.sessionID,
         tools: {},
         system: [],

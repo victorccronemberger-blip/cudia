@@ -1,9 +1,11 @@
-import { createMemo } from "solid-js"
+import { createMemo, createSignal, onMount, onCleanup } from "solid-js"
 import { DialogSelect } from "../ui/dialog-select"
 import { useDialog } from "../ui/dialog"
 import { useLocal } from "../context/local"
 import { useSync } from "../context/sync"
 import { useKV } from "../context/kv"
+import { useSDK } from "../context/sdk"
+import { errorMessage } from "../util/error"
 
 export type CompactionModel = {
   providerID: string
@@ -16,7 +18,30 @@ export function DialogCompact(props: { onConfirm: (model: CompactionModel) => vo
   const sync = useSync()
   const local = useLocal()
   const kv = useKV()
+  const sdk = useSDK()
+  const [settings, setSettings] = createSignal<CompactionModel>()
+  const [ready, setReady] = createSignal(false)
+  const [error, setError] = createSignal<string>()
   let submitted = false
+  let disposed = false
+  onCleanup(() => {
+    disposed = true
+  })
+
+  async function load() {
+    setReady(false)
+    setError(undefined)
+    try {
+      const result = await sdk.client.compaction.settings()
+      if (disposed) return
+      if (result.error) throw result.error
+      setSettings(result.data.model)
+      setReady(true)
+    } catch (error: unknown) {
+      if (!disposed) setError(errorMessage(error))
+    }
+  }
+  onMount(() => void load())
 
   const models = createMemo(() =>
     sync.data.provider
@@ -30,6 +55,7 @@ export function DialogCompact(props: { onConfirm: (model: CompactionModel) => vo
   )
 
   const preferred = createMemo<CompactionModel | undefined>(() => {
+    if (settings()) return settings()
     const cached: unknown = kv.get("compaction_model")
     if (
       typeof cached === "object" &&
@@ -58,7 +84,6 @@ export function DialogCompact(props: { onConfirm: (model: CompactionModel) => vo
   function confirm(model: CompactionModel) {
     if (submitted) return
     submitted = true
-    kv.set("compaction_model", model)
     dialog.clear()
     props.onConfirm(model)
   }
@@ -97,14 +122,28 @@ export function DialogCompact(props: { onConfirm: (model: CompactionModel) => vo
     <DialogSelect
       title="Compact session · select model"
       placeholder="Search compaction models"
-      options={models().map((item) => ({
-        value: `${item.provider.id}/${item.model.id}`,
-        title: item.model.name ?? item.model.id,
-        description: item.provider.name,
-        onSelect: () => choose(item),
-      }))}
+      options={
+        ready()
+          ? models().map((item) => ({
+              value: `${item.provider.id}/${item.model.id}`,
+              title: item.model.name ?? item.model.id,
+              description: item.provider.name,
+              onSelect: () => choose(item),
+            }))
+          : error()
+            ? [
+                {
+                  value: "retry",
+                  title: "Retry loading compaction preference",
+                  description: error(),
+                  onSelect: () => void load(),
+                },
+              ]
+            : []
+      }
       current={preferred() ? `${preferred()!.providerID}/${preferred()!.modelID}` : undefined}
-      emptyView={<text>No connected text models available</text>}
+      emptyView={<text>{ready() ? "No connected text models available" : "Loading compaction preference…"}</text>}
+      footer={<text>Selected model applies to manual and automatic compaction, including Duo agents.</text>}
       flat={true}
     />
   )

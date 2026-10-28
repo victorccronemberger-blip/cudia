@@ -2403,6 +2403,11 @@ export type DuoSettingsError = {
   message: string
 }
 
+export type CompactionSettingsError = {
+  name: "CompactionSettingsError"
+  message: string
+}
+
 export type Agent = {
   name: string
   description?: string
@@ -8604,6 +8609,79 @@ export type DuoSettingsResponses = {
 }
 
 export type DuoSettingsResponse = DuoSettingsResponses[keyof DuoSettingsResponses]
+
+export type CompactionSettingsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/compaction/settings"
+}
+
+export type CompactionSettingsErrors = {
+  /**
+   * CompactionSettingsError | InvalidRequestError
+   */
+  400: CompactionSettingsError | InvalidRequestError
+}
+
+export type CompactionSettingsError2 = CompactionSettingsErrors[keyof CompactionSettingsErrors]
+
+export type CompactionSettingsResponses = {
+  /**
+   * Success
+   */
+  200: {
+    model?: {
+      providerID: string
+      modelID: string
+      variant?: string
+    }
+  }
+}
+
+export type CompactionSettingsResponse = CompactionSettingsResponses[keyof CompactionSettingsResponses]
+
+export type CompactionUpdateSettingsData = {
+  body?: {
+    providerID: string
+    modelID: string
+    variant?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/compaction/settings"
+}
+
+export type CompactionUpdateSettingsErrors = {
+  /**
+   * CompactionSettingsError | InvalidRequestError
+   */
+  400: CompactionSettingsError | InvalidRequestError
+}
+
+export type CompactionUpdateSettingsError = CompactionUpdateSettingsErrors[keyof CompactionUpdateSettingsErrors]
+
+export type CompactionUpdateSettingsResponses = {
+  /**
+   * Success
+   */
+  200: {
+    model?: {
+      providerID: string
+      modelID: string
+      variant?: string
+    }
+  }
+}
+
+export type CompactionUpdateSettingsResponse =
+  CompactionUpdateSettingsResponses[keyof CompactionUpdateSettingsResponses]
 
 export type AppAgentsData = {
   body?: never

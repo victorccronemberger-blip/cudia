@@ -17,6 +17,10 @@ import type {
   AuthSetResponses,
   CommandListErrors,
   CommandListResponses,
+  CompactionSettingsErrors,
+  CompactionSettingsResponses,
+  CompactionUpdateSettingsErrors,
+  CompactionUpdateSettingsResponses,
   Config as Config3,
   ConfigGetErrors,
   ConfigGetResponses,
@@ -2240,6 +2244,83 @@ export class Duo extends HeyApiClient {
       url: "/duo/settings",
       ...options,
       ...params,
+    })
+  }
+}
+
+export class Compaction extends HeyApiClient {
+  /**
+   * Get compaction settings
+   *
+   * Read the shared compaction model preference.
+   */
+  public settings<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<CompactionSettingsResponses, CompactionSettingsErrors, ThrowOnError>({
+      url: "/compaction/settings",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update compaction settings
+   *
+   * Save the shared compaction model preference.
+   */
+  public updateSettings<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      providerID?: string
+      modelID?: string
+      variant?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "modelID" },
+            { in: "body", key: "variant" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      CompactionUpdateSettingsResponses,
+      CompactionUpdateSettingsErrors,
+      ThrowOnError
+    >({
+      url: "/compaction/settings",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 }
@@ -7484,6 +7565,11 @@ export class OpencodeClient extends HeyApiClient {
   private _duo?: Duo
   get duo(): Duo {
     return (this._duo ??= new Duo({ client: this.client }))
+  }
+
+  private _compaction?: Compaction
+  get compaction(): Compaction {
+    return (this._compaction ??= new Compaction({ client: this.client }))
   }
 
   private _lsp?: Lsp

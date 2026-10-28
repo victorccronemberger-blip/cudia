@@ -588,8 +588,13 @@ export function Session() {
               const selectedModel = local.model.current()
               if (!selectedModel || compacting()) return
               setCompacting(true)
-              void sdk.client.session
-                .summarize({ sessionID, ...selectedModel, compactionModel, auto: false })
+              void sdk.client.compaction
+                .updateSettings(compactionModel)
+                .then((result) => {
+                  if (result.error) throw result.error
+                  kv.set("compaction_model", result.data.model)
+                  return sdk.client.session.summarize({ sessionID, ...selectedModel, compactionModel, auto: false })
+                })
                 .then((result) => {
                   if (result.error) throw result.error
                 })
