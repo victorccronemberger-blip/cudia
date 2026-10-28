@@ -224,7 +224,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
     tools.update_goal = tool({
       description:
-        "Report this goal completed after checking evidence, or blocked with the concrete missing input. Supply the evidence checked; a stopping point alone is not completion.",
+        "Report completed only after checking every requested deliverable. Report blocked with evidence of a concrete dependency preventing further progress, after trying available alternatives; an unfinished step or unsuccessful search is not enough. A blocker must persist across three consecutive goal turns before it becomes terminal. The first two blocked reports keep the goal active: read the returned state and continue useful work or recheck the dependency. Repeating the report within the same turn does not advance the count.",
       inputSchema: jsonSchema<{ status: "completed" | "blocked"; evidence: string; summary?: string }>({
         type: "object",
         properties: {

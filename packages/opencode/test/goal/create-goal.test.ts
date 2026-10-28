@@ -154,10 +154,10 @@ suite.instance("a create_goal-only turn does not count as work for automatic con
     yield* goal.account(session.id, message)
 
     expect((yield* goal.get(session.id))?.workParentID).toBeUndefined()
-    expect(yield* goal.continuation(session.id, message, true)).toBeUndefined()
+    expect(yield* goal.continuation(session.id, message, true)).toBeDefined()
     expect(yield* goal.get(session.id)).toMatchObject({
       status: "active",
-      stopReason: "Waiting: automatic turn made no work tool call. Resume or send new input.",
+      noWorkTurns: 1,
     })
   }),
 )
@@ -193,10 +193,10 @@ suite.instance("a deferred completed tool does not count as work for automatic c
     yield* goal.account(session.id, deferred)
 
     expect((yield* goal.get(session.id))?.workParentID).toBeUndefined()
-    expect(yield* goal.continuation(session.id, deferred, true)).toBeUndefined()
+    expect(yield* goal.continuation(session.id, deferred, true)).toBeDefined()
     expect(yield* goal.get(session.id)).toMatchObject({
       status: "active",
-      stopReason: "Waiting: automatic turn made no work tool call. Resume or send new input.",
+      noWorkTurns: 1,
     })
   }),
 )

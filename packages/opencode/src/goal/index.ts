@@ -49,6 +49,9 @@ export type State = { -readonly [K in keyof SavedState]: SavedState[K] } & {
   stopReason?: string
   evidence?: string
   summary?: string
+  blockerTurns?: number
+  blockerParentID?: MessageID
+  noWorkTurns?: number
 }
 
 export class StateError extends Schema.TaggedErrorClass<StateError>()("Goal.StateError", {
@@ -110,7 +113,9 @@ export function context(goal: State, includeObjective = true): string {
   return [
     "[Active goal]",
     ...(includeObjective ? [goal.objective] : []),
-    "Continue toward this outcome. Check the result against available evidence. Use update_goal to report completion or a concrete blocker; get_goal reads current state.",
+    "Continue toward this outcome. Check the result against available evidence. Report completion with update_goal. Report blocked only for the same concrete external dependency that prevents meaningful progress across consecutive turns; an unsuccessful search or partial work alone is not a blocker. After an early blocker report, continue investigating or doing independent work. get_goal reads current state.",
+    ...(goal.blockerTurns ? [`Consecutive blocker reports: ${goal.blockerTurns}/3. Latest: ${goal.evidence}`] : []),
+    ...(goal.noWorkTurns ? [`Consecutive automatic turns without work: ${goal.noWorkTurns}/3.`] : []),
     ...(goal.tokenBudget ? [`Tokens: ${goal.tokensUsed ?? 0}/${goal.tokenBudget}.`] : []),
     ...(goal.maxIterations ? [`Turns: ${goal.iteration}/${goal.maxIterations}.`] : []),
   ].join("\n")
@@ -126,6 +131,13 @@ export function formatStatus(goal: State): string {
     `Status: ${goal.status}`,
     `Turns: ${goal.iteration}${goal.maxIterations ? `/${goal.maxIterations}` : ""}`,
     `Tokens: ${goal.tokensUsed ?? 0}${goal.tokenBudget ? `/${goal.tokenBudget}` : ""}`,
+    `Blocker reports: ${goal.blockerTurns ?? 0}/3 consecutive turns`,
+    `Automatic turns without work: ${goal.noWorkTurns ?? 0}/3`,
+    ...(goal.status === "active" && goal.blockerTurns
+      ? [
+          "Continue useful work or recheck the dependency. If nothing else can be done in this turn, finish the reply so automatic continuation can re-evaluate it. Repeating a blocker report within this turn does not advance the count.",
+        ]
+      : []),
     ...(goal.stopReason ? [`Continuation: ${goal.stopReason}`] : []),
     ...(goal.evidence ? [`Evidence: ${goal.evidence}`] : []),
     "Commands: /goal pause | resume | clear | replace <objective>",
@@ -193,6 +205,9 @@ const layer = Layer.effect(
         // Steering already lives in session history. Keep only its revision here.
         current.revision = (current.revision ?? 0) + 1
         delete current.stopReason
+        current.blockerTurns = 0
+        delete current.blockerParentID
+        current.noWorkTurns = 0
         current.updatedAt = Date.now()
       })
     })
@@ -287,6 +302,7 @@ const layer = Layer.effect(
           current.stopReason = "User-selected token budget reached."
           return
         }
+        if (current.blockerParentID !== current.parentID) current.blockerTurns = 0
         current.parentID = parentID
         current.iteration++
         current.updatedAt = Date.now()
@@ -351,7 +367,8 @@ const layer = Layer.effect(
         goal.runtime !== 2 ||
         goal.status !== "active" ||
         message.info.role !== "assistant" ||
-        message.info.error
+        message.info.error ||
+        message.info.finish === "content-filter"
       )
         return undefined
       const info = message.info
@@ -364,15 +381,22 @@ const layer = Layer.effect(
           current.parentID !== info.parentID
         )
           return
-        if (automatic && current.workParentID !== info.parentID) {
-          current.stopReason = "Waiting: automatic turn made no work tool call. Resume or send new input."
-          return
-        }
         if (current.maxIterations !== undefined && current.iteration >= current.maxIterations) {
           current.status = "budget_limited"
           current.stopReason = "User-selected turn budget reached."
           return
         }
+        if (automatic && current.workParentID !== info.parentID) {
+          current.noWorkTurns = (current.noWorkTurns ?? 0) + 1
+          if (current.noWorkTurns >= 3) {
+            current.continuedID = info.id
+            current.status = "blocked"
+            current.stopReason =
+              "Stopped: three consecutive automatic turns made no work tool call. Resume or send new input."
+            current.updatedAt = Date.now()
+            return
+          }
+        } else if (current.workParentID === info.parentID) current.noWorkTurns = 0
         current.continuedID = info.id
         claimed.value = true
         delete current.stopReason
@@ -405,7 +429,13 @@ const layer = Layer.effect(
       const changed = yield* storage.update<State>(key(sessionID), (current) => {
         if (current.id !== expected.id || (current.revision ?? 0) !== expected.revision || current.status !== "active")
           return
-        current.status = input.status
+        if (input.status === "blocked") {
+          if (current.blockerParentID !== current.parentID) {
+            current.blockerTurns = (current.blockerTurns ?? 0) + 1
+            current.blockerParentID = current.parentID
+          }
+          if ((current.blockerTurns ?? 0) >= 3) current.status = "blocked"
+        } else current.status = "completed"
         claimed.value = true
         current.evidence = input.evidence
         current.summary = input.summary
@@ -476,6 +506,9 @@ const layer = Layer.effect(
                   : (existing!.tokensUsed ?? 0) + parsed.tokenBudget,
               runtime: 2,
               status: "active",
+              blockerTurns: 0,
+              blockerParentID: undefined,
+              noWorkTurns: 0,
               revision: (existing!.revision ?? 0) + 1,
               stopReason: undefined,
               updatedAt: Date.now(),

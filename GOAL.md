@@ -69,11 +69,20 @@ no teste de progresso. O consumo informado na resposta que cria a meta e nas
 respostas anteriores da mesma entrada do usuário é incluído; conversas e
 entradas anteriores não são contadas retroativamente.
 
-Uma continuação automática sem chamada de ferramenta de trabalho suspende novas
-continuações e conserva a meta ativa. Consultar apenas `get_goal` não prolonga
-o ciclo. Envie uma nova mensagem ou use `resume` para voltar ao trabalho. Uma
-interrupção do usuário pausa a meta. Erros do modelo não geram novas tentativas
-automáticas ilimitadas pelo Goal.
+O primeiro e o segundo relato de bloqueio mantêm a meta ativa. O bloqueio só se
+torna terminal após relatos em três rodadas consecutivas distintas. Repetir
+`update_goal` na mesma rodada não avança a contagem. O executor deve relatar a
+mesma dependência concreta persistente; a contagem não faz uma comparação
+semântica das evidências. Uma pesquisa sem resultado ou uma entrega parcial,
+por si só, não demonstram essa dependência.
+
+Uma continuação automática sem chamada de ferramenta de trabalho ganha novas
+rodadas de recuperação. Três rodadas automáticas consecutivas sem trabalho
+encerram o ciclo com estado `blocked` e motivo explícito. Uma ferramenta de
+trabalho concluída reinicia essa contagem; consultar apenas `get_goal` não
+conta como trabalho. Novas instruções ou `/goal resume` reiniciam as contagens
+de recuperação. Uma interrupção do usuário pausa a meta. Erros do modelo e
+sinalizações de filtro do provedor não geram continuações automáticas.
 
 Fechar o processo não executa trabalho em segundo plano. Ao reabrir a sessão,
 use `/goal` para consultar e `/goal resume` para retomar. Registros antigos são
