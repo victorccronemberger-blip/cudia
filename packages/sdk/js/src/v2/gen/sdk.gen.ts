@@ -17,6 +17,10 @@ import type {
   AuthSetResponses,
   CommandListErrors,
   CommandListResponses,
+  CompactionSettingsErrors,
+  CompactionSettingsResponses,
+  CompactionUpdateSettingsErrors,
+  CompactionUpdateSettingsResponses,
   Config as Config3,
   ConfigGetErrors,
   ConfigGetResponses,
@@ -24,6 +28,8 @@ import type {
   ConfigProvidersResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
+  DuoSettingsErrors,
+  DuoSettingsResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute,
   EventTuiPromptAppend,
@@ -2210,6 +2216,115 @@ export class Command extends HeyApiClient {
   }
 }
 
+export class Duo extends HeyApiClient {
+  /**
+   * Get Duo settings
+   *
+   * Read the configured Duo participants and review settings without starting model work.
+   */
+  public settings<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<DuoSettingsResponses, DuoSettingsErrors, ThrowOnError>({
+      url: "/duo/settings",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Compaction extends HeyApiClient {
+  /**
+   * Get compaction settings
+   *
+   * Read the shared compaction model preference.
+   */
+  public settings<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<CompactionSettingsResponses, CompactionSettingsErrors, ThrowOnError>({
+      url: "/compaction/settings",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update compaction settings
+   *
+   * Save the shared compaction model preference.
+   */
+  public updateSettings<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      providerID?: string
+      modelID?: string
+      variant?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "modelID" },
+            { in: "body", key: "variant" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      CompactionUpdateSettingsResponses,
+      CompactionUpdateSettingsErrors,
+      ThrowOnError
+    >({
+      url: "/compaction/settings",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Lsp extends HeyApiClient {
   /**
    * Get LSP status
@@ -4189,6 +4304,11 @@ export class Session2 extends HeyApiClient {
       providerID?: string
       modelID?: string
       auto?: boolean
+      compactionModel?: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -4203,6 +4323,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "providerID" },
             { in: "body", key: "modelID" },
             { in: "body", key: "auto" },
+            { in: "body", key: "compactionModel" },
           ],
         },
       ],
@@ -4295,6 +4416,22 @@ export class Session2 extends HeyApiClient {
       arguments?: string
       command?: string
       variant?: string
+      duo?: {
+        participants: [
+          {
+            name: string
+            model: string
+            variant?: string | null
+            agent?: string | null
+          },
+          {
+            name: string
+            model: string
+            variant?: string | null
+            agent?: string | null
+          },
+        ]
+      }
       parts?: Array<{
         id?: string
         type: "file"
@@ -4320,6 +4457,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "arguments" },
             { in: "body", key: "command" },
             { in: "body", key: "variant" },
+            { in: "body", key: "duo" },
             { in: "body", key: "parts" },
           ],
         },
@@ -7422,6 +7560,16 @@ export class OpencodeClient extends HeyApiClient {
   private _command?: Command
   get command(): Command {
     return (this._command ??= new Command({ client: this.client }))
+  }
+
+  private _duo?: Duo
+  get duo(): Duo {
+    return (this._duo ??= new Duo({ client: this.client }))
+  }
+
+  private _compaction?: Compaction
+  get compaction(): Compaction {
+    return (this._compaction ??= new Compaction({ client: this.client }))
   }
 
   private _lsp?: Lsp

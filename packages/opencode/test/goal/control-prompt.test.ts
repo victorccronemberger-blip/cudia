@@ -114,14 +114,15 @@ suite.instance(
       const goals = yield* Goal.Service
       const chat = yield* sessions.create({ title: "Native goal continuation" })
       const start = requests.length
-      replies.push(reply(), reply())
-      yield* prompt.command({
+      replies.push(reply(), reply(), reply(), reply())
+      const result = yield* prompt.command({
         sessionID: chat.id,
         command: "goal",
         arguments: "Produce the requested fixture",
         model: "test/operational",
       })
-      expect(requests.length - start).toBe(2)
+      expect(result.info.role === "assistant" && result.info.error).toBeFalsy()
+      expect(requests.length - start).toBe(4)
       expect(
         requests.slice(start).every((request) => request.sessionID === chat.id && request.agent.name === "build"),
       ).toBe(true)
@@ -136,9 +137,41 @@ suite.instance(
         ).toBe(true)
         expect(request.system.join("\n")).not.toContain("[Active goal]")
       }
-      expect((yield* goals.get(chat.id))?.status).toBe("active")
+      expect((yield* goals.get(chat.id))?.status).toBe("blocked")
       expect((yield* goals.get(chat.id))?.stopReason).toContain("no work tool call")
       expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  { config },
+)
+
+suite.instance(
+  "blocker reports remain active until three distinct automatic goal turns",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const goals = yield* Goal.Service
+      const chat = yield* sessions.create({ title: "Consecutive blockers" })
+      const start = requests.length
+      const states: Array<{ status: string; blockerTurns?: number; parentID?: MessageID }> = []
+      const report = () => Stream.unwrap(Effect.gen(function* () {
+        const execute = requests.at(-1)!.tools.update_goal?.execute
+        if (!execute) return yield* Effect.die("Native update_goal was not exposed")
+        yield* Effect.promise(() => execute(
+          { status: "blocked", evidence: "The same external fixture is unavailable" },
+          { toolCallId: "goal-blocked", messages: [], abortSignal: new AbortController().signal },
+        ))
+        const current = (yield* goals.get(chat.id))!
+        states.push({ status: current.status, blockerTurns: current.blockerTurns, parentID: current.parentID })
+        return reply()
+      }))
+      replies.push(report(), report(), report())
+      const result = yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "Resolve the fixture dependency", model: "test/operational" })
+      expect(result.info.role === "assistant" && result.info.error).toBeFalsy()
+      expect(requests.length - start).toBe(3)
+      expect(states.map((state) => [state.status, state.blockerTurns])).toEqual([["active", 1], ["active", 2], ["blocked", 3]])
+      expect(new Set(states.map((state) => state.parentID)).size).toBe(3)
+      expect(yield* goals.get(chat.id)).toMatchObject({ status: "blocked", blockerTurns: 3 })
     }),
   { config },
 )
@@ -228,22 +261,26 @@ suite.instance(
       const sessions = yield* Session.Service
       const goals = yield* Goal.Service
       const chat = yield* sessions.create({ title: "Persistent objective" })
-      replies.push(reply(), reply())
-      yield* prompt.command({
+      replies.push(reply(), reply(), reply(), reply())
+      const initial = yield* prompt.command({
         sessionID: chat.id,
         command: "goal",
         arguments: "Keep the original verifiable objective",
         model: "test/operational",
       })
+      expect(initial.info.role === "assistant" && initial.info.error).toBeFalsy()
       const saved = yield* goals.get(chat.id)
+      expect(saved?.status).toBe("blocked")
       for (const message of yield* sessions.messages({ sessionID: chat.id }))
         yield* sessions.removeMessage({ sessionID: chat.id, messageID: message.info.id })
       replies.push(completeGoal())
-      yield* prompt.prompt({
+      const resumed = yield* prompt.command({
         sessionID: chat.id,
-        model,
-        parts: [{ type: "text", text: "Continue from the compacted summary" }],
+        command: "goal",
+        arguments: "resume",
+        model: "test/operational",
       })
+      expect(resumed.info.role === "assistant" && resumed.info.error).toBeFalsy()
       expect(JSON.stringify(requests.at(-1)?.messages)).toContain("Keep the original verifiable objective")
       expect((yield* goals.get(chat.id))?.id).toBe(saved?.id)
       expect((yield* goals.get(chat.id))?.status).toBe("completed")

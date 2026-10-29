@@ -48,6 +48,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
   goal?: Goal.Interface
+  beforeTool?: (toolID: string, args: unknown) => Effect.Effect<boolean>
 }) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
@@ -58,6 +59,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
   const goal = input.goal
+  const goalCreationRevision = goal && input.agent.name !== "plan" ? goal.creationRevision(input.session.id) : undefined
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -138,6 +140,75 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
   const activeGoal =
     goal && input.agent.name !== "plan" ? yield* goal.get(input.session.id).pipe(Effect.orDie) : undefined
+  if (goal && input.agent.name !== "plan") {
+    tools.create_goal = tool({
+      description:
+        "Create and pursue a durable goal in this session when the user asks for a goal. Add optional turn or token budgets only when the user specified them.",
+      inputSchema: jsonSchema<{
+        objective: string
+        max_iterations?: number
+        token_budget?: number
+      }>({
+        type: "object",
+        properties: {
+          objective: { type: "string", minLength: 1 },
+          max_iterations: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          token_budget: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+        },
+        required: ["objective"],
+        additionalProperties: false,
+      }),
+      execute(args, options) {
+        const abort = Effect.callback<void, DOMException>((resume) => {
+          const signal = options.abortSignal
+          const cancelled = () => resume(Effect.fail(new DOMException("Aborted", "AbortError")))
+          if (signal?.aborted) {
+            cancelled()
+            return
+          }
+          if (!signal) return
+          signal.addEventListener("abort", cancelled, { once: true })
+          return Effect.sync(() => signal.removeEventListener("abort", cancelled))
+        })
+        return run.promise(
+          Effect.raceFirst(
+            Effect.gen(function* () {
+              yield* context(args, options).ask({
+                permission: "create_goal",
+                patterns: ["*"],
+                always: ["*"],
+                metadata: {},
+              })
+              yield* Effect.sync(() => options.abortSignal?.throwIfAborted())
+              const created = yield* goal.create(
+                input.session.id,
+                input.processor.message.parentID,
+                {
+                  objective: args.objective,
+                  ...(args.max_iterations === undefined ? {} : { maxIterations: args.max_iterations }),
+                  ...(args.token_budget === undefined ? {} : { tokenBudget: args.token_budget }),
+                },
+                goalCreationRevision!,
+              )
+              for (const message of input.messages
+                .filter(
+                  (message) =>
+                    message.info.role === "assistant" &&
+                    message.info.parentID === input.processor.message.parentID &&
+                    message.info.id !== input.processor.message.id,
+                )
+                .sort((left, right) => left.info.id.localeCompare(right.info.id))) {
+                yield* goal.account(input.session.id, message)
+              }
+              const current = yield* goal.get(input.session.id).pipe(Effect.orDie)
+              return { title: "Goal created", output: Goal.formatStatus(current ?? created), metadata: {} }
+            }),
+            abort,
+          ),
+        )
+      },
+    })
+  }
   if (goal && activeGoal?.status === "active") {
     tools.get_goal = tool({
       description: "Read the objective, lifecycle and measured usage of this session's goal.",
@@ -153,7 +224,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
     tools.update_goal = tool({
       description:
-        "Report this goal completed after checking evidence, or blocked with the concrete missing input. Supply the evidence checked; a stopping point alone is not completion.",
+        "Report completed only after checking every requested deliverable. Report blocked with evidence of a concrete dependency preventing further progress, after trying available alternatives; an unfinished step or unsuccessful search is not enough. A blocker must persist across three consecutive goal turns before it becomes terminal. The first two blocked reports keep the goal active: read the returned state and continue useful work or recheck the dependency. Repeating the report within the same turn does not advance the count.",
       inputSchema: jsonSchema<{ status: "completed" | "blocked"; evidence: string; summary?: string }>({
         type: "object",
         properties: {
@@ -537,6 +608,23 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     tools[key] = item
   }
 
+  if (input.beforeTool) {
+    for (const [id, item] of Object.entries(tools)) {
+      const execute = item.execute
+      if (!execute) continue
+      item.execute = async (args, options) => {
+        if (await run.promise(input.beforeTool!(id, args))) {
+          return {
+            title: "Aguardando consultor",
+            output:
+              "A ação solicitada ainda não foi executada. O CUDIA consultará o consultor antes de continuar; avalie o parecer antes de repetir a ação.",
+            metadata: { deferredByConsultation: true },
+          }
+        }
+        return execute(args, options)
+      }
+    }
+  }
   return tools
 })
 

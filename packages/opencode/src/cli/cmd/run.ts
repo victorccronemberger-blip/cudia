@@ -694,6 +694,8 @@ export const RunCommand = effectCmd({
         // to stdout/UI. `client` is passed explicitly because attach mode may
         // rebind the SDK to the session's directory after the subscription is
         // created, and replies issued from inside the loop must use that client.
+        let goalControlMessageID: string | undefined
+        const seenGoalControlMessages = new Set<string>()
         async function loop(client: OpencodeClient, events: Awaited<ReturnType<typeof sdk.event.subscribe>>) {
           const toggles = new Map<string, boolean>()
           const sessions = new Set([sessionID])
@@ -720,6 +722,11 @@ export const RunCommand = effectCmd({
             if (event.type === "message.part.updated") {
               const part = event.properties.part
               if (part.sessionID !== sessionID) continue
+              if (part.type === "text" && part.metadata?.goalControl === true) {
+                seenGoalControlMessages.add(part.messageID)
+              }
+              const goalControlResponse =
+                part.type === "text" && part.metadata?.goalControl === true && part.messageID === goalControlMessageID
 
               if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
                 if (emit("tool_use", { part })) continue
@@ -751,16 +758,22 @@ export const RunCommand = effectCmd({
               }
 
               if (part.type === "text" && part.time?.end) {
-                if (emit("text", { part })) continue
-                const text = part.text.trim()
-                if (!text) continue
-                if (!process.stdout.isTTY) {
-                  process.stdout.write(text + EOL)
+                if (emit("text", { part })) {
+                  if (goalControlResponse) break
                   continue
                 }
-                UI.empty()
-                UI.println(text)
-                UI.empty()
+                const text = part.text.trim()
+                if (text) {
+                  if (!process.stdout.isTTY) {
+                    process.stdout.write(text + EOL)
+                  } else {
+                    UI.empty()
+                    UI.println(text)
+                    UI.empty()
+                  }
+                }
+                if (goalControlResponse) break
+                continue
               }
 
               if (part.type === "reasoning" && part.time?.end && thinking) {
@@ -831,7 +844,8 @@ export const RunCommand = effectCmd({
         await share(client, sessionID)
 
         if (!interactive) {
-          const events = await client.event.subscribe()
+          const eventStream = new AbortController()
+          const events = await client.event.subscribe({}, { signal: eventStream.signal })
           const completed = loop(client, events).catch((e) => {
             console.error(e)
             process.exitCode = 1
@@ -848,12 +862,21 @@ export const RunCommand = effectCmd({
               agent,
               model: args.model,
               command: args.command,
-              arguments: message,
+              arguments: initialInput ?? "",
               variant: args.variant,
             })
             if (result.error) {
               if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
               process.exitCode = 1
+              return
+            }
+            if (
+              args.command === "goal" &&
+              result.data.parts.some((part) => part.type === "text" && part.metadata?.goalControl === true)
+            ) {
+              goalControlMessageID = result.data.info.id
+              if (seenGoalControlMessages.has(goalControlMessageID)) eventStream.abort()
+              await completed
               return
             }
             await finish()

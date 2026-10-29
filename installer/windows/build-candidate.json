@@ -2,13 +2,13 @@
   "schema": 1,
   "repository": "victorccronemberger-blip/cudia",
   "channel": "preview",
-  "sequence": 25,
-  "version": "1.18.35+cudia.preview25.20261027",
-  "releaseId": 425040093,
-  "tag": "cudia-preview-20261027-seq25-537ced5",
+  "sequence": 38,
+  "version": "1.18.35+cudia.preview38.20261029",
+  "releaseId": 427912334,
+  "tag": "cudia-preview-20261029-seq38-66e39ab",
   "buildBundle": {
-    "id": 680469180,
-    "size": 241433345,
-    "sha256": "a71d091894d66903d8a86c3618943c565ea3930908dd0933608af94341fbeb55"
+    "sha256": "0e8f92c41515c90c640907957fa0ae1b2e2a8b312ff82c6528277b5958db7c33",
+    "size": 241471057,
+    "id": 688683163
   }
 }

@@ -6,10 +6,13 @@ import { Global } from "@opencode-ai/core/global"
 import { LSP } from "@/lsp/lsp"
 import { Vcs } from "@/project/vcs"
 import { Skill } from "@/skill"
+import { Duo } from "@/duo"
+import { CompactionSettings } from "@/session/compaction-settings"
+import { SessionCompaction } from "@/session/compaction"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { ApiVcsApplyError } from "../groups/instance"
+import { ApiVcsApplyError, ApiDuoSettingsError, ApiCompactionSettingsError } from "../groups/instance"
 import { markInstanceForDisposal } from "../lifecycle"
 
 export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance", (handlers) =>
@@ -20,6 +23,8 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
     const lsp = yield* LSP.Service
     const skill = yield* Skill.Service
     const vcs = yield* Vcs.Service
+    const duo = yield* Duo.Service
+    const compaction = yield* SessionCompaction.Service
 
     const dispose = Effect.fn("InstanceHttpApi.dispose")(function* () {
       yield* markInstanceForDisposal(yield* InstanceState.context)
@@ -77,6 +82,37 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
       return yield* command.list()
     })
 
+    const getDuoSettings = Effect.fn("InstanceHttpApi.duoSettings")(function* () {
+      return yield* duo
+        .settings()
+        .pipe(Effect.mapError((error) => new ApiDuoSettingsError({ name: "DuoSettingsError", message: error.message })))
+    })
+
+    const getCompactionSettings = Effect.fn("InstanceHttpApi.compactionSettings")(function* () {
+      const model = yield* Effect.tryPromise({
+        try: () => CompactionSettings.read(),
+        catch: (error) => new ApiCompactionSettingsError({ name: "CompactionSettingsError", message: String(error) }),
+      })
+      return { model }
+    })
+
+    const updateCompactionSettings = Effect.fn("InstanceHttpApi.updateCompactionSettings")(function* (ctx: {
+      payload: CompactionSettings.Model
+    }) {
+      yield* compaction
+        .validateModel(ctx.payload)
+        .pipe(
+          Effect.mapError(
+            (error) => new ApiCompactionSettingsError({ name: "CompactionSettingsError", message: error.message }),
+          ),
+        )
+      yield* Effect.tryPromise({
+        try: () => CompactionSettings.write(ctx.payload),
+        catch: (error) => new ApiCompactionSettingsError({ name: "CompactionSettingsError", message: String(error) }),
+      })
+      return { model: ctx.payload }
+    })
+
     const getAgent = Effect.fn("InstanceHttpApi.agent")(function* () {
       return yield* agent.list()
     })
@@ -102,6 +138,9 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
       .handle("vcsDiffRaw", getVcsDiffRaw)
       .handle("vcsApply", applyVcs)
       .handle("command", getCommand)
+      .handle("duoSettings", getDuoSettings)
+      .handle("compactionSettings", getCompactionSettings)
+      .handle("updateCompactionSettings", updateCompactionSettings)
       .handle("agent", getAgent)
       .handle("skill", getSkill)
       .handle("lsp", getLsp)

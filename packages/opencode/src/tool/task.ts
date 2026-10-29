@@ -10,7 +10,8 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Cause, Effect, Exit, Schema, Scope } from "effect"
+import { Provider } from "@/provider/provider"
+import { Cause, Effect, Exit, Option, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
@@ -51,6 +52,12 @@ const BaseParameterFields = {
   task_id: Schema.optional(Schema.String).annotate({
     description:
       "Existing session ID to continue. If lookup fails, the task returns an error without creating a session.",
+  }),
+  model: Schema.optional(Schema.String).annotate({
+    description: "Model override in provider/model format",
+  }),
+  variant: Schema.optional(Schema.String).annotate({
+    description: "Model variant override",
   }),
   command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
 }
@@ -93,12 +100,14 @@ export const TaskTool = Tool.define(
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
     const truncate = yield* Truncate.Service
+    const capturedProvider = yield* Effect.serviceOption(Provider.Service)
 
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
+      const awaitCompletion = ctx.extra?.awaitCompletion === true
       const runInBackground = params.background === true
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
         return yield* Effect.fail(
@@ -138,6 +147,56 @@ export const TaskTool = Tool.define(
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
 
+      const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.orDie,
+      )
+      if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
+
+      const model =
+        params.model !== undefined
+          ? Provider.parseModel(params.model)
+          : (next.model ?? {
+              modelID: msg.info.modelID,
+              providerID: msg.info.providerID,
+            })
+      const resolvedModel =
+        params.model !== undefined || params.variant !== undefined
+          ? yield* Effect.gen(function* () {
+              const currentProvider = yield* Effect.serviceOption(Provider.Service)
+              const provider = Option.isSome(currentProvider)
+                ? currentProvider.value
+                : Option.isSome(capturedProvider)
+                  ? capturedProvider.value
+                  : undefined
+              if (!provider) {
+                return yield* Effect.fail(new Error("Provider service unavailable for task model validation"))
+              }
+              return yield* provider
+                .getModel(model.providerID, model.modelID)
+                .pipe(
+                  Effect.mapError((error) =>
+                    params.model !== undefined
+                      ? new Error(`Invalid task model "${params.model}": ${error.message}`)
+                      : new Error(
+                          `Cannot validate variant "${params.variant}" for ${model.providerID}/${model.modelID}: ${error.message}`,
+                        ),
+                  ),
+                )
+            })
+          : undefined
+      if (params.variant !== undefined && !resolvedModel?.variants?.[params.variant]) {
+        const available = Object.keys(resolvedModel?.variants ?? {})
+        return yield* Effect.fail(
+          new Error(
+            `Invalid variant "${params.variant}" for ${model.providerID}/${model.modelID}.${available.length ? ` Available variants: ${available.join(", ")}.` : " No variants are available."}`,
+          ),
+        )
+      }
+      const sameAgentModel = next.model?.providerID === model.providerID && next.model.modelID === model.modelID
+      const defaultVariant = sameAgentModel ? next.variant : !params.model && !next.model ? msg.info.variant : undefined
+      const variant = params.variant ?? defaultVariant
+      const promptVariant = params.variant ?? (!params.model && !next.model ? msg.info.variant : undefined)
       const session = params.task_id !== undefined ? yield* sessions.get(SessionID.make(params.task_id)) : undefined
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
@@ -151,22 +210,13 @@ export const TaskTool = Tool.define(
           agent: next.name,
           permission: childPermission,
         }))
-
-      const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
-        Effect.provideService(Database.Service, database),
-        Effect.orDie,
-      )
-      if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
-      const variant = msg.info.variant
-
-      const model = next.model ?? {
-        modelID: msg.info.modelID,
-        providerID: msg.info.providerID,
-      }
       const metadata = {
         parentSessionId: ctx.sessionID,
         sessionId: nextSession.id,
-        model,
+        model: {
+          ...model,
+          ...(variant !== undefined ? { variant } : {}),
+        },
         ...(runInBackground ? { background: true } : {}),
       }
 
@@ -187,7 +237,7 @@ export const TaskTool = Tool.define(
             modelID: model.modelID,
             providerID: model.providerID,
           },
-          variant: next.model ? undefined : variant,
+          variant: promptVariant,
           agent: next.name,
           parts,
         })
@@ -290,13 +340,15 @@ export const TaskTool = Tool.define(
         type: id,
         title: params.description,
         metadata,
-        onPromote: Effect.all([
-          ctx.metadata({
-            title: params.description,
-            metadata: { ...metadata, background: true, jobId: nextSession.id },
-          }),
-          notify(nextSession.id),
-        ]),
+        onPromote: awaitCompletion
+          ? undefined
+          : Effect.all([
+              ctx.metadata({
+                title: params.description,
+                metadata: { ...metadata, background: true, jobId: nextSession.id },
+              }),
+              notify(nextSession.id),
+            ]),
         run: runTask().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
       })
 
@@ -335,11 +387,11 @@ export const TaskTool = Tool.define(
         }),
         () =>
           Effect.gen(function* () {
-            const result = yield* Effect.raceFirst(
-              background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info)),
-              background.waitForPromotion(nextSession.id),
-            )
-            if (result?.metadata?.background === true) return backgroundResult()
+            const completed = background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info))
+            const result = yield* awaitCompletion
+              ? completed
+              : Effect.raceFirst(completed, background.waitForPromotion(nextSession.id))
+            if (!awaitCompletion && result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
             if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
             return {

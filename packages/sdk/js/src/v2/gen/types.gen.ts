@@ -625,6 +625,11 @@ export type CompactionPart = {
   type: "compaction"
   auto: boolean
   overflow?: boolean
+  compactionModel?: {
+    providerID: string
+    modelID: string
+    variant?: string
+  }
   tail_start_id?: string
 }
 
@@ -1104,6 +1109,7 @@ export type GlobalEvent = {
           }
           content: Array<LlmToolContent>
           outputPaths?: Array<string>
+          contextSources?: ToolContextSourceBundle
           result?: unknown
           provider: {
             executed: boolean
@@ -2373,6 +2379,35 @@ export type Command = {
   hints: Array<string>
 }
 
+export type DuoSettings = {
+  participants: [
+    {
+      name: string
+      model: string
+      variant?: string | null
+      agent?: string | null
+    },
+    {
+      name: string
+      model: string
+      variant?: string | null
+      agent?: string | null
+    },
+  ]
+  review: boolean
+  peerChars: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type DuoSettingsError = {
+  name: "DuoSettingsError"
+  message: string
+}
+
+export type CompactionSettingsError = {
+  name: "CompactionSettingsError"
+  message: string
+}
+
 export type Agent = {
   name: string
   description?: string
@@ -3195,6 +3230,46 @@ export type ToolFileContent = {
 
 export type LlmToolContent = ToolTextContent | ToolFileContent
 
+export type ToolContextSourceBody =
+  | {
+      bytes: number
+      sha256: string
+      type: "utf16-span"
+      start: number
+      end: number
+    }
+  | {
+      bytes: number
+      sha256: string
+      type: "json-member"
+      member: "instructions"
+    }
+
+export type ToolContextSourceReceipt = {
+  version: 1
+  hashEncoding: "json-utf8"
+  kind: "skill" | "mcp-guidance" | "mcp-resource"
+  origin: string
+  output: {
+    bytes: number
+    sha256: string
+    length: number
+  }
+  body: ToolContextSourceBody
+}
+
+export type ToolContextSourceEntry = {
+  contentIndex: number
+  receipt: ToolContextSourceReceipt
+}
+
+export type ToolContextSourceBundle = {
+  version: 1
+  projection: "original" | "replaced"
+  entries: Array<ToolContextSourceEntry>
+  omitted: number
+}
+
 export type SessionNextRetryError = {
   message: string
   statusCode?: number
@@ -3797,6 +3872,7 @@ export type SyncEventSessionNextToolSuccess = {
       }
       content: Array<LlmToolContent>
       outputPaths?: Array<string>
+      contextSources?: ToolContextSourceBundle
       result?: unknown
       provider: {
         executed: boolean
@@ -4191,6 +4267,7 @@ export type SessionMessageToolStateCompleted = {
   attachments?: Array<PromptFileAttachment>
   content: Array<LlmToolContent>
   outputPaths?: Array<string>
+  contextSources?: ToolContextSourceBundle
   structured: {
     [key: string]: unknown
   }
@@ -4703,6 +4780,7 @@ export type SessionNextToolSuccess = {
     }
     content: Array<LlmToolContent>
     outputPaths?: Array<string>
+    contextSources?: ToolContextSourceBundle
     result?: unknown
     provider: {
       executed: boolean
@@ -6730,6 +6808,7 @@ export type EventSessionNextToolSuccess = {
     }
     content: Array<LlmToolContent>
     outputPaths?: Array<string>
+    contextSources?: ToolContextSourceBundle
     result?: unknown
     provider: {
       executed: boolean
@@ -8502,6 +8581,107 @@ export type CommandListResponses = {
 }
 
 export type CommandListResponse = CommandListResponses[keyof CommandListResponses]
+
+export type DuoSettingsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/duo/settings"
+}
+
+export type DuoSettingsErrors = {
+  /**
+   * DuoSettingsError | InvalidRequestError
+   */
+  400: DuoSettingsError | InvalidRequestError
+}
+
+export type DuoSettingsError2 = DuoSettingsErrors[keyof DuoSettingsErrors]
+
+export type DuoSettingsResponses = {
+  /**
+   * DuoSettings
+   */
+  200: DuoSettings
+}
+
+export type DuoSettingsResponse = DuoSettingsResponses[keyof DuoSettingsResponses]
+
+export type CompactionSettingsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/compaction/settings"
+}
+
+export type CompactionSettingsErrors = {
+  /**
+   * CompactionSettingsError | InvalidRequestError
+   */
+  400: CompactionSettingsError | InvalidRequestError
+}
+
+export type CompactionSettingsError2 = CompactionSettingsErrors[keyof CompactionSettingsErrors]
+
+export type CompactionSettingsResponses = {
+  /**
+   * Success
+   */
+  200: {
+    model?: {
+      providerID: string
+      modelID: string
+      variant?: string
+    }
+  }
+}
+
+export type CompactionSettingsResponse = CompactionSettingsResponses[keyof CompactionSettingsResponses]
+
+export type CompactionUpdateSettingsData = {
+  body?: {
+    providerID: string
+    modelID: string
+    variant?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/compaction/settings"
+}
+
+export type CompactionUpdateSettingsErrors = {
+  /**
+   * CompactionSettingsError | InvalidRequestError
+   */
+  400: CompactionSettingsError | InvalidRequestError
+}
+
+export type CompactionUpdateSettingsError = CompactionUpdateSettingsErrors[keyof CompactionUpdateSettingsErrors]
+
+export type CompactionUpdateSettingsResponses = {
+  /**
+   * Success
+   */
+  200: {
+    model?: {
+      providerID: string
+      modelID: string
+      variant?: string
+    }
+  }
+}
+
+export type CompactionUpdateSettingsResponse =
+  CompactionUpdateSettingsResponses[keyof CompactionUpdateSettingsResponses]
 
 export type AppAgentsData = {
   body?: never
@@ -10297,6 +10477,11 @@ export type SessionSummarizeData = {
     providerID: string
     modelID: string
     auto?: boolean
+    compactionModel?: {
+      providerID: string
+      modelID: string
+      variant?: string
+    }
   }
   path: {
     sessionID: string
@@ -10387,6 +10572,22 @@ export type SessionCommandData = {
     arguments: string
     command: string
     variant?: string
+    duo?: {
+      participants: [
+        {
+          name: string
+          model: string
+          variant?: string | null
+          agent?: string | null
+        },
+        {
+          name: string
+          model: string
+          variant?: string | null
+          agent?: string | null
+        },
+      ]
+    }
     parts?: Array<{
       id?: string
       type: "file"

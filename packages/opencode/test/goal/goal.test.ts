@@ -189,7 +189,7 @@ suite.instance("multi-step usage sums step-finish parts without recounting aggre
   }),
 )
 
-suite.instance("automatic continuation after a no-tool turn stops with the goal still active", () =>
+suite.instance("automatic continuation blocks after three no-work turns", () =>
   Effect.gen(function* () {
     const goal = yield* Goal.Service
     const sessions = yield* Session.Service
@@ -200,10 +200,21 @@ suite.instance("automatic continuation after a no-tool turn stops with the goal 
     const assistant = result(session.id, { parentID })
 
     yield* goal.account(session.id, assistant)
-    expect(yield* goal.continuation(session.id, assistant, true)).toBeUndefined()
+    let next = yield* goal.continuation(session.id, assistant, true)
+    expect(next).toBeDefined()
+    expect((yield* goal.get(session.id))?.noWorkTurns).toBe(1)
+    for (let turn = 2; turn <= 3; turn++) {
+      const parent = MessageID.ascending()
+      expect(yield* goal.begin(session.id, parent, next)).toBe(true)
+      const reply = result(session.id, { parentID: parent })
+      yield* goal.account(session.id, reply)
+      next = yield* goal.continuation(session.id, reply, true)
+      expect(next === undefined).toBe(turn === 3)
+    }
     expect(yield* goal.get(session.id)).toMatchObject({
-      status: "active",
-      stopReason: "Waiting: automatic turn made no work tool call. Resume or send new input.",
+      status: "blocked",
+      noWorkTurns: 3,
+      stopReason: "Stopped: three consecutive automatic turns made no work tool call. Resume or send new input.",
     })
   }),
 )
@@ -241,8 +252,8 @@ suite.instance("a get_goal-only assistant turn does not count as work for automa
     })
 
     yield* goal.account(session.id, assistant)
-    expect(yield* goal.continuation(session.id, assistant, true)).toBeUndefined()
-    expect(yield* goal.get(session.id)).toMatchObject({ status: "active" })
+    expect(yield* goal.continuation(session.id, assistant, true)).toBeDefined()
+    expect(yield* goal.get(session.id)).toMatchObject({ status: "active", noWorkTurns: 1 })
   }),
 )
 
@@ -563,5 +574,86 @@ suite.instance("completion requires evidence but does not require a particular t
     })
     expect(completed.status).toBe("completed")
     expect(completed.evidence).toContain("inspected source")
+  }),
+)
+
+
+suite.instance("blocked requires reports in three distinct consecutive goal turns", () =>
+  Effect.gen(function* () {
+    const goal = yield* Goal.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create()
+    yield* start(goal, session.id, "resolve a dependency")
+    for (let turn = 1; turn <= 3; turn++) {
+      const parent = MessageID.ascending()
+      yield* goal.begin(session.id, parent)
+      const current = (yield* goal.get(session.id))!
+      const updated = yield* goal.update(session.id, Goal.token(current), { status: "blocked", evidence: "same external dependency" })
+      expect(updated).toMatchObject({ status: turn === 3 ? "blocked" : "active", blockerTurns: turn })
+      if (turn === 1) {
+        const repeated = yield* goal.update(session.id, Goal.token(updated), { status: "blocked", evidence: "same external dependency" })
+        expect(repeated).toMatchObject({ status: "active", blockerTurns: 1 })
+      }
+    }
+  }),
+)
+
+suite.instance("a turn without a blocker report breaks the consecutive streak", () =>
+  Effect.gen(function* () {
+    const goal = yield* Goal.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create()
+    yield* start(goal, session.id, "resolve dependency")
+    yield* goal.begin(session.id, MessageID.ascending())
+    yield* goal.update(session.id, Goal.token((yield* goal.get(session.id))!), { status: "blocked", evidence: "dependency" })
+    yield* goal.begin(session.id, MessageID.ascending())
+    yield* goal.begin(session.id, MessageID.ascending())
+    const updated = yield* goal.update(session.id, Goal.token((yield* goal.get(session.id))!), { status: "blocked", evidence: "dependency" })
+    expect(updated).toMatchObject({ status: "active", blockerTurns: 1 })
+  }),
+)
+
+
+suite.instance("work resets no-work recovery and resume resets both counters", () =>
+  Effect.gen(function* () {
+    const goal = yield* Goal.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create()
+    yield* start(goal, session.id, "make progress")
+    const first = MessageID.ascending()
+    yield* goal.begin(session.id, first)
+    const idle = result(session.id, { parentID: first })
+    yield* goal.account(session.id, idle)
+    const next = yield* goal.continuation(session.id, idle, true)
+    const parent = MessageID.ascending()
+    yield* goal.begin(session.id, parent, next)
+    const id = MessageID.ascending()
+    const work = result(session.id, { id, parentID: parent, parts: [{
+      id: PartID.ascending(), messageID: id, sessionID: session.id, type: "tool", callID: "read",
+      tool: "read", state: { status: "completed", input: {}, output: "read", title: "Read", metadata: {}, time: { start: Date.now(), end: Date.now() } },
+    }] })
+    yield* goal.account(session.id, work)
+    yield* goal.continuation(session.id, work, true)
+    expect((yield* goal.get(session.id))?.noWorkTurns).toBe(0)
+    yield* goal.update(session.id, Goal.token((yield* goal.get(session.id))!), { status: "blocked", evidence: "dependency" })
+    yield* goal.pause(session.id)
+    yield* start(goal, session.id, "resume")
+    expect(yield* goal.get(session.id)).toMatchObject({ status: "active", blockerTurns: 0, noWorkTurns: 0 })
+  }),
+)
+
+suite.instance("content-filter responses do not trigger automatic recovery", () =>
+  Effect.gen(function* () {
+    const goal = yield* Goal.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create()
+    yield* start(goal, session.id, "work")
+    const parent = MessageID.ascending()
+    yield* goal.begin(session.id, parent)
+    const filtered = result(session.id, { parentID: parent })
+    if (filtered.info.role !== "assistant") throw new Error("Expected assistant")
+    filtered.info.finish = "content-filter"
+    expect(yield* goal.continuation(session.id, filtered, true)).toBeUndefined()
+    expect((yield* goal.get(session.id))?.noWorkTurns).toBeUndefined()
   }),
 )

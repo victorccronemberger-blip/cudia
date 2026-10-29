@@ -1,3 +1,6 @@
+import { Global } from "@opencode-ai/core/global"
+import { mkdir, rm, writeFile } from "node:fs/promises"
+import path from "node:path"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -56,6 +59,93 @@ const handlerContext = Context.empty() as Context.Context<unknown>
 const directoryHeader = (dir: string) => HttpClientRequest.setHeader("x-opencode-directory", dir)
 
 describe("instance HttpApi", () => {
+  it.live("reads Duo defaults without creating a session", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const before = yield* HttpClientRequest.get(SessionPaths.list).pipe(directoryHeader(dir), HttpClient.execute)
+      const beforeSessions = yield* before.json
+      const response = yield* HttpClientRequest.get(InstancePaths.duoSettings).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+      expect(response.status).toBe(200)
+      expect(yield* response.json).toMatchObject({
+        participants: [
+          { name: expect.any(String), model: expect.any(String) },
+          { name: expect.any(String), model: expect.any(String) },
+        ],
+        review: expect.any(Boolean),
+        peerChars: expect.any(Number),
+      })
+      const after = yield* HttpClientRequest.get(SessionPaths.list).pipe(directoryHeader(dir), HttpClient.execute)
+      expect(yield* after.json).toEqual(beforeSessions)
+    }),
+  )
+
+  it.live("rejects unknown compaction models without changing settings or sessions", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const before = yield* HttpClientRequest.get(SessionPaths.list).pipe(directoryHeader(dir), HttpClient.execute)
+      const sessions = yield* before.json
+      const settings = yield* HttpClientRequest.get(InstancePaths.compactionSettings).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+      expect(settings.status).toBe(200)
+      const original = yield* settings.json
+      const rejected = yield* HttpClientRequest.put(InstancePaths.compactionSettings).pipe(
+        directoryHeader(dir),
+        HttpClientRequest.bodyJson({ providerID: "missing-provider", modelID: "missing-model" }),
+        Effect.flatMap(HttpClient.execute),
+      )
+      expect(rejected.status).toBe(400)
+      const after = yield* HttpClientRequest.get(InstancePaths.compactionSettings).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+      expect(yield* after.json).toEqual(original)
+      const afterSessions = yield* HttpClientRequest.get(SessionPaths.list).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+      expect(yield* afterSessions.json).toEqual(sessions)
+    }),
+  )
+
+  it.live("reports corrupt settings and exposes unavailable saved selections for repair", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const file = path.join(Global.Path.config, "compaction-model.json")
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(file, { force: true })))
+      yield* Effect.promise(() => mkdir(path.dirname(file), { recursive: true }))
+      yield* Effect.promise(() => writeFile(file, "invalid json"))
+      const corrupt = yield* HttpClientRequest.get(InstancePaths.compactionSettings).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+      expect(corrupt.status).toBe(400)
+      const saved = { providerID: "removed-provider", modelID: "removed-model", variant: "low" }
+      yield* Effect.promise(() => writeFile(file, JSON.stringify(saved)))
+      const readable = yield* HttpClientRequest.get(InstancePaths.compactionSettings).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+      expect(readable.status).toBe(200)
+      expect(yield* readable.json).toEqual({ model: saved })
+      const rejected = yield* HttpClientRequest.put(InstancePaths.compactionSettings).pipe(
+        directoryHeader(dir),
+        HttpClientRequest.bodyJson({ providerID: "missing-provider", modelID: "missing-model" }),
+        Effect.flatMap(HttpClient.execute),
+      )
+      expect(rejected.status).toBe(400)
+      const after = yield* HttpClientRequest.get(InstancePaths.compactionSettings).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+      expect(yield* after.json).toEqual({ model: saved })
+    }),
+  )
+
   it.live("serves the OpenAPI document", () =>
     Effect.gen(function* () {
       const response = yield* HttpClient.get("/doc")

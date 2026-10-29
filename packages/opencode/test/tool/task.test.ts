@@ -24,6 +24,8 @@ import { disposeAllInstances } from "../fixture/fixture"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { Provider } from "../../src/provider/provider"
+import { ProviderTest } from "../fake/provider"
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -57,6 +59,57 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
 
 const it = testEffect(layer())
 const background = testEffect(layer({ experimentalBackgroundSubagents: true }))
+const explicitProviderID = ProviderV2.ID.make("task-test")
+const requestedModel = ProviderTest.model({
+  providerID: explicitProviderID,
+  id: ModelV2.ID.make("requested-model"),
+  variants: {
+    high: { reasoningEffort: "high" },
+    xhigh: { reasoningEffort: "xhigh" },
+  },
+})
+const agentModel = ProviderTest.model({
+  providerID: explicitProviderID,
+  id: ModelV2.ID.make("agent-model"),
+  variants: { xhigh: { reasoningEffort: "xhigh" } },
+})
+const explicitProviderInfo = ProviderTest.info(
+  { models: { [requestedModel.id]: requestedModel, [agentModel.id]: agentModel } },
+  requestedModel,
+)
+const explicitProvider = ProviderTest.fake({
+  model: requestedModel,
+  info: explicitProviderInfo,
+  getModel: Effect.fn("TaskToolTest.getModel")(
+    (providerID, modelID): Effect.Effect<Provider.Model, Provider.ModelNotFoundError> => {
+      const model = explicitProviderInfo.models[modelID]
+      if (providerID === explicitProviderInfo.id && model) return Effect.succeed(model)
+      return Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID }))
+    },
+  ),
+})
+const itWithExplicitModels = testEffect(
+  LayerNode.compile(
+    LayerNode.group([
+      Agent.node,
+      BackgroundJob.node,
+      EventV2Bridge.node,
+      Config.node,
+      CrossSpawnSpawner.node,
+      Session.node,
+      SessionProjector.node,
+      SessionRunState.node,
+      SessionStatus.node,
+      Truncate.node,
+      ToolRegistry.node,
+      Database.node,
+      Provider.node,
+      RuntimeFlags.node,
+      Ripgrep.node,
+    ]),
+    [[Provider.node, explicitProvider.layer]],
+  ),
+)
 
 function defer<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -168,6 +221,216 @@ function reply(
 }
 
 describe("tool.task", () => {
+  itWithExplicitModels.instance(
+    "explicit model and variant override both the agent pin and parent model",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+        let metadata: { metadata?: Record<string, unknown> } | undefined
+
+        const result = yield* def.execute(
+          {
+            description: "candidate on selected model",
+            prompt: "inspect the issue",
+            subagent_type: "pinned-agent",
+            model: "task-test/requested-model",
+            variant: "high",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+            messages: [],
+            metadata: (input) =>
+              Effect.sync(() => {
+                metadata = input
+              }),
+            ask: () => Effect.void,
+          },
+        )
+
+        expect(seen?.model).toEqual({ providerID: explicitProviderID, modelID: requestedModel.id })
+        expect(seen?.variant).toBe("high")
+        expect(result.metadata.model).toEqual({
+          providerID: explicitProviderID,
+          modelID: requestedModel.id,
+          variant: "high",
+        })
+        expect(metadata?.metadata?.model).toEqual(result.metadata.model)
+      }),
+    {
+      config: {
+        agent: {
+          "pinned-agent": {
+            mode: "subagent",
+            model: "task-test/agent-model",
+            variant: "xhigh",
+          },
+        },
+      },
+    },
+  )
+
+  itWithExplicitModels.instance(
+    "validates an explicit model with its captured provider when execution has no ambient provider",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+
+        const result = yield* def
+          .execute(
+            {
+              description: "candidate on selected model",
+              prompt: "inspect the issue",
+              subagent_type: "general",
+              model: "task-test/requested-model",
+              variant: "high",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.provide(Layer.empty))
+
+        expect(seen?.model).toEqual({ providerID: explicitProviderID, modelID: requestedModel.id })
+        expect(seen?.variant).toBe("high")
+        expect(result.metadata.model).toEqual({
+          providerID: explicitProviderID,
+          modelID: requestedModel.id,
+          variant: "high",
+        })
+      }),
+  )
+
+  itWithExplicitModels.instance("an explicit model without a variant does not inherit the parent variant", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let seen: SessionPrompt.PromptInput | undefined
+
+      const result = yield* def.execute(
+        {
+          description: "candidate on selected model",
+          prompt: "inspect the issue",
+          subagent_type: "general",
+          model: "task-test/requested-model",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(seen?.model).toEqual({ providerID: explicitProviderID, modelID: requestedModel.id })
+      expect(seen?.variant).toBeUndefined()
+      expect(result.metadata.model).toEqual({ providerID: explicitProviderID, modelID: requestedModel.id })
+    }),
+  )
+
+  itWithExplicitModels.instance("rejects an unsupported variant before creating or running a child", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompted = false
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "candidate on selected model",
+            prompt: "inspect the issue",
+            subagent_type: "general",
+            model: "task-test/requested-model",
+            variant: "turbo",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: () => (prompted = true) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) throw new Error("expected invalid variant failure")
+      const failure = Cause.squash(exit.cause)
+      expect(failure).toBeInstanceOf(Error)
+      if (!(failure instanceof Error)) throw new Error("expected Error defect")
+      expect(failure.message).toContain('Invalid variant "turbo"')
+      expect(failure.message).toContain("Available variants: high, xhigh")
+      expect(prompted).toBe(false)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
+  itWithExplicitModels.instance("rejects an unknown explicit model before creating or running a child", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompted = false
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "candidate on missing model",
+            prompt: "inspect the issue",
+            subagent_type: "general",
+            model: "task-test/missing-model",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: () => (prompted = true) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) throw new Error("expected invalid model failure")
+      const failure = Cause.squash(exit.cause)
+      expect(failure).toBeInstanceOf(Error)
+      if (!(failure instanceof Error)) throw new Error("expected Error defect")
+      expect(failure.message).toContain('Invalid task model "task-test/missing-model"')
+      expect(prompted).toBe(false)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
   it.instance(
     "description sorts subagents by name and is stable across calls",
     () =>
@@ -846,6 +1109,80 @@ describe("tool.task", () => {
       yield* Deferred.succeed(done, undefined)
       expect((yield* jobs.wait({ id: result.metadata.sessionId })).info?.output).toBe("background done")
       expect((yield* Deferred.await(injected)).parts[0]?.type).toBe("text")
+      expect(runs).toBe(1)
+    }),
+  )
+
+  it.instance("waits for completion when an awaited foreground task is promoted", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      const returned = yield* Deferred.make<void>()
+      const parentNotified = yield* Deferred.make<void>()
+      let runs = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            return Deferred.succeed(parentNotified, undefined).pipe(
+              Effect.as(reply(input, "unexpected parent notification")),
+            )
+          }
+          return Effect.gen(function* () {
+            runs += 1
+            yield* Deferred.succeed(ready, undefined)
+            yield* Deferred.await(done)
+            return reply(input, "background done")
+          })
+        },
+      }
+
+      const fiber = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps, awaitCompletion: true },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(
+          Effect.tap(() => Deferred.succeed(returned, undefined)),
+          Effect.forkChild,
+        )
+
+      yield* Deferred.await(ready)
+      const job = (yield* jobs.list())[0]
+      expect(job).toBeDefined()
+      if (!job) throw new Error("task job not found")
+      expect(job.metadata?.parentSessionId).toBe(chat.id)
+      yield* jobs.promote(job.id)
+
+      yield* Effect.yieldNow
+      expect(yield* Deferred.isDone(returned)).toBe(false)
+      expect(yield* Deferred.isDone(parentNotified)).toBe(false)
+      expect(runs).toBe(1)
+
+      yield* Deferred.succeed(done, undefined)
+      const result = yield* Fiber.join(fiber)
+      expect(result.metadata.background).not.toBe(true)
+      expect(result.output).toContain(`state="completed"`)
+      expect(result.output).toContain("background done")
+      expect(yield* Deferred.isDone(parentNotified)).toBe(false)
       expect(runs).toBe(1)
     }),
   )

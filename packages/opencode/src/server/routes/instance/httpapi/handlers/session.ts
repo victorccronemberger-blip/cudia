@@ -36,7 +36,7 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError } from "../errors"
+import { InvalidRequestError, PermissionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
 
 const tryParseJson = (text: string) =>
@@ -274,7 +274,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof SummarizePayload.Type
     }) {
-      yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
+      const sessionInfo = yield* requireSession(ctx.params.sessionID)
+      if (ctx.payload.compactionModel) {
+        yield* compactSvc
+          .validateModel(ctx.payload.compactionModel)
+          .pipe(
+            Effect.mapError((error) => new InvalidRequestError({ message: error.message, field: "compactionModel" })),
+          )
+      }
+      yield* revertSvc.cleanup(sessionInfo)
       const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       const defaultAgent = yield* agentSvc.defaultAgent()
       const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
@@ -287,6 +295,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           modelID: ctx.payload.modelID,
         },
         auto: ctx.payload.auto ?? false,
+        compactionModel: ctx.payload.compactionModel,
       })
       yield* promptSvc.loop({ sessionID: ctx.params.sessionID })
       return true
