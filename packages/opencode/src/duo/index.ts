@@ -68,7 +68,7 @@ const StateSchema = Schema.Struct({
   id: Schema.String,
   sessionID: SessionID,
   objective: Schema.String,
-  status: Schema.Literals(["running", "completed", "interrupted"]),
+  status: Schema.Literals(["running", "completed", "interrupted", "cancelled"]),
   phase: Schema.Literals(["work", "review"]),
   members: Schema.Tuple([MemberSchema, MemberSchema]),
   schedule: Schema.Literals(["parallel", "sequential"]),
@@ -93,7 +93,7 @@ export type State = {
   id: string
   sessionID: SessionID
   objective: string
-  status: "running" | "completed" | "interrupted"
+  status: "running" | "completed" | "interrupted" | "cancelled"
   phase: "work" | "review"
   members: [Member, Member]
   schedule: "parallel" | "sequential"
@@ -131,6 +131,7 @@ export interface Interface {
   readonly settings: () => Effect.Effect<Settings, DuoError>
   readonly get: (sessionID: SessionID) => Effect.Effect<State | undefined, DuoError | unknown>
   readonly owns: (sessionID: SessionID) => boolean
+  readonly cancel: (sessionID: SessionID) => Effect.Effect<State | undefined, unknown>
   readonly context: (sessionID: SessionID) => Effect.Effect<string | undefined, unknown>
   readonly report: (sessionID: SessionID, turn: SessionV1.WithParts) => Effect.Effect<void, unknown>
   readonly start: (
@@ -285,6 +286,17 @@ const layer = Layer.effect(
 
     const owns: Interface["owns"] = (sessionID) => running.has(sessionID)
 
+    const cancel: Interface["cancel"] = (sessionID) =>
+      transitions.withPermit(
+        Effect.gen(function* () {
+          const current = yield* get(sessionID)
+          if (!current) return undefined
+          const next: State = { ...current, status: "cancelled", updatedAt: Date.now() }
+          yield* storage.write(key(sessionID), next)
+          return next
+        }),
+      )
+
     const updateProgress = (
       draft: State,
       index: 0 | 1,
@@ -402,11 +414,13 @@ const layer = Layer.effect(
               const initial = yield* get(sessionID)
               if (!initial)
                 return yield* new DuoError({ sessionID, reason: "missing_state", message: "Duo state was not found." })
+              if (initial.status !== "running") return
               if (initial.members[index].work?.status !== "completed") yield* invokeOne(initial, index, "work", invoke)
               const latest = yield* get(sessionID)
               if (!latest)
                 return yield* new DuoError({ sessionID, reason: "missing_state", message: "Duo state was not found." })
               if (
+                latest.status === "running" &&
                 latest.reviewEnabled &&
                 latest.members[index].work?.status === "completed" &&
                 latest.members[index].review?.status !== "completed"
@@ -416,13 +430,15 @@ const layer = Layer.effect(
           { concurrency: 2, discard: true },
         )
         return yield* modify(sessionID, (draft) => {
-          draft.status = "completed"
-          draft.phase = draft.reviewEnabled ? "review" : "work"
+          if (draft.status === "running") {
+            draft.status = "completed"
+            draft.phase = draft.reviewEnabled ? "review" : "work"
+          }
         })
       }).pipe(
         Effect.onInterrupt(() =>
           modify(sessionID, (draft) => {
-            draft.status = "interrupted"
+            if (draft.status === "running") draft.status = "interrupted"
           }).pipe(Effect.ignore),
         ),
       )
@@ -510,7 +526,7 @@ const layer = Layer.effect(
         ),
       )
 
-    return { settings, get, owns, context, report, start, resume }
+    return { settings, get, owns, cancel, context, report, start, resume }
   }),
 )
 

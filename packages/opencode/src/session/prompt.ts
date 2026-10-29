@@ -1182,11 +1182,36 @@ const layer = Layer.effect(
             yield* MessageV2.filterCompactedEffect(sessionID).pipe(Effect.provideService(Database.Service, database)),
           )
 
+          const duoState = yield* duo.get(sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          if (duoState?.status === "cancelled") {
+            msgs = msgs.map((message) => {
+              const duoMessage = message.parts.some((part) => part.type === "text" && part.metadata?.duoRun === true)
+              return {
+                ...message,
+                parts: message.parts.filter((part) => {
+                  if (part.type === "text" && part.synthetic && part.metadata?.duoRun === true) return false
+                  if (part.type === "subtask" && duoMessage) return false
+                  if (part.type === "tool" && part.state.status !== "pending" && part.state.metadata?.duo) return false
+                  return true
+                }),
+              }
+            })
+          }
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
           const lastUserMessage = msgs.findLast((message) => message.info.id === lastUser.id)!
+          if (duoState?.status === "cancelled") {
+            lastUserMessage.parts.push({
+              id: PartID.ascending(),
+              messageID: lastUser.id,
+              sessionID,
+              type: "text",
+              text: "The operator cancelled the previous Duo run. Do not resume the cancelled Duo or reassign its tasks unless the operator explicitly starts or resumes Duo. Handle the current message with the selected model.",
+              synthetic: true,
+            })
+          }
           if (
             lastUser.agent !== "plan" &&
             !(yield* goal.begin(sessionID, lastUser.id, Goal.wakeToken(lastUserMessage)).pipe(Effect.orDie))
@@ -1722,10 +1747,13 @@ const layer = Layer.effect(
           )
         }
         if (argument === "cancel") {
-          if (!duo.owns(input.sessionID)) return yield* respond("Não há uma execução Duo ativa neste servidor.")
+          if (!saved && !duo.owns(input.sessionID)) return yield* respond("Não existe um Duo nesta conversa.")
+          if (saved) yield* duo.cancel(input.sessionID).pipe(Effect.catch(Effect.die))
           yield* state.cancel(input.sessionID)
+          const cancelled = yield* duo.cancel(input.sessionID).pipe(Effect.catch(Effect.die))
+          if (!cancelled) return yield* respond("Não foi possível registrar o cancelamento do Duo.")
           return yield* respond(
-            "Execução Duo interrompida. As sessões e os resultados foram preservados; use /duo resume para continuar.",
+            "Duo cancelado. As sessões e os resultados foram preservados; use /duo resume para continuar explicitamente.",
           )
         }
         const continuing = argument === "resume" || /^continue(?:\s|$)/.test(argument)

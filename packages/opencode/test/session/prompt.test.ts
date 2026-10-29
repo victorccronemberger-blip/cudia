@@ -35,6 +35,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
+import { Duo } from "../../src/duo"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -265,6 +266,7 @@ const testLLMServerNode = LayerNode.make({ service: TestLLMServer, layer: TestLL
 
 const promptRoot = LayerNode.group([
   SessionPrompt.node,
+  Duo.node,
   Session.node,
   SessionProjector.node,
   MessageV2.node,
@@ -670,6 +672,78 @@ const boot = Effect.fn("test.boot")(function* (input?: { title?: string }) {
   const chat = yield* sessions.create(input ?? { title: "Pinned" })
   return { prompt, run, sessions, chat }
 })
+
+it.instance(
+  "cancelled Duo history does not replay its instructions or tasks on an ordinary prompt",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, sessions, chat } = yield* boot()
+      const duo = yield* Duo.Service
+      const { directory } = yield* TestInstance
+      const pair: [Duo.Participant & { directory: string }, Duo.Participant & { directory: string }] = [
+        { name: "one", model: "test/test-model", directory },
+        { name: "two", model: "test/test-model", directory },
+      ]
+      yield* duo.start(
+        {
+          sessionID: chat.id,
+          objective: "old objective",
+          members: pair,
+          schedule: "parallel",
+          review: false,
+          peerChars: 100,
+        },
+        () => Effect.succeed({ status: "completed" as const, output: "old result" }),
+      )
+      const old = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        noReply: true,
+        parts: [{ type: "text", text: "old objective" }],
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        sessionID: chat.id,
+        messageID: old.info.id,
+        type: "text",
+        text: "DUO OLD INTEGRATION INSTRUCTION",
+        synthetic: true,
+        metadata: { duoRun: true },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        sessionID: chat.id,
+        messageID: old.info.id,
+        type: "subtask",
+        agent: "general",
+        description: "DUO OLD TASK",
+        prompt: "DUO OLD TASK",
+      })
+      yield* prompt.command({ sessionID: chat.id, command: "duo", arguments: "cancel" })
+      expect((yield* duo.get(chat.id))?.status).toBe("cancelled")
+      yield* llm.text("ordinary answer")
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        parts: [{ type: "text", text: "ordinary question" }],
+      })
+      const inputs = yield* llm.inputs
+      expect(inputs).toHaveLength(1)
+      const request = JSON.stringify(inputs[0].messages)
+      expect(request).not.toContain("DUO OLD INTEGRATION INSTRUCTION")
+      expect(request).not.toContain("DUO OLD TASK")
+      expect(request).toContain("ordinary question")
+      expect(
+        (yield* sessions.messages({ sessionID: chat.id })).some((message) =>
+          message.parts.some((part) => part.type === "text" && part.text === "DUO OLD INTEGRATION INSTRUCTION"),
+        ),
+      ).toBe(true)
+    }),
+  30_000,
+)
 
 // Loop semantics
 

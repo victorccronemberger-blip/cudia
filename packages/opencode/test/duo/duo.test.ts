@@ -55,6 +55,30 @@ const members: [Duo.Participant & { directory: string }, Duo.Participant & { dir
 ] as const
 
 describe("duo service", () => {
+  suite.instance("cancel persists for interrupted and completed runs until explicit resume", () =>
+    Effect.gen(function* () {
+      const duo = yield* Duo.Service
+      const sessionID = SessionID.create()
+      const entered = yield* Deferred.make<void>()
+      const fiber = yield* duo
+        .start({ sessionID, objective: "objective", members, schedule: "parallel", review: false, peerChars: 12 }, () =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(entered)
+      expect((yield* duo.cancel(sessionID))?.status).toBe("cancelled")
+      yield* Fiber.interrupt(fiber)
+      expect((yield* duo.get(sessionID))?.status).toBe("cancelled")
+      const resumed = yield* duo.resume({ sessionID }, () =>
+        Effect.succeed({ status: "completed" as const, output: "result" }),
+      )
+      expect(resumed.status).toBe("completed")
+      const cancelled = yield* duo.cancel(sessionID)
+      expect(cancelled?.status).toBe("cancelled")
+      expect(cancelled?.members[0].work?.output).toBe("result")
+    }),
+  )
+
   suite.instance("loads explicit participant settings and get never starts work", () =>
     Effect.gen(function* () {
       const duo = yield* Duo.Service

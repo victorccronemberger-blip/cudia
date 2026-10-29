@@ -19,8 +19,12 @@ comportamento padrão dos provedores.
   preservando sessões, resultados e diretórios existentes.
 - `/duo continue <orientação>` inicia uma nova rodada para o objetivo salvo,
   acrescentando a orientação e pedindo novamente trabalho aos dois participantes.
-- `/duo cancel` interrompe uma execução ativa. As sessões, resultados e
-  diretórios são preservados para inspeção e eventual retomada.
+- `/duo cancel` encerra o Duo nesta conversa, inclusive depois de uma
+  interrupção ou do término da rodada. Mensagens comuns seguem com um único
+  modelo; instruções internas da rodada cancelada deixam de orientar o modelo.
+  As sessões, resultados, arquivos e diretórios são preservados para inspeção.
+  Para voltar à dupla, use explicitamente `/duo resume`, `/duo continue` ou
+  inicie outro `/duo <objetivo>`.
 
 Na seleção, escolha o modelo, a variante e o agente de cada participante. O
 primeiro participante é o coordenador: ele integra o trabalho na pasta original
