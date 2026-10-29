@@ -226,6 +226,14 @@
           "temperature": false,
           "modalities": { "input": ["text", "image"], "output": ["text"] },
           "limit": {"context": 248000, "output": 384000}
+        },
+        "deepseek-v4.1-flash-1017": {
+          "name": "DeepSeek V4.1 Flash 1017",
+          "reasoning": true,
+          "tool_call": true,
+          "temperature": false,
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "limit": {"context": 248000, "output": 384000}
         }
       }
     },

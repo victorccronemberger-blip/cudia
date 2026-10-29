@@ -50,6 +50,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
+import { DialogDuo, type DuoPair } from "../dialog-duo"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
@@ -950,6 +951,7 @@ export function Prompt(props: PromptProps) {
   })
 
   let submitting = false
+  let duoSubmitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
@@ -967,6 +969,7 @@ export function Prompt(props: PromptProps) {
   }
 
   async function submitInner() {
+    if (duoSubmitting) return false
     workspace.clearNotice()
 
     // IME: double-defer may fire before onContentChange flushes the last
@@ -980,13 +983,62 @@ export function Prompt(props: PromptProps) {
     if (workspace.creating() || move.creating()) return false
     if (auto()?.visible) return false
     if (!store.prompt.input) return false
-    const agent = local.agent.current()
-    if (!agent) return false
     const trimmed = store.prompt.input.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       void exit()
       return true
     }
+    const inputText = expandTrackedPastedText(
+      store.prompt.input,
+      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
+        const partIndex = store.extmarkToPartIndex.get(extmark.id)
+        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
+        if (part?.type !== "text") return []
+        return [{ start: extmark.start, end: extmark.end, text: part.text }]
+      }),
+    )
+    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+    const firstLineEnd = inputText.indexOf("\n")
+    const firstLine = firstLineEnd === -1 ? inputText : inputText.slice(0, firstLineEnd)
+    const slashCommand = firstLine.split(" ")[0]
+    const commandName = slashCommand.startsWith("/") ? slashCommand.slice(1) : ""
+    const commandArgs =
+      firstLine.slice(slashCommand.length).replace(/^ /, "") +
+      (firstLineEnd === -1 ? "" : "\n" + inputText.slice(firstLineEnd + 1))
+    if (store.mode === "normal" && commandName === "duo" && sync.data.command.some((item) => item.name === "duo")) {
+      const controlArgs = commandArgs.trim()
+      const control = /^(?:status|resume|cancel)$/.test(controlArgs) || /^continue(?:\s|$)/.test(controlArgs)
+      if (!control) {
+        const hasObjective = commandArgs.trim().length > 0
+        const submittedPrompt = structuredClone(unwrap(store.prompt))
+        const files = submittedPrompt.parts.filter((part): part is FilePart => part.type === "file")
+        const submittedMode = store.mode
+        const submittedSessionID = props.sessionID
+        const chatAgent = local.agent.current()?.name
+        dialog.replace(() => (
+          <DialogDuo
+            hasObjective={hasObjective}
+            onSaveOnly={() => {
+              toast.show({ message: "Duo choices saved. Add an objective to /duo to start.", variant: "info" })
+            }}
+            onConfirm={(pair) => {
+              void confirmDuo({
+                pair,
+                objective: commandArgs,
+                parts: files,
+                submittedPrompt,
+                submittedMode,
+                submittedSessionID,
+                chatAgent,
+              })
+            }}
+          />
+        ))
+        return false
+      }
+    }
+    const agent = local.agent.current()
+    if (!agent) return false
     const selectedModel = local.model.current()
     if (!selectedModel) {
       void promptModelWarning()
@@ -1045,18 +1097,7 @@ export function Prompt(props: PromptProps) {
       sessionID = res.data.id
     }
 
-    const inputText = expandTrackedPastedText(
-      store.prompt.input,
-      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
-        const partIndex = store.extmarkToPartIndex.get(extmark.id)
-        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
-        if (part?.type !== "text") return []
-        return [{ start: extmark.start, end: extmark.end, text: part.text }]
-      }),
-    )
-
     // Filter out text parts (pasted content) since they're now expanded inline
-    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
     // Capture mode before it gets reset
     const currentMode = store.mode
@@ -1166,6 +1207,109 @@ export function Prompt(props: PromptProps) {
     input.clear()
     if (finishMoveProgress) move.finishSubmit()
     return true
+  }
+
+  async function confirmDuo(inputDuo: {
+    pair: DuoPair
+    objective: string
+    parts: FilePart[]
+    submittedPrompt: PromptInfo
+    submittedMode: typeof store.mode
+    submittedSessionID?: string
+    chatAgent?: string
+  }) {
+    if (duoSubmitting) return
+    duoSubmitting = true
+    try {
+      const coordinator = sync.data.agent.find((item) => item.name === inputDuo.pair.participants[0].agent)
+      const agent = coordinator && ["all", "primary"].includes(coordinator.mode) ? coordinator.name : inputDuo.chatAgent
+      if (!agent) {
+        toast.show({ message: "Select a coordinator agent before starting Duo.", variant: "warning" })
+        return
+      }
+      const [providerID, ...modelParts] = inputDuo.pair.participants[0].model.split("/")
+      const modelID = modelParts.join("/")
+      if (!providerID || !modelID) {
+        toast.show({ message: "Select a valid first participant model before starting Duo.", variant: "warning" })
+        return
+      }
+
+      let sessionID = inputDuo.submittedSessionID
+      const workspaceSession = sessionID ? sync.session.get(sessionID) : undefined
+      const workspaceID = workspaceSession?.workspaceID
+      const workspaceStatus = workspaceID ? (project.workspace.status(workspaceID) ?? "error") : undefined
+      if (sessionID && workspaceID && workspaceStatus !== "connected") {
+        dialog.replace(() => (
+          <DialogWorkspaceUnavailable
+            onRestore={() => {
+              workspace.open()
+              return false
+            }}
+          />
+        ))
+        return
+      }
+      if (sessionID == null) {
+        const selectedWorkspace = workspace.selection()
+        const selectedWorkspaceID = selectedWorkspace?.type === "existing" ? selectedWorkspace.workspaceID : undefined
+        const directory = await move.getDirectory(inputDuo.objective)
+        if (move.pending() && !directory) return
+        const created = await sdk.client.session.create({
+          directory,
+          workspace: selectedWorkspaceID,
+          agent,
+          model: {
+            providerID,
+            id: modelID,
+            variant: inputDuo.pair.participants[0].variant,
+          },
+        })
+        if (created.error) {
+          toast.show({ message: "Creating a session failed. Open console for more details.", variant: "error" })
+          return
+        }
+        sessionID = created.data.id
+      }
+
+      const request = sdk.client.session.command({
+        sessionID,
+        command: "duo",
+        arguments: inputDuo.objective,
+        agent,
+        model: `${providerID}/${modelID}`,
+        variant: inputDuo.pair.participants[0].variant,
+        parts: inputDuo.parts,
+        duo: { participants: inputDuo.pair.participants },
+      })
+      request
+        .then((result) => {
+          if (result.error)
+            toast.show({ title: "Failed to start Duo", message: errorMessage(result.error), variant: "error" })
+        })
+        .catch((error) => {
+          toast.show({ title: "Failed to start Duo", message: errorMessage(error), variant: "error" })
+        })
+
+      history.append({
+        ...inputDuo.submittedPrompt,
+        mode: inputDuo.submittedMode,
+      })
+      if (
+        input.plainText === inputDuo.submittedPrompt.input &&
+        JSON.stringify(unwrap(store.prompt)) === JSON.stringify(inputDuo.submittedPrompt)
+      ) {
+        input.extmarks.clear()
+        setStore("prompt", { input: "", parts: [] })
+        setStore("extmarkToPartIndex", new Map())
+        input.clear()
+      }
+      props.onSubmit?.()
+      if (!inputDuo.submittedSessionID) route.navigate({ type: "session", sessionID })
+    } catch (error) {
+      toast.show({ title: "Failed to start Duo", message: errorMessage(error), variant: "error" })
+    } finally {
+      duoSubmitting = false
+    }
   }
 
   function pasteText(text: string, virtualText: string) {

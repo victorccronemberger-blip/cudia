@@ -2,6 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { Session } from "./session"
+import { CompactionSettings } from "./compaction-settings"
 import { SessionID, MessageID, PartID } from "./schema"
 import { Provider } from "@/provider/provider"
 import { MessageV2 } from "./message-v2"
@@ -12,7 +13,7 @@ import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
 import { NotFoundError } from "@/storage/storage"
 
-import { Effect, Layer, Context } from "effect"
+import { Effect, Layer, Context, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { isOverflow as overflow, usable } from "./overflow"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
@@ -159,7 +160,17 @@ function splitTurn(input: {
   })
 }
 
+export class InvalidCompactionModel extends Schema.TaggedErrorClass<InvalidCompactionModel>()(
+  "InvalidCompactionModel",
+  {
+    message: Schema.String,
+  },
+) {}
+
+type CompactionModel = NonNullable<SessionV1.CompactionPart["compactionModel"]>
+
 export interface Interface {
+  readonly validateModel: (model: CompactionModel) => Effect.Effect<void, InvalidCompactionModel>
   readonly isOverflow: (input: {
     tokens: SessionV1.Assistant["tokens"]
     model: Provider.Model
@@ -178,6 +189,7 @@ export interface Interface {
     model: { providerID: ProviderV2.ID; modelID: ModelV2.ID }
     auto: boolean
     overflow?: boolean
+    compactionModel?: CompactionModel
   }) => Effect.Effect<void>
 }
 
@@ -196,6 +208,22 @@ const layer = Layer.effect(
     const provider = yield* Provider.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+
+    const validateModel = Effect.fn("SessionCompaction.validateModel")(function* (selection: CompactionModel) {
+      const model = yield* provider.getModel(selection.providerID, selection.modelID).pipe(
+        Effect.mapError(
+          () =>
+            new InvalidCompactionModel({
+              message: `Unknown compaction model: ${selection.providerID}/${selection.modelID}`,
+            }),
+        ),
+      )
+      if (selection.variant !== undefined && !Object.hasOwn(model.variants ?? {}, selection.variant)) {
+        return yield* new InvalidCompactionModel({
+          message: `Unknown variant '${selection.variant}' for compaction model ${selection.providerID}/${selection.modelID}`,
+        })
+      }
+    })
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: SessionV1.Assistant["tokens"]
@@ -359,9 +387,20 @@ const layer = Layer.effect(
       }
 
       const agent = yield* agents.get("compaction")
-      const model = agent.model
-        ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
-        : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
+      const preference = compactionPart?.compactionModel
+        ? undefined
+        : yield* Effect.promise(() => CompactionSettings.read())
+      const explicit = compactionPart?.compactionModel ?? preference
+      if (explicit) yield* validateModel(explicit).pipe(Effect.orDie)
+      const selection = explicit ?? agent.model ?? userMessage.model
+      const model = yield* provider.getModel(selection.providerID, selection.modelID).pipe(Effect.orDie)
+      const variant = explicit
+        ? explicit.variant
+        : (agent.variant ?? (agent.model ? undefined : userMessage.model.variant))
+      const processUser = {
+        ...userMessage,
+        model: { ...userMessage.model, variant },
+      }
       const cfg = yield* config.get()
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
@@ -400,7 +439,7 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         mode: "compaction",
         agent: "compaction",
-        variant: userMessage.model.variant,
+        variant,
         summary: true,
         path: {
           cwd: ctx.directory,
@@ -428,8 +467,8 @@ const layer = Layer.effect(
       const result = yield* processor.process({
         purpose: "compaction",
         compactionMessageID: msg.id,
-        user: userMessage,
-        agent,
+        user: processUser,
+        agent: explicit ? { ...agent, options: {} } : agent,
         sessionID: input.sessionID,
         tools: {},
         system: [],
@@ -567,7 +606,9 @@ const layer = Layer.effect(
       model: { providerID: ProviderV2.ID; modelID: ModelV2.ID }
       auto: boolean
       overflow?: boolean
+      compactionModel?: CompactionModel
     }) {
+      if (input.compactionModel) yield* validateModel(input.compactionModel).pipe(Effect.orDie)
       const msg = yield* session.updateMessage({
         id: MessageID.ascending(),
         role: "user",
@@ -583,10 +624,12 @@ const layer = Layer.effect(
         type: "compaction",
         auto: input.auto,
         overflow: input.overflow,
+        compactionModel: input.compactionModel,
       })
     })
 
     return Service.of({
+      validateModel,
       isOverflow,
       prune,
       process: processCompaction,

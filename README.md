@@ -55,6 +55,9 @@ ChatGPT foi conferido na Preview 12; não foi repetido nesta entrega.
 A tasklist está em
 [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md). Os comandos abaixo iniciam ou instalam um
 checkout de desenvolvimento.
+O [consultor automático do Drael](CUDIA-CONSULTOR.md) é configurável fora do system prompt.
+O comando explícito [Duo](CUDIA-DUO.md) permite executar um objetivo com Drael
+e outro modelo configurável.
 O serviço independente de versões e as instruções de implantação ficam em
 [deploy/updates](deploy/updates/README.md).
 O [pacote Windows e cliente nativo](installer/windows/README.md) já têm
@@ -134,10 +137,10 @@ Use `/connect`, escolha **QwenCloud Token Plan** e informe a chave do plano
 (`sk-sp-`). Também pode definir `QWENCLOUD_TOKEN_PLAN_API_KEY` no ambiente.
 Em `/models`, procure QwenCloud e escolha, por exemplo, `qwencloud/qwen3.8-flash`.
 
-O catálogo contém os 12 modelos de texto do Token Plan Personal, incluindo `auto`,
-Qwen, GLM e DeepSeek. Qwen 3.8 usa esforço `medium` por padrão; as variantes `low`
+O catálogo contém os 13 modelos de texto do Token Plan Personal, incluindo `auto`,
+Qwen, GLM e DeepSeek, com a revisão `deepseek-v4.1-flash-1017`. Qwen 3.8 usa esforço `medium` por padrão; as variantes `low`
 e `xhigh` permitem ajustar custo e profundidade. O roteamento de `auto` é decidido
-pelo serviço; seu orçamento local usa contexto de 1M e saída de até 65.536 tokens.
+pelo serviço; seu orçamento local usa contexto de 248.000 e saída de até 65.536 tokens.
 
 Essa chave não é a chave DashScope dos provedores `qwen`/`alibaba`, nem a chave
 QwenCloud de pagamento por uso (`sk-ws-`). Os modelos usam as ferramentas locais,
@@ -372,6 +375,18 @@ tarefa silenciosamente; isso também vale para um ID vazio.
 A meta e os critérios da evolução estão em [CUDIA-ROADMAP.md](CUDIA-ROADMAP.md).
 
 ## Compactação e pesquisa na internet
+
+Na TUI, `/compact` (ou `/summarize`) abre um seletor do modelo de
+compactação. Se o modelo oferece variantes de raciocínio, a próxima tela permite
+escolher a variante ou `Default`. Esc cancela antes de enviar a solicitação.
+A escolha confirmada é salva antes da chamada em `compaction-model.json`, no
+diretório global de configuração. Ela também vale para a compactação automática
+e para os participantes do Duo, sem trocar os modelos principais. A preferência
+é relida em cada compactação e compartilhada entre projetos e janelas; salvá-la
+não reinicia as sessões abertas. Uma seleção inválida produz erro explícito.
+Chamadas da API com `compactionModel` ainda podem escolher um modelo apenas
+para aquela solicitação. Sem preferência compartilhada nem seleção explícita,
+vale o modelo configurado no agente `compaction`.
 
 A compactação automática já faz parte do motor. O checkpoint compartilhado por
 V1 e V2 agora pede objetivo, decisões, escopo/permissões, trabalho concluído e

@@ -15,7 +15,8 @@ import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { Plugin } from "@/plugin"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { Effect, Layer, Schema } from "effect"
+import { Goal } from "@/goal"
+import { Deferred, Effect, Fiber, Layer, Schema, Semaphore } from "effect"
 import { testEffect } from "../lib/effect"
 
 const callID = "call-test"
@@ -163,5 +164,329 @@ it.effect("preserves running tool start time across metadata updates", () =>
     if (state.state.status === "running") {
       expect(state.state.time.start).toBe(100)
     }
+  }),
+)
+
+it.effect("defers a tool before execution when a consultation is requested", () =>
+  Effect.gen(function* () {
+    const state: SessionV1.ToolPart = {
+      id: partID,
+      sessionID,
+      messageID,
+      type: "tool",
+      tool: "timing",
+      callID,
+      state: {
+        status: "running",
+        input: {},
+        time: { start: 100 },
+      },
+    }
+    const updates: unknown[] = []
+    const pluginCalls: string[] = []
+    const beforeCalls: Array<[string, unknown]> = []
+    const plugin = Plugin.Service.of({
+      ...fakePlugin,
+      trigger: (name, _input, output) =>
+        Effect.sync(() => {
+          pluginCalls.push(name)
+          return output
+        }),
+    } satisfies Plugin.Interface)
+    const processor = {
+      message: {
+        id: messageID,
+        sessionID,
+        role: "assistant",
+        parentID: MessageID.ascending(),
+        agent: "build",
+        mode: "build",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ModelV2.ID.make("test-model"),
+        providerID: ProviderV2.ID.make("test"),
+        time: { created: 1 },
+      } satisfies SessionV1.Assistant,
+      updateToolCall: (_toolCallID, update) =>
+        Effect.sync(() => {
+          const next = update(state)
+          state.state = next.state
+          updates.push(next.state)
+          return state
+        }),
+      completeToolCall: () => Effect.void,
+    } satisfies Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
+
+    const tools = yield* SessionTools.resolve({
+      agent,
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor,
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+      beforeTool: (id, args) =>
+        Effect.sync(() => {
+          beforeCalls.push([id, args])
+          return true
+        }),
+    }).pipe(Effect.provide(Layer.succeed(Plugin.Service, plugin)))
+    const execute = tools.timing.execute
+    if (!execute) throw new Error("timing tool is missing execute")
+    const args = { requested: true }
+    const output = yield* Effect.promise(() =>
+      execute(args, {
+        toolCallId: callID,
+        abortSignal: new AbortController().signal,
+        messages: [],
+      }),
+    )
+
+    expect(beforeCalls).toEqual([["timing", args]])
+    expect(output).toMatchObject({
+      title: "Aguardando consultor",
+      metadata: { deferredByConsultation: true },
+      output: expect.stringContaining("ainda não foi executada"),
+    })
+    expect(updates).toEqual([])
+    expect(pluginCalls).toEqual([])
+    expect(state.state.status).toBe("running")
+  }),
+)
+
+it.effect("exposes create_goal to a non-plan assistant and binds it to the current user message", () =>
+  Effect.gen(function* () {
+    const parentID = MessageID.ascending()
+    const calls: unknown[] = []
+    const asked: string[] = []
+    const accounted: string[] = []
+    const created: Goal.State = {
+      id: "goal-created",
+      sessionID,
+      objective: "Create the requested artifact",
+      status: "active",
+      iteration: 1,
+      startedAt: 1,
+      updatedAt: 1,
+      maxIterations: 4,
+      tokenBudget: 18000,
+      tokensUsed: 0,
+      runtime: 2,
+      revision: 0,
+      completionCriteria: [],
+      plan: [],
+      observations: [],
+      failures: [],
+      recentHashes: [],
+      replanned: false,
+      parentID,
+    }
+    let current: Goal.State | undefined
+    const goal = {
+      get: () => Effect.succeed(current),
+      creationRevision: () => 0,
+      create: (nextSessionID: SessionID, nextParentID: MessageID, input: unknown, revision: number) =>
+        Effect.sync(() => {
+          calls.push([nextSessionID, nextParentID, input, revision])
+          current = created
+          return created
+        }),
+      account: (_nextSessionID: SessionID, message: SessionV1.WithParts) =>
+        Effect.sync(() => {
+          accounted.push(message.info.id)
+        }),
+    } as unknown as Goal.Interface
+    const permission = Permission.Service.of({
+      ...fakePermission,
+      ask: (input) =>
+        Effect.sync(() => {
+          asked.push(input.permission)
+        }),
+    })
+    const assistant = {
+      id: messageID,
+      sessionID,
+      role: "assistant",
+      parentID,
+      agent: "build",
+      mode: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: ModelV2.ID.make("test-model"),
+      providerID: ProviderV2.ID.make("test"),
+      time: { created: 1 },
+    } satisfies SessionV1.Assistant
+    const priorMessage = (created: number, messageParentID = parentID): SessionV1.WithParts => ({
+      info: { ...assistant, id: MessageID.ascending(), parentID: messageParentID, time: { created } },
+      parts: [],
+    })
+    const earlier = priorMessage(2)
+    const later = priorMessage(4)
+    const unrelated = priorMessage(1, MessageID.ascending())
+    const tools = yield* SessionTools.resolve({
+      agent,
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor: {
+        message: assistant,
+        updateToolCall: () => Effect.succeed(undefined),
+        completeToolCall: () => Effect.void,
+      },
+      bypassAgentCheck: false,
+      messages: [later, unrelated, { info: assistant, parts: [] }, earlier],
+      promptOps: {} as never,
+      goal,
+    }).pipe(Effect.provide(Layer.succeed(Permission.Service, permission)))
+
+    expect(tools.create_goal).toBeDefined()
+    const execute = tools.create_goal?.execute
+    if (!execute) throw new Error("create_goal tool is missing execute")
+    const output = yield* Effect.promise(() =>
+      execute(
+        { objective: "Create the requested artifact", max_iterations: 4, token_budget: 18000 },
+        { toolCallId: callID, abortSignal: new AbortController().signal, messages: [] },
+      ),
+    )
+
+    expect(calls).toEqual([
+      [sessionID, parentID, { objective: "Create the requested artifact", maxIterations: 4, tokenBudget: 18000 }, 0],
+    ])
+    expect(asked).toEqual(["create_goal"])
+    expect(accounted).toEqual(
+      [earlier, later]
+        .sort((left, right) => left.info.id.localeCompare(right.info.id))
+        .map((message) => message.info.id),
+    )
+    expect(JSON.stringify(output)).toContain("Goal: Create the requested artifact")
+    expect(JSON.stringify(output)).toContain("Tokens: 0/18000")
+
+    const planTools = yield* SessionTools.resolve({
+      agent: { ...agent, name: "plan" },
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor: {
+        message: assistant,
+        updateToolCall: () => Effect.succeed(undefined),
+        completeToolCall: () => Effect.void,
+      },
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+      goal,
+    })
+    expect(planTools.create_goal).toBeUndefined()
+  }),
+)
+
+it.effect("cancels create_goal while it is queued and never mutates after abort", () =>
+  Effect.gen(function* () {
+    const parentID = MessageID.ascending()
+    const semaphore = yield* Semaphore.make(1)
+    const holding = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const queued = yield* Deferred.make<void>()
+    const holder = yield* semaphore
+      .withPermit(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(holding, undefined)
+          yield* Deferred.await(release)
+        }),
+      )
+      .pipe(Effect.forkChild)
+    yield* Deferred.await(holding)
+
+    let attempts = 0
+    let mutations = 0
+    const created: Goal.State = {
+      id: "goal-cancelled-call",
+      sessionID,
+      objective: "Do not create after cancellation",
+      status: "active",
+      iteration: 1,
+      startedAt: 1,
+      updatedAt: 1,
+      completionCriteria: [],
+      plan: [],
+      observations: [],
+      failures: [],
+      recentHashes: [],
+      replanned: false,
+      parentID,
+    }
+    const goal = {
+      get: () => Effect.succeed(undefined),
+      creationRevision: () => 0,
+      create: () =>
+        Effect.gen(function* () {
+          attempts++
+          yield* Deferred.succeed(queued, undefined)
+          return yield* semaphore.withPermit(
+            Effect.sync(() => {
+              mutations++
+              return created
+            }),
+          )
+        }),
+      account: () => Effect.void,
+    } as unknown as Goal.Interface
+    const assistant = {
+      id: messageID,
+      sessionID,
+      role: "assistant",
+      parentID,
+      agent: "build",
+      mode: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: ModelV2.ID.make("test-model"),
+      providerID: ProviderV2.ID.make("test"),
+      time: { created: 1 },
+    } satisfies SessionV1.Assistant
+    const tools = yield* SessionTools.resolve({
+      agent,
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor: {
+        message: assistant,
+        updateToolCall: () => Effect.succeed(undefined),
+        completeToolCall: () => Effect.void,
+      },
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+      goal,
+    })
+    const execute = tools.create_goal?.execute
+    if (!execute) throw new Error("create_goal tool is missing execute")
+    const args = { objective: "Do not create after cancellation" }
+    const settle = (promise: Promise<unknown>) =>
+      promise.then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+
+    const alreadyAborted = new AbortController()
+    alreadyAborted.abort()
+    const early = yield* Effect.promise(() =>
+      settle(execute(args, { toolCallId: callID, abortSignal: alreadyAborted.signal, messages: [] })),
+    )
+    expect(early.ok).toBe(false)
+    expect(attempts).toBe(0)
+
+    const controller = new AbortController()
+    const pending = settle(execute(args, { toolCallId: callID, abortSignal: controller.signal, messages: [] }))
+    yield* Deferred.await(queued)
+    controller.abort()
+    const cancelled = yield* Effect.promise(() => pending)
+    expect(cancelled.ok).toBe(false)
+    if (!cancelled.ok) expect(cancelled.error).toMatchObject({ name: "AbortError" })
+    expect(mutations).toBe(0)
+
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(holder)
+    expect(mutations).toBe(0)
   }),
 )

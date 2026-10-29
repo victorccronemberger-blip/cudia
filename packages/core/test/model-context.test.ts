@@ -7,10 +7,18 @@ test("caps large context and input windows without changing provider output capa
   expect(original.context).toBe(1_000_000)
 })
 
-test("keeps Drael at 128k while other providers use the larger window", () => {
+test("caps Drael at 240k while other providers use the general maximum", () => {
   const limit = { context: 1_000_000, input: 983_616, output: 8_192 }
-  expect(limitContext(limit, "drael")).toEqual({ context: 128_000, input: 128_000, output: 8_192 })
+  expect(limitContext(limit, "drael")).toEqual({ context: 240_000, input: 240_000, output: 8_192 })
   expect(limitContext(limit, "qwencloud")).toEqual({ context: 248_000, input: 248_000, output: 8_192 })
+})
+
+test("does not raise Drael limits below its provider maximum", () => {
+  expect(limitContext({ context: 96_000, input: 80_000, output: 8_000 }, "drael")).toEqual({
+    context: 96_000,
+    input: 80_000,
+    output: 8_000,
+  })
 })
 
 test("preserves smaller and unknown provider limits", () => {

@@ -1,7 +1,7 @@
 export const CONTEXT_MAX = 248_000
 
 export function limitContext<T extends { context: number; input?: number }>(limit: T, providerID?: string): T {
-  const maximum = providerID === "drael" ? 128_000 : CONTEXT_MAX
+  const maximum = providerID === "drael" ? 240_000 : CONTEXT_MAX
   const context = limit.context > 0 ? Math.min(limit.context, maximum) : limit.context
   return {
     ...limit,

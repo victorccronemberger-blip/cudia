@@ -49,11 +49,21 @@ export type State = { -readonly [K in keyof SavedState]: SavedState[K] } & {
   stopReason?: string
   evidence?: string
   summary?: string
+  blockerTurns?: number
+  blockerParentID?: MessageID
+  noWorkTurns?: number
 }
 
 export class StateError extends Schema.TaggedErrorClass<StateError>()("Goal.StateError", {
   sessionID: SessionID,
-  reason: Schema.Literals(["invalid_state", "session_mismatch", "stale_update", "missing_evidence"]),
+  reason: Schema.Literals([
+    "invalid_state",
+    "session_mismatch",
+    "stale_update",
+    "missing_evidence",
+    "invalid_goal",
+    "goal_exists",
+  ]),
   message: Schema.String,
 }) {}
 
@@ -68,6 +78,13 @@ export function wakeToken(message: SessionV1.WithParts): Token | undefined {
 }
 export interface Interface {
   readonly get: (sessionID: SessionID) => Effect.Effect<State | undefined, unknown>
+  readonly creationRevision: (sessionID: SessionID) => number
+  readonly create: (
+    sessionID: SessionID,
+    parentID: MessageID,
+    input: { objective: string; maxIterations?: number; tokenBudget?: number },
+    expectedRevision: number,
+  ) => Effect.Effect<State, unknown>
   readonly command: (
     input: CommandInput,
     run: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>,
@@ -96,7 +113,9 @@ export function context(goal: State, includeObjective = true): string {
   return [
     "[Active goal]",
     ...(includeObjective ? [goal.objective] : []),
-    "Continue toward this outcome. Check the result against available evidence. Use update_goal to report completion or a concrete blocker; get_goal reads current state.",
+    "Continue toward this outcome. Check the result against available evidence. Report completion with update_goal. Report blocked only for the same concrete external dependency that prevents meaningful progress across consecutive turns; an unsuccessful search or partial work alone is not a blocker. After an early blocker report, continue investigating or doing independent work. get_goal reads current state.",
+    ...(goal.blockerTurns ? [`Consecutive blocker reports: ${goal.blockerTurns}/3. Latest: ${goal.evidence}`] : []),
+    ...(goal.noWorkTurns ? [`Consecutive automatic turns without work: ${goal.noWorkTurns}/3.`] : []),
     ...(goal.tokenBudget ? [`Tokens: ${goal.tokensUsed ?? 0}/${goal.tokenBudget}.`] : []),
     ...(goal.maxIterations ? [`Turns: ${goal.iteration}/${goal.maxIterations}.`] : []),
   ].join("\n")
@@ -112,6 +131,13 @@ export function formatStatus(goal: State): string {
     `Status: ${goal.status}`,
     `Turns: ${goal.iteration}${goal.maxIterations ? `/${goal.maxIterations}` : ""}`,
     `Tokens: ${goal.tokensUsed ?? 0}${goal.tokenBudget ? `/${goal.tokenBudget}` : ""}`,
+    `Blocker reports: ${goal.blockerTurns ?? 0}/3 consecutive turns`,
+    `Automatic turns without work: ${goal.noWorkTurns ?? 0}/3`,
+    ...(goal.status === "active" && goal.blockerTurns
+      ? [
+          "Continue useful work or recheck the dependency. If nothing else can be done in this turn, finish the reply so automatic continuation can re-evaluate it. Repeating a blocker report within this turn does not advance the count.",
+        ]
+      : []),
     ...(goal.stopReason ? [`Continuation: ${goal.stopReason}`] : []),
     ...(goal.evidence ? [`Evidence: ${goal.evidence}`] : []),
     "Commands: /goal pause | resume | clear | replace <objective>",
@@ -123,6 +149,10 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const storage = yield* Storage.Service
     const commands = yield* Semaphore.make(1)
+    const creationRevisions = new Map<SessionID, number>()
+    const creationRevision = (sessionID: SessionID) => creationRevisions.get(sessionID) ?? 0
+    const invalidateCreation = (sessionID: SessionID) =>
+      creationRevisions.set(sessionID, creationRevision(sessionID) + 1)
     const key = (id: SessionID) => ["goal", id]
     const get = Effect.fn("Goal.get")(function* (sessionID: SessionID) {
       const value = yield* storage.read<State>(key(sessionID)).pipe(
@@ -145,7 +175,8 @@ const layer = Layer.effect(
       return value.value
     })
 
-    const pause = Effect.fn("Goal.pause")(function* (sessionID: SessionID) {
+    const pauseLocked = Effect.fn("Goal.pauseLocked")(function* (sessionID: SessionID) {
+      invalidateCreation(sessionID)
       if (!(yield* get(sessionID))) return
       yield* storage.update<State>(key(sessionID), (current) => {
         if (current.status !== "active") return
@@ -155,7 +186,8 @@ const layer = Layer.effect(
       })
     })
 
-    const cancel = Effect.fn("Goal.cancel")(function* (sessionID: SessionID) {
+    const cancelLocked = Effect.fn("Goal.cancelLocked")(function* (sessionID: SessionID) {
+      invalidateCreation(sessionID)
       if (!(yield* get(sessionID))) return
       yield* storage.update<State>(key(sessionID), (current) => {
         current.status = "cancelled"
@@ -164,15 +196,81 @@ const layer = Layer.effect(
       })
     })
 
-    const observe = Effect.fn("Goal.observe")(function* (sessionID: SessionID, _text: string) {
+    const pause: Interface["pause"] = (sessionID) => commands.withPermit(pauseLocked(sessionID))
+    const cancel: Interface["cancel"] = (sessionID) => commands.withPermit(cancelLocked(sessionID))
+    const observeLocked = Effect.fn("Goal.observeLocked")(function* (sessionID: SessionID) {
+      invalidateCreation(sessionID)
       if (!(yield* get(sessionID))) return
       yield* storage.update<State>(key(sessionID), (current) => {
         // Steering already lives in session history. Keep only its revision here.
         current.revision = (current.revision ?? 0) + 1
         delete current.stopReason
+        current.blockerTurns = 0
+        delete current.blockerParentID
+        current.noWorkTurns = 0
         current.updatedAt = Date.now()
       })
     })
+    const observe: Interface["observe"] = (sessionID, _text) => commands.withPermit(observeLocked(sessionID))
+
+    const createLocked = Effect.fn("Goal.createLocked")(function* (
+      sessionID: SessionID,
+      parentID: MessageID,
+      input: { objective: string; maxIterations?: number; tokenBudget?: number },
+      expectedRevision: number,
+    ) {
+      if (expectedRevision !== creationRevision(sessionID))
+        return yield* new StateError({
+          sessionID,
+          reason: "stale_update",
+          message: "The conversation changed. Read the current request before creating a goal.",
+        })
+      if (
+        !input.objective.trim() ||
+        [input.maxIterations, input.tokenBudget].some(
+          (value) => value !== undefined && (!Number.isSafeInteger(value) || value < 1),
+        )
+      )
+        return yield* new StateError({
+          sessionID,
+          reason: "invalid_goal",
+          message: "A goal needs a nonempty objective and optional positive safe-integer budgets.",
+        })
+      const existing = yield* get(sessionID)
+      if (existing && !["completed", "cancelled", "failed"].includes(existing.status))
+        return yield* new StateError({
+          sessionID,
+          reason: "goal_exists",
+          message: "An unfinished goal already exists. Read it instead of replacing it.",
+        })
+      const now = Date.now()
+      const selected: State = {
+        id: ulid(),
+        sessionID,
+        objective: input.objective,
+        status: "active",
+        runtime: 2,
+        iteration: 1,
+        revision: 0,
+        startedAt: now,
+        updatedAt: now,
+        parentID,
+        maxIterations: input.maxIterations,
+        tokenBudget: input.tokenBudget,
+        tokensUsed: 0,
+        completionCriteria: [],
+        plan: [],
+        observations: [],
+        failures: [],
+        recentHashes: [],
+        replanned: false,
+      }
+      invalidateCreation(sessionID)
+      yield* storage.write(key(sessionID), selected)
+      return selected
+    })
+    const create: Interface["create"] = (sessionID, parentID, input, expectedRevision) =>
+      commands.withPermit(createLocked(sessionID, parentID, input, expectedRevision))
 
     const begin = Effect.fn("Goal.begin")(function* (sessionID: SessionID, parentID: MessageID, expected?: Token) {
       const goal = yield* get(sessionID)
@@ -204,6 +302,7 @@ const layer = Layer.effect(
           current.stopReason = "User-selected token budget reached."
           return
         }
+        if (current.blockerParentID !== current.parentID) current.blockerTurns = 0
         current.parentID = parentID
         current.iteration++
         current.updatedAt = Date.now()
@@ -239,8 +338,9 @@ const layer = Layer.effect(
           message.parts.some(
             (part) =>
               part.type === "tool" &&
-              !["get_goal", "update_goal"].includes(part.tool) &&
-              part.state.status === "completed",
+              !["create_goal", "get_goal", "update_goal"].includes(part.tool) &&
+              part.state.status === "completed" &&
+              part.state.metadata?.deferredByConsultation !== true,
           )
         )
           current.workParentID = info.parentID
@@ -267,7 +367,8 @@ const layer = Layer.effect(
         goal.runtime !== 2 ||
         goal.status !== "active" ||
         message.info.role !== "assistant" ||
-        message.info.error
+        message.info.error ||
+        message.info.finish === "content-filter"
       )
         return undefined
       const info = message.info
@@ -280,15 +381,22 @@ const layer = Layer.effect(
           current.parentID !== info.parentID
         )
           return
-        if (automatic && current.workParentID !== info.parentID) {
-          current.stopReason = "Waiting: automatic turn made no work tool call. Resume or send new input."
-          return
-        }
         if (current.maxIterations !== undefined && current.iteration >= current.maxIterations) {
           current.status = "budget_limited"
           current.stopReason = "User-selected turn budget reached."
           return
         }
+        if (automatic && current.workParentID !== info.parentID) {
+          current.noWorkTurns = (current.noWorkTurns ?? 0) + 1
+          if (current.noWorkTurns >= 3) {
+            current.continuedID = info.id
+            current.status = "blocked"
+            current.stopReason =
+              "Stopped: three consecutive automatic turns made no work tool call. Resume or send new input."
+            current.updatedAt = Date.now()
+            return
+          }
+        } else if (current.workParentID === info.parentID) current.noWorkTurns = 0
         current.continuedID = info.id
         claimed.value = true
         delete current.stopReason
@@ -321,7 +429,13 @@ const layer = Layer.effect(
       const changed = yield* storage.update<State>(key(sessionID), (current) => {
         if (current.id !== expected.id || (current.revision ?? 0) !== expected.revision || current.status !== "active")
           return
-        current.status = input.status
+        if (input.status === "blocked") {
+          if (current.blockerParentID !== current.parentID) {
+            current.blockerTurns = (current.blockerTurns ?? 0) + 1
+            current.blockerParentID = current.parentID
+          }
+          if ((current.blockerTurns ?? 0) >= 3) current.status = "blocked"
+        } else current.status = "completed"
         claimed.value = true
         current.evidence = input.evidence
         current.summary = input.summary
@@ -348,10 +462,10 @@ const layer = Layer.effect(
       if (parsed.type === "status")
         return yield* respond(existing ? formatStatus(existing) : "No active goal for this session.")
       if (parsed.type === "pause" || parsed.type === "cancel" || parsed.type === "clear") {
-        if (!existing) return yield* respond("No active goal for this session.")
-        if (parsed.type === "pause") yield* pause(input.sessionID)
-        else yield* cancel(input.sessionID)
+        if (parsed.type === "pause") yield* pauseLocked(input.sessionID)
+        else yield* cancelLocked(input.sessionID)
         yield* stop(input.sessionID)
+        if (!existing) return yield* respond("No active goal for this session.")
         if (parsed.type === "clear") {
           yield* storage.remove(key(input.sessionID))
           return yield* respond("Goal cleared.")
@@ -368,7 +482,7 @@ const layer = Layer.effect(
       if (parsed.type === "resume" && (!existing || ["completed", "cancelled", "failed"].includes(existing.status)))
         return yield* respond("No unfinished goal is available to resume.")
       if (parsed.type === "start" && existing) {
-        yield* cancel(input.sessionID)
+        yield* cancelLocked(input.sessionID)
         yield* stop(input.sessionID)
       }
       if (parsed.type !== "start" && parsed.type !== "resume") return yield* respond("Unknown goal command.")
@@ -392,6 +506,9 @@ const layer = Layer.effect(
                   : (existing!.tokensUsed ?? 0) + parsed.tokenBudget,
               runtime: 2,
               status: "active",
+              blockerTurns: 0,
+              blockerParentID: undefined,
+              noWorkTurns: 0,
               revision: (existing!.revision ?? 0) + 1,
               stopReason: undefined,
               updatedAt: Date.now(),
@@ -423,6 +540,7 @@ const layer = Layer.effect(
         return yield* respond(
           "The user-selected budget is exhausted. Resume with --max-iterations N or --token-budget N to add a budget.",
         )
+      invalidateCreation(input.sessionID)
       yield* storage.write(key(input.sessionID), selected)
       return selected
     })
@@ -445,7 +563,19 @@ const layer = Layer.effect(
         ],
       })
     })
-    return Service.of({ command, get, observe, pause, cancel, begin, account, continuation, update })
+    return Service.of({
+      command,
+      get,
+      creationRevision,
+      create,
+      observe,
+      pause,
+      cancel,
+      begin,
+      account,
+      continuation,
+      update,
+    })
   }),
 )
 

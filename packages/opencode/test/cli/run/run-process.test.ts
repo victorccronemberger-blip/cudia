@@ -46,6 +46,60 @@ describe("opencode run (non-interactive subprocess)", () => {
   )
 
   cliIt.concurrent(
+    "passes multiword slash-command arguments without prompt quoting",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* llm.text("Goal response")
+        const result = yield* opencode.run("A durable goal for the whole multi word project --token-budget 120000", {
+          command: "goal",
+          format: "json",
+          timeoutMs: 30_000,
+        })
+
+        opencode.expectExit(result, 0)
+        expect(result.stderr).not.toContain("positive integer")
+        expect(JSON.stringify(yield* llm.inputs)).toContain("Tokens: 0/120000")
+      }),
+    45_000,
+  )
+
+  cliIt.concurrent(
+    "returns a goal argument validation error without waiting for a model turn",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        const result = yield* opencode.run("A goal with an invalid budget --token-budget nope", {
+          command: "goal",
+          format: "json",
+          timeoutMs: 15_000,
+        })
+
+        opencode.expectExit(result, 0)
+        expect(result.durationMs).toBeLessThan(15_000)
+        expect(result.stdout).toMatch(/positive (safe )?integer/)
+        expect(yield* llm.inputs).toHaveLength(0)
+      }),
+    30_000,
+  )
+
+  cliIt.concurrent(
+    "returns goal status without waiting for a model turn",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        const result = yield* opencode.run("status", {
+          command: "goal",
+          format: "json",
+          timeoutMs: 15_000,
+        })
+
+        opencode.expectExit(result, 0)
+        expect(result.durationMs).toBeLessThan(15_000)
+        expect(result.stdout).toContain("No active goal")
+        expect(yield* llm.inputs).toHaveLength(0)
+      }),
+    30_000,
+  )
+
+  cliIt.concurrent(
     "prints reasoning before text only with --thinking",
     ({ llm, opencode }) =>
       Effect.gen(function* () {

@@ -42,6 +42,11 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { Goal } from "@/goal"
+import { Consultation } from "@/consultation"
+import { Duo } from "@/duo"
+import { DuoWorkspace } from "@/duo/workspace"
+import { InstanceStore } from "@/project/instance-store"
+import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { isGoalControl, operationalMessages } from "@/goal/control"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
@@ -148,6 +153,8 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const goal = yield* Goal.Service
+    const consultation = yield* Consultation.Service
+    const duo = yield* Duo.Service
     const admissions = yield* InstanceState.make(() =>
       Effect.sync(() => new Map<SessionID, { count: number; ready: Latch.Latch }>()),
     )
@@ -272,20 +279,42 @@ const layer = Layer.effect(
       sessionID: SessionID
       session: Session.Info
       msgs: SessionV1.WithParts[]
+      automatic?: { caller: Agent.Info; claim: Consultation.Claim }
+      taskID?: SessionID
+      variant?: string
+      promptOps?: TaskPromptOps
+      awaitCompletion?: boolean
+      metadata?: Record<string, unknown>
+      onResult?: (result: Duo.InvocationResult) => Effect.Effect<void>
     }) {
       const { task, model, lastUser, sessionID, session, msgs } = input
       const ctx = yield* InstanceState.context
-      const promptOps = yield* ops()
+      const promptOps = input.promptOps ?? (yield* ops())
+      // Evidence is plain text: automatic packets must never expand @file mentions.
+      const taskPromptOps: TaskPromptOps = input.automatic
+        ? { ...promptOps, resolvePromptParts: (text) => Effect.succeed([{ type: "text", text }]) }
+        : promptOps
+      const automaticMetadata = {
+        ...(input.automatic
+          ? { automaticConsultation: { id: input.automatic.claim.id, reason: input.automatic.claim.reason } }
+          : {}),
+        ...input.metadata,
+      }
       const { task: taskTool } = yield* registry.named()
       const taskModel = task.model ? yield* getModel(task.model.providerID, task.model.modelID, sessionID) : model
+      const taskVariant =
+        input.variant ??
+        (task.model?.providerID === lastUser.model.providerID && task.model.modelID === lastUser.model.modelID
+          ? lastUser.model.variant
+          : undefined)
       const assistantMessage: SessionV1.Assistant = yield* sessions.updateMessage({
         id: MessageID.ascending(),
         role: "assistant",
         parentID: lastUser.id,
         sessionID,
-        mode: task.agent,
-        agent: task.agent,
-        variant: lastUser.model.variant,
+        mode: input.automatic?.caller.name ?? task.agent,
+        agent: input.automatic?.caller.name ?? task.agent,
+        variant: task.model ? taskVariant : lastUser.model.variant,
         path: { cwd: ctx.directory, root: ctx.worktree },
         cost: 0,
         tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -293,6 +322,15 @@ const layer = Layer.effect(
         providerID: taskModel.providerID,
         time: { created: Date.now() },
       })
+      const taskArgs = {
+        prompt: task.prompt,
+        description: task.description,
+        subagent_type: task.agent,
+        command: task.command,
+        task_id: input.taskID,
+        model: task.model ? `${task.model.providerID}/${task.model.modelID}` : undefined,
+        variant: task.model ? taskVariant : undefined,
+      }
       let part: SessionV1.ToolPart = yield* sessions.updatePart({
         id: PartID.ascending(),
         messageID: assistantMessage.id,
@@ -302,21 +340,11 @@ const layer = Layer.effect(
         tool: TaskTool.id,
         state: {
           status: "running",
-          input: {
-            prompt: task.prompt,
-            description: task.description,
-            subagent_type: task.agent,
-            command: task.command,
-          },
+          input: taskArgs,
           time: { start: Date.now() },
+          metadata: automaticMetadata,
         },
       })
-      const taskArgs = {
-        prompt: task.prompt,
-        description: task.description,
-        subagent_type: task.agent,
-        command: task.command,
-      }
       yield* plugin.trigger(
         "tool.execute.before",
         { tool: TaskTool.id, sessionID, callID: part.id },
@@ -324,7 +352,7 @@ const layer = Layer.effect(
       )
 
       const taskAgent = yield* agents.get(task.agent)
-      if (!taskAgent) {
+      if (!taskAgent && !input.automatic) {
         const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
         const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
         const error = new NamedError.Unknown({ message: `Agent not found: "${task.agent}".${hint}` })
@@ -336,19 +364,24 @@ const layer = Layer.effect(
       const taskAbort = new AbortController()
       const result = yield* taskTool
         .execute(taskArgs, {
-          agent: task.agent,
+          agent: input.automatic?.caller.name ?? task.agent,
           messageID: assistantMessage.id,
           sessionID,
           abort: taskAbort.signal,
           callID: part.callID,
-          extra: { bypassAgentCheck: true, promptOps },
+          extra: {
+            bypassAgentCheck: !input.automatic,
+            promptOps: taskPromptOps,
+            awaitCompletion: !!input.automatic || input.awaitCompletion === true,
+          },
           messages: msgs,
           metadata: (val: { title?: string; metadata?: Record<string, any> }) =>
             Effect.gen(function* () {
+              if (part.state.status !== "running") return
               part = yield* sessions.updatePart({
                 ...part,
                 type: "tool",
-                state: { ...part.state, ...val },
+                state: { ...part.state, ...val, metadata: { ...automaticMetadata, ...val.metadata } },
               } satisfies SessionV1.ToolPart)
             }),
           ask: (req: any) =>
@@ -356,12 +389,16 @@ const layer = Layer.effect(
               .ask({
                 ...req,
                 sessionID,
-                ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
+                ruleset: Permission.merge(
+                  input.automatic?.caller.permission ?? taskAgent!.permission,
+                  session.permission ?? [],
+                ),
               })
               .pipe(Effect.orDie),
         })
         .pipe(
           Effect.catchCause((cause) => {
+            if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
             const defect = Cause.squash(cause)
             error = defect instanceof Error ? defect : new Error(String(defect))
             return Effect.logError("subtask execution failed", {
@@ -416,7 +453,7 @@ const layer = Layer.effect(
             status: "completed",
             input: part.state.input,
             title: result.title,
-            metadata: result.metadata,
+            metadata: { ...automaticMetadata, ...result.metadata },
             output: result.output,
             attachments,
             time: { ...part.state.time, end: Date.now() },
@@ -440,7 +477,16 @@ const layer = Layer.effect(
         } satisfies SessionV1.ToolPart)
       }
 
-      if (!task.command) return
+      if (input.onResult) {
+        const childID = result?.metadata.sessionId
+        yield* input.onResult({
+          taskID: typeof childID === "string" ? SessionID.make(childID) : input.taskID,
+          status: result ? "completed" : "failed",
+          output: result?.output ?? "",
+          ...(error ? { error: error.message } : {}),
+        })
+      }
+      if (!task.command) return !!result
 
       const summaryUserMsg: SessionV1.User = {
         id: MessageID.ascending(),
@@ -459,6 +505,7 @@ const layer = Layer.effect(
         text: "Summarize the task tool output above and continue with your task.",
         synthetic: true,
       } satisfies SessionV1.TextPart)
+      return !!result
     })
 
     const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput, ready?: Latch.Latch) {
@@ -1121,6 +1168,7 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        let consultationSteps = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1134,11 +1182,36 @@ const layer = Layer.effect(
             yield* MessageV2.filterCompactedEffect(sessionID).pipe(Effect.provideService(Database.Service, database)),
           )
 
+          const duoState = yield* duo.get(sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          if (duoState?.status === "cancelled") {
+            msgs = msgs.map((message) => {
+              const duoMessage = message.parts.some((part) => part.type === "text" && part.metadata?.duoRun === true)
+              return {
+                ...message,
+                parts: message.parts.filter((part) => {
+                  if (part.type === "text" && part.synthetic && part.metadata?.duoRun === true) return false
+                  if (part.type === "subtask" && duoMessage) return false
+                  if (part.type === "tool" && part.state.status !== "pending" && part.state.metadata?.duo) return false
+                  return true
+                }),
+              }
+            })
+          }
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
           const lastUserMessage = msgs.findLast((message) => message.info.id === lastUser.id)!
+          if (duoState?.status === "cancelled") {
+            lastUserMessage.parts.push({
+              id: PartID.ascending(),
+              messageID: lastUser.id,
+              sessionID,
+              type: "text",
+              text: "The operator cancelled the previous Duo run. Do not resume the cancelled Duo or reassign its tasks unless the operator explicitly starts or resumes Duo. Handle the current message with the selected model.",
+              synthetic: true,
+            })
+          }
           if (
             lastUser.agent !== "plan" &&
             !(yield* goal.begin(sessionID, lastUser.id, Goal.wakeToken(lastUserMessage)).pipe(Effect.orDie))
@@ -1253,8 +1326,62 @@ const layer = Layer.effect(
             yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
+          const activeConsultationGoal = yield* goal.get(sessionID).pipe(Effect.orDie)
+          const consultationInput: Consultation.Input = {
+            sessionID,
+            parentSessionID: session.parentID,
+            providerID: model.providerID,
+            agentName: agent.name,
+            messageID: lastUser.id,
+            continuation: lastUserMessage.parts.some(
+              (part) => part.type === "text" && part.metadata?.goalContinuation === true,
+            ),
+            goalID: activeConsultationGoal?.status === "active" ? activeConsultationGoal.id : undefined,
+            request:
+              lastUserMessage.parts
+                .filter((part): part is SessionV1.TextPart => part.type === "text" && !part.synthetic)
+                .map((part) => part.text)
+                .join("\n") ||
+              activeConsultationGoal?.objective ||
+              "",
+            messages: msgs,
+          }
+          const hasDuoResults = lastUserMessage.parts.some(
+            (part) => part.type === "text" && part.metadata?.duoRun === true,
+          )
+          const claim = yield* (hasDuoResults ? Effect.succeed(undefined) : consultation.claim(consultationInput)).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("automatic consultation unavailable", { error: String(error) }).pipe(
+                Effect.as(undefined),
+              ),
+            ),
+          )
+          if (claim) {
+            const succeeded = yield* handleSubtask({
+              task: {
+                id: PartID.ascending(),
+                messageID: lastUser.id,
+                sessionID,
+                type: "subtask",
+                agent: claim.agent,
+                description:
+                  claim.reason === "recovery" ? "Revisão do consultor após erros" : "Consulta antes da execução",
+                prompt: claim.prompt,
+              },
+              model,
+              lastUser,
+              sessionID,
+              session,
+              msgs,
+              automatic: { caller: agent, claim },
+            }).pipe(Effect.onInterrupt(() => consultation.finish(claim, "interrupted").pipe(Effect.ignore)))
+            yield* consultation.finish(claim, succeeded ? "completed" : "failed").pipe(Effect.orDie)
+            consultationSteps++
+            // Reload the persisted task result before the executor's next request.
+            continue
+          }
           const maxSteps = agent.steps ?? Infinity
-          const isLastStep = step >= maxSteps
+          const isLastStep = step - consultationSteps >= maxSteps
           msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
             Effect.provideService(RuntimeFlags.Service, flags),
             Effect.provideService(FSUtil.Service, fsys),
@@ -1326,6 +1453,16 @@ const layer = Layer.effect(
               messages: msgs,
               promptOps,
               goal,
+              beforeTool: hasDuoResults
+                ? undefined
+                : (toolID, args) =>
+                    consultation.beforeTool(consultationInput, toolID, args).pipe(
+                      Effect.catch((error) =>
+                        Effect.logWarning("automatic consultation tool check unavailable", {
+                          error: String(error),
+                        }).pipe(Effect.as(false)),
+                      ),
+                    ),
             }).pipe(
               Effect.provideService(Plugin.Service, plugin),
               Effect.provideService(Permission.Service, permission),
@@ -1394,6 +1531,13 @@ const layer = Layer.effect(
             )
             if (prepared === undefined) return "break" as const
             const [skills, env, instructions, mcpInstructions, modelMsgs] = prepared
+            const collaborator = yield* duo
+              .context(sessionID)
+              .pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("Duo progress unavailable", { error: String(error) }).pipe(Effect.as(undefined)),
+                ),
+              )
             const system = [
               ...env,
               ...instructions,
@@ -1412,6 +1556,7 @@ const layer = Layer.effect(
               system,
               messages: [
                 ...modelMsgs,
+                ...(collaborator ? [{ role: "user" as const, content: collaborator }] : []),
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
               tools,
@@ -1472,8 +1617,16 @@ const layer = Layer.effect(
                 const completedMessage = yield* sessions
                   .findMessage(sessionID, (message) => message.info.id === handle.message.id)
                   .pipe(Effect.orDie)
-                if (Option.isSome(completedMessage))
+                if (Option.isSome(completedMessage)) {
+                  yield* duo
+                    .report(sessionID, completedMessage.value)
+                    .pipe(
+                      Effect.catch((error) =>
+                        Effect.logWarning("Duo progress could not be shared", { error: String(error) }),
+                      ),
+                    )
                   yield* goal.account(sessionID, completedMessage.value).pipe(Effect.orDie)
+                }
               }),
             ),
           )
@@ -1506,13 +1659,14 @@ const layer = Layer.effect(
       return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
 
-    const respondGoal = Effect.fn("SessionPrompt.respondGoal")(function* (input: {
+    const respondControl = Effect.fn("SessionPrompt.respondControl")(function* (input: {
       sessionID: SessionID
       messageID?: MessageID
       agent?: string
       model?: string
       variant?: string
       text: string
+      kind?: "goal" | "duo"
     }) {
       const user = yield* createUserMessage({
         sessionID: input.sessionID,
@@ -1524,7 +1678,7 @@ const layer = Layer.effect(
         parts: [
           {
             type: "text",
-            text: `[GOAL CONTROL]\n${input.text}`,
+            text: `[${(input.kind ?? "goal").toUpperCase()} CONTROL]\n${input.text}`,
             synthetic: true,
             ignored: true,
             metadata: { goalControl: true },
@@ -1567,6 +1721,267 @@ const layer = Layer.effect(
     })
 
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
+      if (input.command === "duo") {
+        const respond = (text: string) => respondControl({ ...input, text, kind: "duo" })
+        const raw = input.arguments
+        const argument = raw.trim()
+        const saved = yield* duo.get(input.sessionID).pipe(Effect.catch(Effect.die))
+        if (!argument || argument === "status") {
+          if (!saved)
+            return yield* respond(
+              "Use /duo <objetivo> para iniciar Drael + GPT, ou /duo continue <orientação> para continuar.",
+            )
+          const status =
+            saved.status === "running" && !duo.owns(input.sessionID)
+              ? "interrompida; use /duo resume para recuperar explicitamente"
+              : saved.status
+          return yield* respond(
+            [
+              `Duo: ${status}. Execução: ${saved.id}. Modo: ${saved.schedule}; ${saved.members[0].directory === saved.members[1].directory ? "pasta compartilhada" : "worktrees separadas"}.`,
+              `Objetivo: ${saved.objective}`,
+              ...saved.members.map(
+                (member) =>
+                  `${member.name}: ${member.model}${member.variant ? ` (${member.variant})` : ""}; sessão ${member.taskID ?? "ainda não criada"}; trabalho ${member.work?.status ?? (member.taskID ? "executando" : "iniciando")}; revisão ${member.review?.status ?? "pendente"}; ${member.progress ? `última atividade ${member.progress.phase}, atualização ${member.progress.revision}; ` : ""}pasta ${member.directory}`,
+              ),
+            ].join("\n"),
+          )
+        }
+        if (argument === "cancel") {
+          if (!saved && !duo.owns(input.sessionID)) return yield* respond("Não existe um Duo nesta conversa.")
+          if (saved) yield* duo.cancel(input.sessionID).pipe(Effect.catch(Effect.die))
+          yield* state.cancel(input.sessionID)
+          const cancelled = yield* duo.cancel(input.sessionID).pipe(Effect.catch(Effect.die))
+          if (!cancelled) return yield* respond("Não foi possível registrar o cancelamento do Duo.")
+          return yield* respond(
+            "Duo cancelado. As sessões e os resultados foram preservados; use /duo resume para continuar explicitamente.",
+          )
+        }
+        const continuing = argument === "resume" || /^continue(?:\s|$)/.test(argument)
+        const steering =
+          continuing && argument.startsWith("continue")
+            ? raw.slice(raw.indexOf("continue") + "continue".length).trim()
+            : undefined
+        if (continuing && !saved) return yield* respond("Não existe um Duo nesta conversa. Use /duo <objetivo>.")
+        if (continuing && input.duo)
+          return yield* respond(
+            "A retomada mantém os modelos e agentes salvos. Para escolher outra dupla, inicie /duo com um novo objetivo.",
+          )
+        if (continuing && saved?.status === "completed" && !steering)
+          return yield* respond("A rodada já terminou. Use /duo continue <nova orientação> ou /duo status.")
+        if (!continuing && saved?.status === "running")
+          return yield* respond("Há uma rodada Duo pendente. Use /duo status, /duo resume ou /duo cancel.")
+        const initial = raw.startsWith("-- ") ? raw.slice(3) : raw
+        const objective = continuing ? saved!.objective : initial
+        const execute = Effect.gen(function* () {
+          const instanceService = yield* Effect.serviceOption(InstanceStore.Service)
+          if (Option.isNone(instanceService))
+            return yield* Effect.fail(new Error("Duo requires the application instance controller"))
+          const instances = instanceService.value
+          const settings = continuing
+            ? { participants: saved!.members, review: saved!.reviewEnabled, peerChars: saved!.peerChars }
+            : { ...(yield* duo.settings()), ...(input.duo ? { participants: input.duo.participants } : {}) }
+          const coordinator = settings.participants[0]
+          let coordinatorAgent = continuing ? (saved!.coordinatorAgent ?? input.agent) : input.agent
+          if (input.duo) {
+            for (const participant of settings.participants) {
+              const selected = Provider.parseModel(participant.model)
+              const model = yield* provider.getModel(selected.providerID, selected.modelID)
+              if (participant.variant !== undefined && !model.variants?.[participant.variant])
+                return yield* Effect.fail(
+                  new Error(`Variante inválida "${participant.variant}" para ${participant.model}.`),
+                )
+              const candidate = yield* agents.get(participant.agent ?? "general")
+              if (!candidate)
+                return yield* Effect.fail(new Error(`Agente Duo não encontrado: ${participant.agent ?? "general"}.`))
+              if (participant === coordinator && participant.agent && candidate.mode !== "subagent")
+                coordinatorAgent = candidate.name
+            }
+          }
+          const coordinatorModel = Provider.parseModel(coordinator.model)
+          const user = yield* createUserMessage({
+            sessionID: input.sessionID,
+            messageID: input.messageID,
+            agent: coordinatorAgent,
+            model: coordinatorModel,
+            variant: coordinator.variant,
+            parts: [
+              {
+                type: "text",
+                text: steering ? `${objective}\n\nOrientação do operador:\n${steering}` : objective,
+                metadata: { duoRun: true },
+              },
+              ...(input.parts ?? []),
+            ],
+          })
+          if (user.info.role !== "user") return yield* Effect.die("Duo requires a user message")
+          const lastUser = user.info
+          const parent = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+          const ctx = yield* InstanceState.context
+          const prepared = continuing
+            ? {
+                schedule: "parallel" as const,
+                directories: [saved!.members[0].directory, saved!.members[1].directory] as [string, string],
+                baseDirectory: ctx.directory,
+                reason: undefined,
+              }
+            : yield* DuoWorkspace.prepare({ directory: ctx.directory, runID: crypto.randomUUID() })
+          yield* sessions.updatePart({
+            id: PartID.ascending(),
+            messageID: lastUser.id,
+            sessionID: input.sessionID,
+            type: "text",
+            synthetic: true,
+            text: `Duo: execuções paralelas ${prepared.directories[0] === prepared.directories[1] ? "na pasta compartilhada" : "em worktrees separadas"}, com progresso compartilhado durante o trabalho.${prepared.reason ? ` ${prepared.reason}` : ""}\nPasta original para integração: ${ctx.directory}\nParticipante 1: ${settings.participants[0].name} (${settings.participants[0].model}) — ${prepared.directories[0]}\nParticipante 2: ${settings.participants[1].name} (${settings.participants[1].model}) — ${prepared.directories[1]}`,
+            metadata: { duoRun: true },
+          })
+          const invoke: Duo.Invoker = (request) =>
+            Effect.gen(function* () {
+              const candidate = yield* agents.get(request.participant.agent ?? "general")
+              if (!candidate)
+                return yield* Effect.fail(new Error(`Duo agent not found: ${request.participant.agent ?? "general"}`))
+              const child = request.taskID
+                ? yield* sessions.get(request.taskID).pipe(Effect.orDie)
+                : yield* instances
+                    .provide(
+                      { directory: request.directory },
+                      sessions.create({
+                        parentID: input.sessionID,
+                        title: `Duo ${request.participant.name}: ${objective.slice(0, 80)}`,
+                        agent: candidate.name,
+                        permission: deriveSubagentSessionPermission({
+                          parentSessionPermission: parent.permission ?? [],
+                          subagent: candidate,
+                        }),
+                      }),
+                    )
+                    .pipe(Effect.orDie)
+              yield* request.onAllocated(child.id)
+              const requestedModel = Provider.parseModel(request.participant.model)
+              const observed: { value?: Duo.InvocationResult } = {}
+              const scopedOps: TaskPromptOps = {
+                resolvePromptParts: (text) =>
+                  Effect.succeed([
+                    { type: "text", text },
+                    ...(request.phase === "work"
+                      ? (input.parts ?? []).map((part) => ({
+                          type: "file" as const,
+                          url: part.url,
+                          mime: part.mime,
+                          filename: part.filename,
+                        }))
+                      : []),
+                  ]),
+                prompt: (promptInput) =>
+                  instances.provide(
+                    { directory: request.directory },
+                    prompt(promptInput).pipe(Effect.catch(Effect.die)),
+                  ),
+                cancel: (sessionID) => instances.provide({ directory: request.directory }, cancel(sessionID)),
+              }
+              yield* handleSubtask({
+                task: {
+                  id: PartID.ascending(),
+                  messageID: lastUser.id,
+                  sessionID: input.sessionID,
+                  type: "subtask",
+                  agent: candidate.name,
+                  model: requestedModel,
+                  description: `Duo ${request.participant.name}: ${request.phase === "work" ? "trabalho" : "revisão do par"}`,
+                  prompt: request.prompt,
+                },
+                taskID: child.id,
+                variant: request.participant.variant,
+                model: yield* getModel(requestedModel.providerID, requestedModel.modelID, input.sessionID),
+                lastUser,
+                sessionID: input.sessionID,
+                session: parent,
+                msgs: yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie),
+                promptOps: scopedOps,
+                awaitCompletion: true,
+                metadata: {
+                  duo: { participant: request.participant.name, phase: request.phase, directory: request.directory },
+                },
+                onResult: (value) =>
+                  Effect.sync(() => {
+                    observed.value = value
+                  }),
+              })
+              return (
+                observed.value ?? {
+                  taskID: child.id,
+                  status: "failed" as const,
+                  output: "",
+                  error: "Task ended without a result",
+                }
+              )
+            })
+          const finished = continuing
+            ? yield* duo.resume({ sessionID: input.sessionID, steering }, invoke)
+            : yield* duo.start(
+                {
+                  sessionID: input.sessionID,
+                  objective,
+                  members: [
+                    { ...settings.participants[0], directory: prepared.directories[0] },
+                    { ...settings.participants[1], directory: prepared.directories[1] },
+                  ],
+                  schedule: prepared.schedule,
+                  review: settings.review,
+                  peerChars: settings.peerChars,
+                  coordinatorAgent: lastUser.agent,
+                },
+                invoke,
+              )
+          const lead = finished.members[0]
+          const peer = finished.members[1]
+          if ((lead.review ?? lead.work)?.status === "failed" && (peer.review ?? peer.work)?.status === "completed") {
+            const fallback = Provider.parseModel(peer.model)
+            yield* sessions.updateMessage({ ...lastUser, model: { ...fallback, variant: peer.variant } })
+            yield* sessions
+              .setAgentModel({
+                sessionID: input.sessionID,
+                agent: lastUser.agent,
+                time: Date.now(),
+                model: { id: fallback.modelID, providerID: fallback.providerID, variant: peer.variant },
+              })
+              .pipe(Effect.orDie)
+            yield* sessions.updatePart({
+              id: PartID.ascending(),
+              messageID: lastUser.id,
+              sessionID: input.sessionID,
+              type: "text",
+              synthetic: true,
+              text: `${lead.name} falhou nesta rodada. A integração será feita por ${peer.name} (${peer.model}), usando os resultados disponíveis.`,
+              metadata: { duoRun: true },
+            })
+          }
+          yield* sessions.updatePart({
+            id: PartID.ascending(),
+            messageID: lastUser.id,
+            sessionID: input.sessionID,
+            type: "text",
+            synthetic: true,
+            text: `Os dois participantes receberam o mesmo objetivo. Resultados: ${finished.members.map((member) => `${member.name}: trabalho ${member.work?.status ?? "não concluído"}, revisão ${member.review?.status ?? "não concluída"}, sessão ${member.taskID ?? "não criada"}, pasta ${member.directory}`).join("; ")}.\nUse os resultados e artefatos como evidências e construa uma resposta conjunta para o objetivo do operador. Se o objetivo pedir alterações, integre a solução útil na pasta original ${ctx.directory} e execute as verificações relevantes. ${finished.members[0].directory === finished.members[1].directory ? "Os participantes já trabalharam diretamente na pasta original; confira e aproveite as alterações existentes." : "Alterações nas worktrees ainda não são alterações na pasta original."} Para objetivos de análise, responda com a análise solicitada. Se houver divergências ou verificações ausentes, informe-as.`,
+            metadata: { duoRun: true },
+          })
+          return yield* lastAssistant(input.sessionID)
+        })
+        const result = yield* state
+          .startShell(
+            input.sessionID,
+            lastAssistant(input.sessionID),
+            execute.pipe(
+              Effect.catch((error) => respond(error instanceof Error ? error.message : String(error))),
+              Effect.orDie,
+            ),
+          )
+          .pipe(Effect.catch((error) => respond(error instanceof Error ? error.message : String(error))))
+        const finished = yield* duo.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (finished?.status !== "completed" || !finished.members.some((member) => member.work?.status === "completed"))
+          return result
+        if (result.parts.some((part) => part.type === "text" && part.metadata?.goalControl === true)) return result
+        return yield* loop({ sessionID: input.sessionID })
+      }
       if (input.command === "goal") {
         if (input.parts?.length) {
           yield* createUserMessage({
@@ -1580,7 +1995,7 @@ const layer = Layer.effect(
         }
         const responses = { count: 0 }
         const respond = (text: string) =>
-          respondGoal({
+          respondControl({
             sessionID: input.sessionID,
             messageID: responses.count++ === 0 ? input.messageID : undefined,
             agent: input.agent,
@@ -1777,6 +2192,7 @@ export const CommandInput = Schema.Struct({
   arguments: Schema.String,
   command: Schema.String,
   variant: Schema.optional(Schema.String),
+  duo: Schema.optional(Duo.SelectionSchema),
   // Inlined (no identifier annotation) to keep the original SDK output — the
   // PromptInput call site below references FilePartInput by ref via the
   // Schema export in message-v2.ts.
@@ -1863,6 +2279,8 @@ export const node = LayerNode.make({
     RuntimeFlags.node,
     Database.node,
     Goal.node,
+    Consultation.node,
+    Duo.node,
   ],
 })
 

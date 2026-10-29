@@ -9,6 +9,10 @@ import * as Stream from "effect/Stream"
 import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { CompactionSettings } from "../../src/session/compaction-settings"
+import { Global } from "@opencode-ai/core/global"
+import path from "node:path"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -63,9 +67,10 @@ function createModel(opts: {
   input?: number
   cost?: Provider.Model["cost"]
   npm?: string
+  id?: string
 }): Provider.Model {
   return {
-    id: "test-model",
+    id: opts.id ?? "test-model",
     providerID: "test",
     name: "Test",
     limit: {
@@ -89,7 +94,7 @@ function createModel(opts: {
 
 const wide = () => ProviderTest.fake({ model: createModel({ context: 100_000, output: 32_000 }) })
 
-function createUserMessage(sessionID: SessionID, text: string) {
+function createUserMessage(sessionID: SessionID, text: string, model: SessionV1.User["model"] = ref) {
   return Effect.gen(function* () {
     const ssn = yield* SessionNs.Service
     const msg = yield* ssn.updateMessage({
@@ -97,7 +102,7 @@ function createUserMessage(sessionID: SessionID, text: string) {
       role: "user",
       sessionID,
       agent: "build",
-      model: ref,
+      model,
       time: { created: Date.now() },
     })
     yield* ssn.updatePart({
@@ -218,9 +223,9 @@ function processorLayer(result: "continue" | "compact") {
   )
 }
 
-function cfg(compaction?: ConfigV1.Info["compaction"]) {
+function cfg(compaction?: ConfigV1.Info["compaction"], agent?: ConfigV1.Info["agent"]) {
   const base = Schema.decodeUnknownSync(ConfigV1.Info)({}) as ConfigV1.Info
-  return Layer.succeed(Config.Service, TestConfig.make({ get: () => Effect.succeed({ ...base, compaction }) }))
+  return Layer.succeed(Config.Service, TestConfig.make({ get: () => Effect.succeed({ ...base, compaction, agent }) }))
 }
 
 const defaultProvider = wide()
@@ -832,6 +837,290 @@ describe("session.compaction.prune", () => {
 })
 
 describe("session.compaction.process", () => {
+  for (const variant of [undefined, "high"] as const) {
+    itCompaction.instance(`uses the stored manual model and ${variant ?? "default"} variant`, () => {
+      const stub = llm()
+      const main = createModel({ context: 100_000, output: 32_000, id: "parent-model" })
+      const selected = {
+        ...createModel({ context: 100_000, output: 32_000, id: "selected-model" }),
+        variants: { high: {} },
+      }
+      const providerInfo = ProviderTest.info({ models: { [main.id]: main, [selected.id]: selected } }, main)
+      const provider = ProviderTest.fake({
+        model: main,
+        info: providerInfo,
+        getModel: (providerID, modelID): Effect.Effect<Provider.Model, Provider.ModelNotFoundError> => {
+          const model = providerInfo.models[modelID]
+          if (providerID === providerInfo.id && model) return Effect.succeed(model)
+          return Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID }))
+        },
+      })
+      let captured: { variant: string | undefined; modelID: string } | undefined
+      stub.push(
+        reply("summary", (input) => (captured = { variant: input.user.model.variant, modelID: input.model.id })),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const compact = yield* SessionCompaction.Service
+        const session = yield* ssn.create({})
+        const mainModel = { providerID: ref.providerID, modelID: ModelV2.ID.make("parent-model") }
+        const selection = {
+          providerID: ref.providerID,
+          modelID: ModelV2.ID.make("selected-model"),
+          ...(variant ? { variant } : {}),
+        }
+        yield* Effect.promise(() => mkdir(Global.Path.config, { recursive: true }))
+        yield* Effect.promise(() => writeFile(path.join(Global.Path.config, "compaction-model.json"), "invalid json"))
+        yield* compact.create({
+          sessionID: session.id,
+          agent: "build",
+          model: mainModel,
+          auto: false,
+          compactionModel: selection,
+        })
+        const messages = yield* ssn.messages({ sessionID: session.id })
+        expect(messages[0].info.role === "user" && messages[0].info.model).toEqual(mainModel)
+        expect(messages[0].parts[0]).toMatchObject({ type: "compaction", compactionModel: selection })
+        yield* compact.process({ parentID: messages[0].info.id, messages, sessionID: session.id, auto: false })
+        expect(captured).toEqual({ variant, modelID: "selected-model" })
+        const saved = yield* ssn.messages({ sessionID: session.id })
+        expect(saved.filter((item) => item.info.role === "user")).toHaveLength(1)
+      }).pipe(
+        Effect.ensuring(
+          Effect.promise(() => rm(path.join(Global.Path.config, "compaction-model.json"), { force: true })),
+        ),
+        withCompaction({
+          llm: stub.llmLayer,
+          provider,
+          config: cfg(undefined, { compaction: { model: "test/parent-model", variant: "medium" } }),
+        }),
+      )
+    })
+  }
+
+  itCompaction.instance("reads preferences for automatic child compaction after live changes", () => {
+    const stub = llm()
+    const main = createModel({ context: 100_000, output: 32_000, id: "terra" })
+    const first = { ...createModel({ context: 100_000, output: 32_000, id: "selected" }), variants: { low: {} } }
+    const second = createModel({ context: 100_000, output: 32_000, id: "other" })
+    const info = ProviderTest.info({ models: { [main.id]: main, [first.id]: first, [second.id]: second } }, main)
+    const provider = ProviderTest.fake({
+      model: main,
+      info,
+      getModel: (providerID, modelID) => {
+        const model = info.models[modelID]
+        return providerID === info.id && model
+          ? Effect.succeed(model)
+          : Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID }))
+      },
+    })
+    const captured: { modelID: string; variant: string | undefined; options: unknown }[] = []
+    for (let i = 0; i < 2; i++)
+      stub.push(
+        reply("summary", (input) => {
+          captured.push({ modelID: input.model.id, variant: input.user.model.variant, options: input.agent.options })
+        }),
+      )
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const compact = yield* SessionCompaction.Service
+      const parent = yield* ssn.create({})
+      const child = yield* ssn.create({ parentID: parent.id })
+      for (const model of [
+        { providerID: ref.providerID, modelID: ModelV2.ID.make("selected"), variant: "low" },
+        { providerID: ref.providerID, modelID: ModelV2.ID.make("other") },
+      ]) {
+        yield* Effect.promise(() => CompactionSettings.write(model))
+        const message = yield* createUserMessage(child.id, "preserve this", {
+          ...ref,
+          modelID: ModelV2.ID.make("terra"),
+          variant: "medium",
+        })
+        const messages = yield* ssn.messages({ sessionID: child.id })
+        yield* compact.process({ parentID: message.id, messages, sessionID: child.id, auto: true })
+      }
+      expect(captured).toEqual([
+        { modelID: "selected", variant: "low", options: {} },
+        { modelID: "other", variant: undefined, options: {} },
+      ])
+      expect(
+        (yield* ssn.messages({ sessionID: child.id })).filter((item) =>
+          item.parts.some((part) => part.type === "text" && part.text === "preserve this"),
+        ),
+      ).toHaveLength(2)
+    }).pipe(
+      Effect.ensuring(
+        Effect.promise(() => rm(path.join(Global.Path.config, "compaction-model.json"), { force: true })),
+      ),
+      withCompaction({
+        llm: stub.llmLayer,
+        provider,
+        config: cfg(undefined, {
+          compaction: { model: "test/terra", variant: "medium", options: { reasoningEffort: "medium" } },
+        }),
+      }),
+    )
+  })
+
+  itCompaction.instance("rejects unknown manual models and variants before writing messages", () => {
+    const model = { ...createModel({ context: 100_000, output: 32_000 }), variants: { high: {} } }
+    const provider = ProviderTest.fake({
+      model,
+      getModel: (providerID, modelID): Effect.Effect<Provider.Model, Provider.ModelNotFoundError> =>
+        providerID === model.providerID && modelID === model.id
+          ? Effect.succeed(model)
+          : Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID })),
+    })
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const compact = yield* SessionCompaction.Service
+      const session = yield* ssn.create({})
+      const unknown = yield* Effect.flip(compact.validateModel({ ...ref, modelID: ModelV2.ID.make("missing") }))
+      const badVariant = yield* Effect.flip(compact.validateModel({ ...ref, variant: "missing" }))
+      expect(unknown.message).toContain("Unknown compaction model")
+      expect(badVariant.message).toContain("Unknown variant")
+      expect(yield* ssn.messages({ sessionID: session.id })).toHaveLength(0)
+    }).pipe(withCompaction({ provider }))
+  })
+
+  itCompaction.instance("uses the pinned compaction agent variant without mutating the parent", () => {
+    const stub = llm()
+    const parentModel = createModel({ context: 100_000, output: 32_000, id: "parent-model" })
+    const terraModel = createModel({ context: 100_000, output: 32_000, id: "terra-model" })
+    const providerInfo = ProviderTest.info(
+      { models: { [parentModel.id]: parentModel, [terraModel.id]: terraModel } },
+      parentModel,
+    )
+    const provider = ProviderTest.fake({
+      model: parentModel,
+      info: providerInfo,
+      getModel: Effect.fn("TestProvider.getModel")((providerID, modelID) => {
+        const model = providerInfo.models[modelID]
+        if (providerID === providerInfo.id && model) return Effect.succeed(model)
+        return Effect.die(new Error(`Unknown test model: ${providerID}/${modelID}`))
+      }),
+    })
+    let captured: { variant: string | undefined; modelID: string } | undefined
+    stub.push(reply("summary", (input) => (captured = { variant: input.user.model.variant, modelID: input.model.id })))
+
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const parentModel: SessionV1.User["model"] = {
+        providerID: ref.providerID,
+        modelID: ModelV2.ID.make("parent-model"),
+        variant: "high",
+      }
+      const parent = yield* createUserMessage(session.id, "summarize this", parentModel)
+      const messages = yield* ssn.messages({ sessionID: session.id })
+      const parentBefore = messages.find((message) => message.info.id === parent.id)
+      yield* SessionCompaction.use.process({ parentID: parent.id, messages, sessionID: session.id, auto: false })
+
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const parentAfter = saved.find((message) => message.info.id === parent.id)
+      const assistant = saved.find((message) => message.info.role === "assistant" && message.info.summary)
+      expect(captured).toEqual({ variant: "medium", modelID: "terra-model" })
+      expect(parentBefore?.info.role === "user" && parentBefore.info.model.variant).toBe("high")
+      expect(parentAfter?.info.role === "user" && parentAfter.info.model.variant).toBe("high")
+      expect(assistant?.info.role === "assistant" && assistant.info.variant).toBe("medium")
+    }).pipe(
+      withCompaction({
+        llm: stub.llmLayer,
+        provider,
+        config: cfg(undefined, { compaction: { model: "test/terra-model", variant: "medium" } }),
+      }),
+    )
+  })
+
+  itCompaction.instance("does not inherit the parent variant when a compaction model is pinned", () => {
+    const stub = llm()
+    const parentModel = createModel({ context: 100_000, output: 32_000, id: "parent-model" })
+    const terraModel = createModel({ context: 100_000, output: 32_000, id: "terra-model" })
+    const providerInfo = ProviderTest.info(
+      { models: { [parentModel.id]: parentModel, [terraModel.id]: terraModel } },
+      parentModel,
+    )
+    const provider = ProviderTest.fake({
+      model: parentModel,
+      info: providerInfo,
+      getModel: Effect.fn("TestProvider.getModel")((providerID, modelID) => {
+        const model = providerInfo.models[modelID]
+        if (providerID === providerInfo.id && model) return Effect.succeed(model)
+        return Effect.die(new Error(`Unknown test model: ${providerID}/${modelID}`))
+      }),
+    })
+    let captured: { variant: string | undefined; modelID: string } | undefined
+    stub.push(reply("summary", (input) => (captured = { variant: input.user.model.variant, modelID: input.model.id })))
+
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const parentModel: SessionV1.User["model"] = {
+        providerID: ref.providerID,
+        modelID: ModelV2.ID.make("parent-model"),
+        variant: "high",
+      }
+      const parent = yield* createUserMessage(session.id, "summarize this", parentModel)
+      const messages = yield* ssn.messages({ sessionID: session.id })
+      const parentBefore = messages.find((message) => message.info.id === parent.id)
+      yield* SessionCompaction.use.process({ parentID: parent.id, messages, sessionID: session.id, auto: false })
+
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const assistant = saved.find((message) => message.info.role === "assistant" && message.info.summary)
+      expect(captured).toEqual({ variant: undefined, modelID: "terra-model" })
+      expect(parentBefore?.info.role === "user" && parentBefore.info.model.variant).toBe("high")
+      expect(assistant?.info.role === "assistant" && assistant.info.variant).toBeUndefined()
+    }).pipe(
+      withCompaction({
+        llm: stub.llmLayer,
+        provider,
+        config: cfg(undefined, { compaction: { model: "test/terra-model" } }),
+      }),
+    )
+  })
+
+  itCompaction.instance("preserves the parent variant when compaction uses the parent model", () => {
+    const stub = llm()
+    let captured: string | undefined
+    stub.push(reply("summary", (input) => (captured = input.user.model.variant)))
+
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const highModel: SessionV1.User["model"] = { ...ref, variant: "high" }
+      const parent = yield* createUserMessage(session.id, "summarize this", highModel)
+      const messages = yield* ssn.messages({ sessionID: session.id })
+      const parentBefore = messages.find((message) => message.info.id === parent.id)
+      yield* SessionCompaction.use.process({ parentID: parent.id, messages, sessionID: session.id, auto: false })
+
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const parentAfter = saved.find((message) => message.info.id === parent.id)
+      expect(captured).toBe("high")
+      expect(parentBefore?.info.role === "user" && parentBefore.info.model.variant).toBe("high")
+      expect(parentAfter?.info.role === "user" && parentAfter.info.model.variant).toBe("high")
+    }).pipe(withCompaction({ llm: stub.llmLayer }))
+  })
+
+  itCompaction.instance("uses an explicitly configured variant even when compaction uses the parent model", () => {
+    const stub = llm()
+    let captured: string | undefined
+    stub.push(reply("summary", (input) => (captured = input.user.model.variant)))
+
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const highModel: SessionV1.User["model"] = { ...ref, variant: "high" }
+      const parent = yield* createUserMessage(session.id, "summarize this", highModel)
+      const messages = yield* ssn.messages({ sessionID: session.id })
+      yield* SessionCompaction.use.process({ parentID: parent.id, messages, sessionID: session.id, auto: false })
+
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const assistant = saved.find((message) => message.info.role === "assistant" && message.info.summary)
+      expect(captured).toBe("medium")
+      expect(assistant?.info.role === "assistant" && assistant.info.variant).toBe("medium")
+    }).pipe(withCompaction({ llm: stub.llmLayer, config: cfg(undefined, { compaction: { variant: "medium" } }) }))
+  })
+
   it.instance(
     "throws when parent is not a user message",
     Effect.gen(function* () {
